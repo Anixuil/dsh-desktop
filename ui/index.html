@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>DSH Desktop</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    body { display: flex; align-items: center; justify-content: center; }
+    .splash-box { text-align: center; }
+    .logo {
+      width: 96px; height: 96px; margin: 0 auto 28px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #6366F1, #312E81);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .logo img { width: 68px; height: 68px; }
+    .spinner {
+      width: 28px; height: 28px; margin: 22px auto 0;
+      border: 3px solid rgba(99,102,241,.25); border-top-color: #6366F1;
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #status { color: var(--text-dim); font-size: 14px; }
+    #error { margin-top: 24px; }
+    #error-text { color: #F87171; font-size: 13px; white-space: pre-wrap; }
+    .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+    button {
+      padding: 8px 18px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--bg-panel); color: var(--text); cursor: pointer; font-size: 13px;
+    }
+    button:hover { border-color: #6366F1; }
+  </style>
+</head>
+<body>
+  <div class="splash-box">
+    <div class="logo"><img src="whale.svg" alt="DSH" /></div>
+    <div id="status">正在启动 DeepSeek Harness 服务…</div>
+    <div class="spinner"></div>
+    <div id="error" hidden>
+      <p id="error-text"></p>
+      <div class="btn-row">
+        <button id="retry">重试</button>
+        <button id="open-settings">打开设置与日志</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    let redirecting = false;
+    const go = (url) => {
+      if (redirecting) return;
+      redirecting = true;
+      location.replace(url);
+    };
+
+    listen('dsh-status', (e) => { document.getElementById('status').textContent = String(e.payload); });
+    listen('dsh-ready', (e) => { go(String(e.payload)); });
+    listen('dsh-failed', () => {
+      document.getElementById('error').hidden = false;
+      document.querySelector('.spinner').hidden = true;
+      document.getElementById('error-text').textContent =
+        'DeepSeek Harness 服务启动失败。\n可能原因：内置运行时缺失、端口被占用且不可用、或 dsh 配置损坏。\n请打开设置与日志查看详情。';
+    });
+    document.getElementById('retry').addEventListener('click', () => location.reload());
+    document.getElementById('open-settings').addEventListener('click', () => invoke('open_settings_window'));
+
+    // Deterministic fallback: poll the shell state instead of relying on
+    // events alone (events can fire before this page registers listeners).
+    async function pollStatus() {
+      try {
+        const st = await invoke('get_status');
+        if (st.ui_ready) {
+          go(`http://127.0.0.1:${st.dsh_port}/`);
+          return;
+        }
+        if (st.adopted) {
+          document.getElementById('status').textContent =
+            '检测到已有 DeepSeek Harness 实例，正在接入…';
+        }
+      } catch (e) { /* window may not be ready yet */ }
+      setTimeout(pollStatus, 500);
+    }
+    pollStatus();
+  </script>
+</body>
+</html>

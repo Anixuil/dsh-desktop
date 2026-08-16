@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>DSH Desktop 设置</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body style="padding:20px">
+  <h1>DSH Desktop 设置</h1>
+
+  <div class="card">
+    <h2 style="margin-top:0">运行状态</h2>
+    <div class="kv"><span class="k">DSH 服务</span><span class="v" id="st-dsh">…</span></div>
+    <div class="kv"><span class="k">桥接（对话结束通知）</span><span class="v" id="st-bridge">…</span></div>
+    <div class="kv"><span class="k">运行模式</span><span class="v" id="st-mode">…</span></div>
+    <div class="kv"><span class="k">壳版本 / dsh 版本 / Node</span><span class="v" id="st-versions">…</span></div>
+    <div class="kv"><span class="k">DSH_HOME</span><span class="v" id="st-home" style="word-break:break-all;text-align:right">…</span></div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">DeepSeek API Key</h2>
+    <label for="key">API Key（用于对话调用与余额查询，保存在本机）</label>
+    <input type="password" id="key" placeholder="sk-..." autocomplete="off" />
+    <div class="row">
+      <button class="primary" id="save">保存并验证</button>
+      <button id="clear">清除</button>
+      <button id="refresh">立即刷新余额</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">余额</h2>
+    <div class="kv"><span class="k">状态</span><span class="v" id="bal-status"><span class="badge warn">未获取</span></span></div>
+    <div class="balance-big" id="bal-total">—</div>
+    <div class="kv"><span class="k">充值余额</span><span class="v" id="bal-topped">—</span></div>
+    <div class="kv"><span class="k">赠送余额</span><span class="v" id="bal-granted">—</span></div>
+    <div class="kv"><span class="k">币种</span><span class="v" id="bal-currency">—</span></div>
+    <div class="kv"><span class="k">最近刷新</span><span class="v" id="bal-at">—</span></div>
+    <p class="hint">对话结束后（模型回复完成）自动刷新一次；另有每 60 秒轮询与托盘手动刷新。</p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">自动更新</h2>
+    <div class="kv"><span class="k">壳版本（本应用）</span><span class="v" id="up-app">…</span></div>
+    <div class="kv"><span class="k">dsh 内核版本</span><span class="v" id="up-dsh">…</span></div>
+    <div class="row">
+      <button id="check-update">检查更新</button>
+      <button id="apply-dsh-update" disabled>更新 dsh 内核</button>
+    </div>
+    <div id="up-msg"></div>
+    <p class="hint">壳更新需要配置 GitHub 仓库（DSH_DESKTOP_UPDATE_REPO 或配置 update_repo）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
+    <label style="margin-top:10px">
+      <input type="checkbox" id="autostart" /> 开机自启（登录 Windows 时自动启动）
+    </label>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">诊断</h2>
+    <div class="row">
+      <button id="open-logs">打开日志目录</button>
+      <button id="open-home">打开 DSH 数据目录</button>
+    </div>
+    <p class="hint" id="log-path">—</p>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

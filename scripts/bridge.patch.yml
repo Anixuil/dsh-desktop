@@ -1,0 +1,8 @@
+# dsh-desktop bridge row — managed by DSH Desktop, do not edit by hand.
+# Inserts the shell↔DSH bridge entry: turn-end notifications + credential writes.
+- insert:
+    - id: dsh-desktop-bridge
+      name: dsh-desktop-bridge
+      config:
+        shellPort: 38657
+        port: 38658

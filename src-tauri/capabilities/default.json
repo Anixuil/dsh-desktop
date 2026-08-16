@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Permissions for the local shell windows (splash + settings). Remote DSH UI has no IPC access.",
+  "windows": ["main", "settings"],
+  "permissions": ["core:default"]
+}
