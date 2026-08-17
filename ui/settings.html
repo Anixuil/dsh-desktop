@@ -49,7 +49,7 @@
       <button id="apply-dsh-update" disabled>更新 dsh 内核</button>
     </div>
     <div id="up-msg"></div>
-    <p class="hint">壳更新需要配置 GitHub 仓库（DSH_DESKTOP_UPDATE_REPO 或配置 update_repo）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
+    <p class="hint">壳更新默认检查 GitHub 仓库 Anixuil/dsh-desktop 的 Releases（可通过 DSH_DESKTOP_UPDATE_REPO 环境变量或配置 update_repo 覆盖）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
     <label style="margin-top:10px">
       <input type="checkbox" id="autostart" /> 开机自启（登录 Windows 时自动启动）
     </label>
@@ -62,6 +62,32 @@
       <button id="open-home">打开 DSH 数据目录</button>
     </div>
     <p class="hint" id="log-path">—</p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">关于</h2>
+    <div class="about-head">
+      <img class="about-logo" src="whale.svg" alt="DSH Desktop" />
+      <div class="about-title">
+        <div class="about-name">DeepSeek Harness Desktop</div>
+        <div class="about-ver" id="about-version">v…</div>
+      </div>
+    </div>
+    <div class="kv"><span class="k">作者</span><span class="v">Anixuil</span></div>
+    <div class="kv"><span class="k">博客</span><span class="v"><a href="#" id="about-blog">www.anixuil.top</a></span></div>
+    <div class="kv"><span class="k">GitHub 仓库</span><span class="v"><a href="#" id="about-github">github.com/Anixuil/dsh-desktop</a></span></div>
+    <p class="hint">
+      本应用由 Anixuil 开发维护，把 DeepSeek Harness 封装为 Windows 桌面体验（内置 Node 运行时与 dsh 内核）。
+      欢迎访问博客 www.anixuil.top 了解更多，或在 GitHub 仓库查看源码、提交 Issue、参与共建。
+    </p>
+    <div class="row">
+      <button id="about-check-update">检查更新</button>
+      <button id="about-github-btn" class="primary">访问 GitHub 仓库</button>
+    </div>
+    <div class="about-links">
+      <a href="#" id="about-release-link" hidden>前往 Releases 下载新版本</a>
+    </div>
+    <div id="about-msg"></div>
   </div>
 
   <script src="settings.js"></script>

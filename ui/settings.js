@@ -59,7 +59,12 @@ listen('update-status', (e) => {
     $('apply-dsh-update').disabled = false;
     $('apply-dsh-update').dataset.tarball = u.dsh_tarball || '';
   }
-  if (u.app_update_available) parts.push(`应用有新版：${u.app_current} → ${u.app_latest}`);
+  if (u.app_update_available) {
+    parts.push(`应用有新版：${u.app_current} → ${u.app_latest}`);
+    aboutMsg(`应用有新版：${u.app_current} → ${u.app_latest}`, 'ok');
+    $('about-release-link').dataset.url = u.app_url || '';
+    $('about-release-link').hidden = !u.app_url;
+  }
   if (parts.length) upMsg(`【自动检测】${parts.join('；')}`, 'ok');
 });
 
@@ -120,6 +125,7 @@ async function renderUpdatePanel() {
     const st = await invoke('get_status');
     $('up-app').textContent = st.app_version;
     $('up-dsh').textContent = st.dsh_version || '?';
+    $('about-version').textContent = 'v' + st.app_version;
   } catch (e) { /* ignore */ }
 }
 
@@ -180,6 +186,57 @@ $('autostart').addEventListener('change', async () => {
   } catch (e) {
     $('autostart').checked = false;
     upMsg(`设置开机自启失败：${e}`, 'err');
+  }
+});
+
+// ---- about ----
+const BLOG_URL = 'https://www.anixuil.top';
+const GITHUB_URL = 'https://github.com/Anixuil/dsh-desktop';
+
+const aboutMsg = (text, cls) => { const m = $('about-msg'); m.textContent = text; m.className = cls || ''; };
+
+async function openExternal(url) {
+  try {
+    await invoke('open_external', { url });
+  } catch (e) {
+    aboutMsg(String(e), 'err');
+  }
+}
+
+$('about-blog').addEventListener('click', (e) => { e.preventDefault(); openExternal(BLOG_URL); });
+$('about-github').addEventListener('click', (e) => { e.preventDefault(); openExternal(GITHUB_URL); });
+$('about-github-btn').addEventListener('click', () => openExternal(GITHUB_URL));
+$('about-release-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  const url = $('about-release-link').dataset.url;
+  if (url) openExternal(url);
+});
+
+$('about-check-update').addEventListener('click', async () => {
+  $('about-check-update').disabled = true;
+  aboutMsg('正在检查更新…');
+  try {
+    const u = await invoke('check_update');
+    const parts = [];
+    if (u.dsh_update_available) parts.push(`dsh 内核：${u.dsh_current} → ${u.dsh_latest}`);
+    else parts.push(`dsh 内核已是最新（${u.dsh_current || '?'}）`);
+    if (u.app_repo) {
+      if (u.app_update_available) {
+        parts.push(`应用：${u.app_current} → ${u.app_latest}`);
+        $('about-release-link').dataset.url = u.app_url || '';
+        $('about-release-link').hidden = !u.app_url;
+      } else {
+        parts.push(`应用已是最新（${u.app_current}）`);
+        $('about-release-link').hidden = true;
+      }
+    } else {
+      $('about-release-link').hidden = true;
+    }
+    aboutMsg(parts.join('；'), u.dsh_update_available || u.app_update_available ? 'ok' : '');
+  } catch (e) {
+    aboutMsg(String(e), 'err');
+  } finally {
+    $('about-check-update').disabled = false;
   }
 });
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DSH Desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.anixuil.dshdesktop",
   "build": {
     "frontendDist": "../ui"
@@ -24,14 +24,15 @@
     ],
     "resources": {
       "../runtime/runtime-archive.tar.gz": "runtime/runtime-archive.tar.gz",
-      "../runtime/bridge-src/": "runtime/bridge-src/",
+      "../runtime/plugins-src/": "runtime/plugins-src/",
       "../runtime/version.json": "runtime/version.json"
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
-        "installerHooks": "./nsis-hooks.nsh"
+        "installerHooks": "./nsis-hooks.nsh",
+        "installerIcon": "icons/icon.ico"
       }
     }
   }

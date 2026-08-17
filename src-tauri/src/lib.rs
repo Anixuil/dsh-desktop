@@ -5,6 +5,7 @@
 //! bridge listener, the system tray, and logging.
 
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -22,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Listener, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
 
@@ -32,12 +33,377 @@ use tauri_plugin_autostart::ManagerExt;
 
 const DSH_WEB_PORT_DEFAULT: u16 = 3080;
 const CREDENTIAL_NAME: &str = "DEEPSEEK_API_KEY";
-const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
+/// Default GitHub repo (`owner/repo`) for shell update checks — this very
+/// codebase. Overridable through config `update_repo` or the
+/// `DSH_DESKTOP_UPDATE_REPO` env var.
+const DEFAULT_UPDATE_REPO: &str = "Anixuil/dsh-desktop";
 const BRIDGE_PATCH_YML: &str = include_str!("../../scripts/bridge.patch.yml");
 const MIN_REFRESH_INTERVAL_SECS: u64 = 3;
+/// Desktop plugin packages deployed from `runtime/plugins-src` into both the
+/// dsh module tree (update restore) and the boot-time profile tree
+/// (`ensure_runtime_files`). Each name doubles as its `--patch` row id.
+const DESKTOP_PLUGINS: [&str; 2] = ["dsh-desktop-bridge", "dsh-desktop-session-manager"];
+/// Bundled third-party plugin (github.com/tianmingwan/dsh-vision-any). Ships in
+/// `runtime/plugins-src` and mounts through the web profile's `bundles` list —
+/// the same contract `dsh plugin --profile web add` uses — so it loads for both
+/// the desktop-hosted kernel and a CLI `dsh web` sharing the same `$DSH_HOME`.
+const VISION_PLUGIN: &str = "dsh-vision-any";
+/// The shipped template bundles for the `web` profile (mirrors dsh's own
+/// `PROFILE_TEMPLATES.web`, used only when the desktop creates the profile).
+const WEB_TEMPLATE_BUNDLES: [&str; 2] = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+/// Mirrors dsh-app-boot's `PROFILE_PATCH_TEMPLATE` / `PROFILE_PNPM_WORKSPACE` so
+/// a desktop-created profile behaves exactly like a `dsh plugin`-initialized one.
+const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
+# a top-level YAML array of loader patch entries (id-targeted config\n\
+# overrides, disables, and insert lists; `!!js` expressions allowed).\n\
+[]\n";
+const PROFILE_PNPM_WORKSPACE: &str = "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
 /// Injected on every document (including the remote dsh web UI): the desktop
 /// app never shows the browser's default right-click context menu.
 const INIT_SCRIPT: &str = r#"window.addEventListener('contextmenu', (e) => e.preventDefault(), true);"#;
+/// Served client bundle of the settings shell (`dsh-client-ui-settings-general`),
+/// relative to `runtime_dir`. Its `navIcon` hard-codes a glyph per settings
+/// section id and falls back to the settings gear for unknown ids — the
+/// desktop extends it with dedicated glyphs for its own sections.
+const SETTINGS_SHELL_BUNDLE: [&str; 6] = [
+    "dsh",
+    "node_modules",
+    "@deepseek-ai",
+    "dsh-client-ui-settings-general",
+    "lib",
+    "client.js",
+];
+/// Marker comment injected by the settings-nav-icon patch; its presence means
+/// the bundle is already patched (idempotence across boots and dsh updates).
+const SETTINGS_NAV_ICONS_MARKER: &str = "dsh-desktop-settings-nav-icons";
+/// The shell's fallback nav-glyph branch (gear icon) — the exact insertion
+/// point for the desktop section branches. Matched verbatim against the
+/// upstream bundle; a future dsh build that reshapes `navIcon` loses the match
+/// and the patch skips gracefully.
+const SETTINGS_NAV_ICONS_ANCHOR: &str = "\t\t\treturn (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSettingsOutline16, {\n\t\t\t\tclassName: SettingsRoot_module_css_default.navIcon,\n\t\t\t\tsize: 16\n\t\t\t});";
+/// Branches inserted before the anchor: a hand-drawn eye glyph for the
+/// vision-model section (`vision-any`), the list-pen glyph from
+/// dsh-client-ui-primitives for the session manager (`session-manager`), and
+/// the user glyph for the About page (`about`). Tab-indented to match the
+/// bundle's formatting (the JS parser does not care; readability does).
+const SETTINGS_NAV_ICONS_INSERT: &str = r#"			/* dsh-desktop-settings-nav-icons: dedicated glyphs for the desktop-owned sections. */
+			if (id === "vision-any") return (0, react_jsx_runtime.jsx)("svg", {
+				width: 16,
+				height: 16,
+				className: SettingsRoot_module_css_default.navIcon,
+				viewBox: "0 0 16 16",
+				fill: "none",
+				xmlns: "http://www.w3.org/2000/svg",
+				children: (0, react_jsx_runtime.jsx)("path", {
+					fillRule: "evenodd",
+					clipRule: "evenodd",
+					d: "M16 8C16 8 12.5 3 8 3C3.5 3 0 8 0 8C0 8 3.5 13 8 13C12.5 13 16 8 16 8ZM8 10.6C6.5641 10.6 5.4 9.4359 5.4 8C5.4 6.5641 6.5641 5.4 8 5.4C9.4359 5.4 10.6 6.5641 10.6 8C10.6 9.4359 9.4359 10.6 8 10.6Z",
+					fill: "currentColor"
+				})
+			});
+			if (id === "session-manager") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconListPenOutline16, {
+				className: SettingsRoot_module_css_default.navIcon,
+				size: 16
+			});
+			if (id === "about") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconUserOutline16, {
+				className: SettingsRoot_module_css_default.navIcon,
+				size: 16
+			});
+"#;
+
+/// Injected on every document of the main window. On the remote dsh web UI it
+/// draws the desktop shell's custom title bar (the window is undecorated, see
+/// the main window builder) and pushes the page content below it. Guarded by
+/// protocol so it never runs in a normal browser or on the shell's own
+/// tauri://localhost pages (the splash has its own in-page title bar).
+///
+/// Mounting is defensive: this script executes at "document created" time,
+/// when `document.documentElement` may not exist yet, and the dsh app may
+/// rebuild parts of the DOM — so it retries via DOMContentLoaded, a short
+/// interval, and a slow re-arm watcher. State is reported to the shell via a
+/// `dsh-titlebar-state` event (logged to dsh.log).
+const TITLEBAR_SCRIPT: &str = r#"
+(function () {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  var BAR_ID = '__dsh_desktop_titlebar__';
+  var STYLE_ID = BAR_ID + '-style';
+  var H = 40;
+
+  function report(state, detail) {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.emit('dsh-titlebar-state', { state: state, detail: detail || '' });
+      }
+    } catch (e) {}
+    try { console.log('[dsh-desktop titlebar]', state, detail || ''); } catch (e) {}
+  }
+
+  // Bar colors are driven by the dsh design tokens (`--dsw-alias-*`): the dsh
+  // app flips them when the user switches themes (body[data-ds-dark-theme]),
+  // so the title bar follows light/dark automatically. Fallbacks match the
+  // default light theme in case the dsh stylesheet has not applied yet.
+  var css =
+    '#' + BAR_ID + '{position:fixed;top:0;left:0;right:0;height:' + H + 'px;z-index:2147483000;' +
+    'display:flex;align-items:center;justify-content:space-between;' +
+    'background:var(--dsw-alias-bg-base,#fff);' +
+    'border-bottom:1px solid var(--dsw-alias-border-l2,rgba(17,24,39,.08));' +
+    'box-sizing:border-box;padding:0 8px 0 14px;' +
+    'font-family:var(--dsw-font-family,"Segoe UI","Microsoft YaHei",system-ui,sans-serif);' +
+    'color:var(--dsw-alias-label-primary,#0f1115);' +
+    '-webkit-user-select:none;user-select:none;}' +
+    '#' + BAR_ID + ' .__t{font-size:12px;line-height:1;color:var(--dsw-alias-label-secondary,#61666b);white-space:nowrap;overflow:hidden;}' +
+    '#' + BAR_ID + ' .__c{display:flex;align-items:center;gap:2px;flex:none;}' +
+    '#' + BAR_ID + ' button{width:34px;height:26px;display:inline-flex;align-items:center;justify-content:center;' +
+    'border:none;border-radius:6px;background:transparent;padding:0;margin:0;cursor:pointer;' +
+    'color:var(--dsw-alias-label-secondary,#3b3f46);outline:none;}' +
+    '#' + BAR_ID + ' button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(17,24,39,.07));}' +
+    '#' + BAR_ID + ' button:active{background:var(--dsw-alias-interactive-bg-hover,rgba(17,24,39,.13));}' +
+    '#' + BAR_ID + ' button.__close:hover{background:#e81123;color:#fff;}' +
+    '#' + BAR_ID + ' button.__close:active{background:#c50f1f;color:#fff;}' +
+    '#' + BAR_ID + ' svg{width:10px;height:10px;display:block;pointer-events:none;}' +
+    'html body{padding-top:' + H + 'px !important;box-sizing:border-box !important;}';
+
+  var svg = {
+    min: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg>',
+    max: '<svg viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
+    restore: '<svg viewBox="0 0 10 10" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1" d="M2.5 2.5V.5h7v7h-2"/><rect x=".5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
+    close: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg>'
+  };
+
+  function wire(bar) {
+    try {
+      if (!window.__TAURI__ || !window.__TAURI__.window) {
+        report('mounted-no-api', 'bar visible but window controls unavailable');
+        return;
+      }
+      var win = window.__TAURI__.window.getCurrentWindow();
+      var setMaxIcon = function (maximized) {
+        var btn = bar.querySelector('button[data-act="max"]');
+        if (!btn) return;
+        btn.innerHTML = maximized ? svg.restore : svg.max;
+        btn.title = maximized ? '向下还原' : '最大化';
+        btn.setAttribute('aria-label', maximized ? '向下还原' : '最大化');
+      };
+      bar.querySelector('button[data-act="min"]').addEventListener('click', function () { win.minimize(); });
+      bar.querySelector('button[data-act="max"]').addEventListener('click', function () { win.toggleMaximize(); });
+      bar.querySelector('button[data-act="close"]').addEventListener('click', function () { win.close(); });
+      var sync = function () { win.isMaximized().then(setMaxIcon).catch(function () {}); };
+      try { win.onResized(sync); } catch (e) {}
+      sync();
+      report('mounted', 'bar + window controls active');
+    } catch (e) {
+      report('wire-error', String(e));
+    }
+  }
+
+  function mount() {
+    if (document.getElementById(BAR_ID)) return true;
+    if (!document.body || !document.head) return false;
+    try {
+      if (!document.getElementById(STYLE_ID)) {
+        var style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = css;
+        document.head.appendChild(style);
+      }
+      var bar = document.createElement('div');
+      bar.id = BAR_ID;
+      bar.setAttribute('data-tauri-drag-region', 'deep');
+      bar.innerHTML =
+        '<span class="__t">DeepSeek Harness</span>' +
+        '<span class="__c">' +
+        '<button data-act="min" title="最小化" aria-label="最小化">' + svg.min + '</button>' +
+        '<button data-act="max" title="最大化" aria-label="最大化">' + svg.max + '</button>' +
+        '<button data-act="close" class="__close" title="关闭" aria-label="关闭">' + svg.close + '</button>' +
+        '</span>';
+      document.body.appendChild(bar);
+      wire(bar);
+      return true;
+    } catch (e) {
+      report('mount-error', String(e));
+      return false;
+    }
+  }
+
+  // primary path: document-start, retried by several independent triggers
+  if (!mount()) {
+    document.addEventListener('DOMContentLoaded', function () { mount(); }, { once: true });
+    var tries = 0;
+    var iv = setInterval(function () {
+      tries += 1;
+      if (mount() || tries > 120) clearInterval(iv);
+    }, 250);
+  }
+
+  // slow re-arm: if the dsh app wipes/replaces the DOM, mount again
+  setInterval(function () {
+    if (document.body && !document.getElementById(BAR_ID)) mount();
+  }, 1000);
+})();
+"#;
+
+/// Injected on every document of the main window (remote dsh web UI only).
+/// Animates the dsh light/dark theme switch with a DeepSeek-ocean transition:
+///
+/// - The dsh `ThemePresenter` (dsh-client-ui-layout) applies themes via
+///   `document.body.setAttribute/removeAttribute('data-ds-dark-theme')`. We
+///   hook those methods on `HTMLBodyElement.prototype` (pass-through for
+///   everything else) and run the flip inside `document.startViewTransition`,
+///   so the old theme "dives" down and the new one "surfaces" — GPU-composited
+///   snapshot animations (transform/opacity only).
+/// - On top of that a short-lived overlay plays DeepSeek branding: a deep-sea
+///   gradient tint, two counter-drifting wave bands, and the whale silhouette
+///   (masked from the dsh favicon) gliding across. All overlay motion is
+///   transform/opacity only.
+/// - Falls back to overlay-only when View Transitions or reduced-motion
+///   policies are unavailable; boot-time application is never animated.
+const THEME_TRANSITION_SCRIPT: &str = r#"
+(function () {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  var ATTR = 'data-ds-dark-theme';
+  var OVERLAY_ID = '__dsh_theme_wave__';
+  var STYLE_ID = OVERLAY_ID + '-style';
+
+  function prefersReduced() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+
+  var css =
+    '::view-transition-group(root){animation-duration:.62s;animation-timing-function:cubic-bezier(.22,1,.36,1)}' +
+    '::view-transition-old(root){animation-name:dsh-theme-dive;animation-duration:.38s;animation-timing-function:cubic-bezier(.45,0,.8,.45);animation-fill-mode:forwards}' +
+    '::view-transition-new(root){animation-name:dsh-theme-surface;animation-duration:.62s;animation-timing-function:cubic-bezier(.22,1,.36,1);animation-fill-mode:both}' +
+    '@keyframes dsh-theme-dive{to{opacity:0;transform:translateY(2.5%) scale(1.012)}}' +
+    '@keyframes dsh-theme-surface{from{opacity:0;transform:translateY(2.5%) scale(.992)}}' +
+    '#' + OVERLAY_ID + '{position:fixed;inset:0;pointer-events:none;z-index:2147482000;overflow:hidden;transition:opacity .25s ease}' +
+    '#' + OVERLAY_ID + '.wv-out{opacity:0}' +
+    '#' + OVERLAY_ID + ' .wv-tint{position:absolute;inset:0;opacity:0;animation:wv-fadein .16s ease-out forwards}' +
+    '#' + OVERLAY_ID + ' .wv-wave{position:absolute;left:0;bottom:-8px;width:200%;height:132px;will-change:transform}' +
+    '#' + OVERLAY_ID + ' .wv-wave svg{display:block;width:100%;height:100%}' +
+    '#' + OVERLAY_ID + ' .wv-w1{animation:wv-drift 2.2s linear infinite}' +
+    '#' + OVERLAY_ID + ' .wv-w2{animation:wv-drift-rev 3.1s linear infinite}' +
+    '#' + OVERLAY_ID + ' .wv-whale{position:absolute;top:30%;left:0;width:88px;height:88px;opacity:.92;' +
+    '-webkit-mask:url("/favicon.svg") center/contain no-repeat;mask:url("/favicon.svg") center/contain no-repeat;' +
+    'filter:drop-shadow(0 10px 26px rgba(29,78,216,.5));animation:wv-glide .75s cubic-bezier(.3,.6,.3,1) .15s both}' +
+    '@keyframes wv-fadein{to{opacity:1}}' +
+    '@keyframes wv-drift{to{transform:translateX(-50%)}}' +
+    '@keyframes wv-drift-rev{from{transform:translateX(-50%)}to{transform:translateX(0)}}' +
+    '@keyframes wv-glide{from{transform:translateX(-12vw) rotate(-12deg)}55%{transform:translateX(44vw) rotate(5deg)}to{transform:translateX(112vw) rotate(-8deg)}}';
+
+  // Two full swell periods per 1200px strip → seamless translateX(±50%) loop.
+  var WAVE_A = 'M0 84 C75 46 150 46 225 84 C300 122 375 122 450 84 C525 46 600 46 675 84 C750 122 825 122 900 84 C975 46 1050 46 1125 84 C1162 100 1181 110 1200 116 V120 H0 Z';
+  var WAVE_B = 'M0 100 C90 70 180 70 270 100 C360 130 450 130 540 100 C630 70 720 70 810 100 C900 130 990 130 1080 100 C1140 84 1170 78 1200 74 V120 H0 Z';
+
+  function ensureStyle() {
+    if (!document.head || document.getElementById(STYLE_ID)) return;
+    var s = document.createElement('style');
+    s.id = STYLE_ID;
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  function waveSvg(pathD, fill, opacity) {
+    return '<svg viewBox="0 0 1200 120" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path d="' + pathD + '" fill="' + fill + '" fill-opacity="' + opacity + '"/></svg>';
+  }
+
+  function buildOverlay(toDark) {
+    if (!document.body) return null;
+    try {
+      var old = document.getElementById(OVERLAY_ID);
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      var root = document.createElement('div');
+      root.id = OVERLAY_ID;
+      var tint = document.createElement('div');
+      tint.className = 'wv-tint';
+      tint.style.background = toDark
+        ? 'linear-gradient(180deg, rgba(15,42,96,.22), rgba(23,58,150,0) 62%)'
+        : 'linear-gradient(180deg, rgba(77,107,254,.10), rgba(147,197,253,0) 62%)';
+      var w2 = document.createElement('div');
+      w2.className = 'wv-wave wv-w2';
+      w2.innerHTML = waveSvg(WAVE_B, toDark ? '#4D6BFE' : '#60A5FA', toDark ? .30 : .26);
+      var w1 = document.createElement('div');
+      w1.className = 'wv-wave wv-w1';
+      w1.innerHTML = waveSvg(WAVE_A, toDark ? '#1D4ED8' : '#93C5FD', toDark ? .48 : .52);
+      var whale = document.createElement('div');
+      whale.className = 'wv-whale';
+      whale.style.background = toDark ? '#8FA3FF' : '#4D6BFE';
+      root.appendChild(tint);
+      root.appendChild(w2);
+      root.appendChild(w1);
+      root.appendChild(whale);
+      document.body.appendChild(root);
+      return root;
+    } catch (e) { return null; }
+  }
+
+  var active = false;
+  function finish(overlay) {
+    setTimeout(function () {
+      active = false;
+      if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }, 1180);
+  }
+
+  // Themed flip: view-transition crossfade (dive/surface) + ocean overlay.
+  function flipWithTransition(body, targetHas) {
+    ensureStyle();
+    var overlay = null;
+    var applied = false;
+    var apply = function () {
+      if (targetHas) body.setAttribute(ATTR, '');
+      else body.removeAttribute(ATTR);
+      applied = true;
+    };
+    if (!prefersReduced() && document.readyState === 'complete') {
+      try {
+        if (typeof document.startViewTransition === 'function') {
+          document.startViewTransition(function () {
+            apply();
+            overlay = buildOverlay(targetHas);
+          });
+        }
+      } catch (e) {}
+    }
+    if (!applied) {
+      // fallback path: flip instantly, then play the overlay alone
+      apply();
+      overlay = buildOverlay(targetHas);
+    }
+    if (overlay) {
+      setTimeout(function () {
+        if (overlay && overlay.parentNode) overlay.classList.add('wv-out');
+      }, 900);
+      finish(overlay);
+    } else {
+      active = false;
+    }
+  }
+
+  // Hook HTMLBodyElement attribute mutations (dsh ThemePresenter path).
+  function installHook() {
+    var proto = window.HTMLBodyElement ? window.HTMLBodyElement.prototype : window.Element.prototype;
+    ['setAttribute', 'removeAttribute'].forEach(function (name) {
+      var original = proto[name];
+      if (!original || original.__dshThemeHook) return;
+      var hooked = function (attr, value) {
+        if (this !== document.body || attr !== ATTR) return original.apply(this, arguments);
+        var targetHas = name === 'setAttribute';
+        if (this.hasAttribute(ATTR) === targetHas) return original.apply(this, arguments);
+        if (active || prefersReduced()) return original.apply(this, arguments);
+        active = true;
+        flipWithTransition(this, targetHas);
+        return undefined;
+      };
+      try { hooked.__dshThemeHook = true; } catch (e) {}
+      try { proto[name] = hooked; } catch (e) {}
+    });
+  }
+
+  installHook();
+})();
+"#;
 
 fn dsh_web_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/")
@@ -48,7 +414,10 @@ fn dsh_web_url(port: u16) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+// NOTE: the DeepSeek balance API returns snake_case fields, and the UI/bridge
+// consumers (settings.js, bridge client.js) also read snake_case — so this
+// struct must serialize/deserialize snake_case, NOT camelCase.
+#[serde(rename_all = "snake_case")]
 pub struct BalanceInfo {
     pub currency: String,
     pub total_balance: String,
@@ -57,10 +426,64 @@ pub struct BalanceInfo {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct Balance {
     pub is_available: bool,
     pub balance_infos: Vec<BalanceInfo>,
+}
+
+/// Billing data for OpenAI-compatible gateways (no "balance" concept — they
+/// bill by usage). Sourced from the OpenAI dashboard-style endpoints
+/// `GET {base}/dashboard/billing/usage` + `GET {base}/dashboard/billing/subscription`.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsage {
+    pub total_usage_usd: Option<f64>,
+    pub soft_limit_usd: Option<f64>,
+    pub hard_limit_usd: Option<f64>,
+    pub has_payment_method: Option<bool>,
+}
+
+/// One platform's account status. `kind` is "balance" (prepaid providers with
+/// a native balance endpoint), "usage" (bill-by-usage gateways with a billing
+/// endpoint), or "unsupported" (no key-accessible balance/billing API).
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStatus {
+    pub id: String,
+    pub display_name: String,
+    pub kind: String,
+    pub configured: bool,
+    pub balance: Option<Balance>,
+    pub usage: Option<ProviderUsage>,
+    pub error: Option<String>,
+}
+
+/// A discovered LLM provider: the DSH built-in DeepSeek entry plus every
+/// provider declared under `llm-pi-ai.providers.<id>` in `$DSH_HOME/settings.yaml`.
+struct LlmProvider {
+    id: String,
+    display_name: String,
+    base_url: String,
+    /// Wire-protocol hint from the config ("" when unknown). Used together
+    /// with the base URL to route to a balance adapter.
+    api: String,
+    key_env: String,
+}
+
+/// The balance endpoint family a provider is routed to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Adapter {
+    /// GET {base}/user/balance — DeepSeek-schema balance (api.deepseek.com
+    /// and DeepSeek-compatible relays).
+    DeepSeek,
+    /// GET {base}/dashboard/billing/usage (+ subscription) — OpenAI-style
+    /// billing gateways.
+    OpenAIBilling,
+    /// No known key-accessible balance/billing endpoint for this protocol.
+    Unsupported,
+    /// Unknown protocol — probe both endpoint families at fetch time.
+    Probe,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -73,6 +496,9 @@ pub struct AppConfig {
     pub bridge_port: u16,
     pub balance_low_threshold: Option<f64>,
     pub update_repo: Option<String>,
+    /// Unix ms when the current API key was registered (drives the DSH in-app
+    /// "consumption since key registration" analytics).
+    pub key_registered_at: Option<i64>,
 }
 
 impl Default for AppConfig {
@@ -85,6 +511,7 @@ impl Default for AppConfig {
             bridge_port: 38658,
             balance_low_threshold: Some(5.0),
             update_repo: None,
+            key_registered_at: None,
         }
     }
 }
@@ -126,6 +553,10 @@ pub struct AppState {
     bridge_ok: AtomicBool,
     runtime_ready: AtomicBool,
     balance: Mutex<Option<Balance>>,
+    providers: Mutex<Option<Vec<ProviderStatus>>>,
+    /// provider id -> resolved balance adapter ("deepseek" | "openai" |
+    /// "unsupported") so probe providers don't re-probe every refresh.
+    adapters: Mutex<HashMap<String, String>>,
     config: Mutex<AppConfig>,
     last_refresh: Mutex<Option<Instant>>,
     last_update_check: Mutex<Option<Instant>>,
@@ -244,40 +675,278 @@ fn save_config(path: &Path, config: &AppConfig) {
     }
 }
 
+/// Content for the shell's `--patch` overlay. The home-level user layer
+/// (`$DSH_HOME/cordis.patch.yml`) may already mount the desktop plugins
+/// (standalone `dsh web` setups); duplicating their loader entry ids crashes
+/// profile boot, so the overlay only fills the gap: empty when the home layer
+/// mounts every desktop plugin, the full rows otherwise.
+fn desktop_patch_overlay(dsh_home: &Path) -> String {
+    const EMPTY_OVERLAY: &str = "# dsh-desktop bridge rows — home layer already mounts every desktop plugin;\n\
+# keep this overlay empty so loader entry ids never duplicate.\n\
+- insert: []\n";
+    let home_layer = dsh_home.join("cordis.patch.yml");
+    let content = fs::read_to_string(&home_layer).unwrap_or_default();
+    let all_mounted = DESKTOP_PLUGINS
+        .iter()
+        .all(|name| content.contains(&format!("id: {name}")));
+    if all_mounted {
+        EMPTY_OVERLAY.to_string()
+    } else {
+        BRIDGE_PATCH_YML.to_string()
+    }
+}
+
+/// Write `content` to `path`, skipping the write when it already matches
+/// (content-sync: shell updates refresh an already-deployed file).
+fn write_if_different(path: &Path, content: &str) {
+    let same = fs::read_to_string(path)
+        .ok()
+        .is_some_and(|existing| existing == content);
+    if !same {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, content);
+    }
+}
+
 fn ensure_runtime_files(paths: &Paths) {
     let _ = fs::create_dir_all(&paths.logs_dir);
-    if !paths.patch_file.exists() {
-        let _ = fs::write(&paths.patch_file, BRIDGE_PATCH_YML);
-    }
+    write_if_different(&paths.patch_file, &desktop_patch_overlay(&paths.dsh_home));
     // The loader resolves plugin entries from the profile's module tree
     // ($DSH_HOME/profiles/node_modules), not from runtime/dsh — deploy the
-    // bridge package there so the `--patch` row can import it.
-    let src = paths
-        .runtime_dir
-        .join("dsh")
-        .join("node_modules")
-        .join("dsh-desktop-bridge");
-    let dst = paths
-        .dsh_home
-        .join("profiles")
-        .join("node_modules")
-        .join("dsh-desktop-bridge");
-    if src.exists() && !dst.join("index.js").exists() {
-        let _ = fs::create_dir_all(&dst);
-        for file in ["package.json", "index.js"] {
-            let _ = fs::copy(src.join(file), dst.join(file));
+    // desktop plugin packages there so each `--patch` row can import it.
+    // The canonical copies live in runtime/plugins-src; the copy is a plain
+    // overwrite (a few small files) so shell updates refresh an
+    // already-deployed package, lib/ trees included.
+    let plugins_src = paths.runtime_dir.join("plugins-src");
+    let profile_modules = paths.dsh_home.join("profiles").join("node_modules");
+    let mut vision_deployed = false;
+    if plugins_src.exists() {
+        for name in DESKTOP_PLUGINS
+            .iter()
+            .copied()
+            .chain(std::iter::once(VISION_PLUGIN))
+        {
+            let src = plugins_src.join(name);
+            if !src.exists() {
+                continue;
+            }
+            let dst = profile_modules.join(name);
+            let _ = fs::create_dir_all(&dst);
+            let _ = copy_dir_contents(&src, &dst);
+            if name == VISION_PLUGIN {
+                vision_deployed = true;
+            }
         }
     }
+    // Mount the bundled vision plugin only when its package actually
+    // deployed — an old runtime without it must never leave a dangling
+    // bundles entry that fails profile boot.
+    if vision_deployed {
+        ensure_web_profile_vision_bundle(paths);
+    }
+    // Give the desktop-owned settings sections (视觉模型 / 会话管理) their
+    // dedicated nav glyphs in the served settings-shell bundle.
+    patch_settings_nav_icons(paths);
+}
+
+/// Settings-shell nav-icon patch for the desktop-owned settings sections
+/// (视觉模型 `vision-any`, 会话管理 `session-manager`). The shell hard-codes
+/// nav glyphs per section id and falls back to the settings gear for unknown
+/// ids; this inserts dedicated branches into its served client bundle — a
+/// hand-drawn eye for the vision section and the list-pen glyph (already
+/// exported by dsh-client-ui-primitives) for the session manager.
+///
+/// Idempotent (marker-checked). When the upstream bundle no longer contains
+/// the anchor — a future dsh build reworked `navIcon` — the patch logs and
+/// skips, and the sections simply keep the gear fallback.
+fn patch_settings_nav_icons(paths: &Paths) {
+    let bundle = SETTINGS_SHELL_BUNDLE
+        .iter()
+        .fold(paths.runtime_dir.clone(), |p, part| p.join(part));
+    let raw = match fs::read_to_string(&bundle) {
+        Ok(raw) => raw,
+        Err(e) => {
+            log_line(
+                &paths.log_file,
+                &format!("settings shell bundle unreadable; nav icons unpatched: {e}"),
+            );
+            return;
+        }
+    };
+    if raw.contains(SETTINGS_NAV_ICONS_MARKER) {
+        return; // already patched
+    }
+    if !raw.contains(SETTINGS_NAV_ICONS_ANCHOR) {
+        log_line(
+            &paths.log_file,
+            "settings shell navIcon anchor not found; nav icons unpatched (upstream bundle changed?)",
+        );
+        return;
+    }
+    let patched = raw.replacen(
+        SETTINGS_NAV_ICONS_ANCHOR,
+        &format!("{SETTINGS_NAV_ICONS_INSERT}{SETTINGS_NAV_ICONS_ANCHOR}"),
+        1,
+    );
+    write_if_different(&bundle, &patched);
+    log_line(
+        &paths.log_file,
+        "settings shell nav icons patched (vision eye + session list)",
+    );
+}
+
+/// Mount the bundled vision plugin into the web profile by appending its name
+/// to `dsh.profile.bundles` — the exact contract `dsh plugin --profile web add`
+/// uses, minus pnpm (the package is deployed by `ensure_runtime_files`).
+/// A fresh `$DSH_HOME` gets a template-equivalent web profile with the vision
+/// bundle pre-listed; an existing profile keeps its own bundle order and gets
+/// the entry appended only when absent. Never clobbers anything else, and
+/// treats an unreadable/invalid manifest as a skip (log, not crash).
+fn ensure_web_profile_vision_bundle(paths: &Paths) {
+    let web_dir = paths.dsh_home.join("profiles").join("web");
+    let manifest_path = web_dir.join("package.json");
+    let _ = fs::create_dir_all(&web_dir);
+
+    if !manifest_path.exists() {
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {},
+            "dsh": {
+                "profile": {
+                    "bundles": [WEB_TEMPLATE_BUNDLES[0], WEB_TEMPLATE_BUNDLES[1], VISION_PLUGIN],
+                },
+            },
+        });
+        let _ = fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap_or_default() + "\n",
+        );
+        // Match `dsh plugin` init so a later pnpm-managed install works; only
+        // create, never overwrite files the user may have made.
+        for (file, content) in [
+            ("pnpm-workspace.yaml", PROFILE_PNPM_WORKSPACE),
+            ("cordis.patch.yml", PROFILE_PATCH_TEMPLATE),
+        ] {
+            let path = web_dir.join(file);
+            if !path.exists() {
+                let _ = fs::write(path, content);
+            }
+        }
+        log_line(
+            &paths.log_file,
+            "web profile initialized with bundled dsh-vision-any",
+        );
+        return;
+    }
+
+    let raw = match fs::read_to_string(&manifest_path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            log_line(
+                &paths.log_file,
+                &format!("web profile manifest unreadable; vision bundle not mounted: {e}"),
+            );
+            return;
+        }
+    };
+    let mut manifest = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            log_line(
+                &paths.log_file,
+                &format!("web profile manifest invalid; vision bundle not mounted: {e}"),
+            );
+            return;
+        }
+    };
+    if !append_vision_bundle(&mut manifest) {
+        return; // already mounted, or the manifest shape is not ours to touch
+    }
+    match fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap_or_default() + "\n",
+    ) {
+        Ok(()) => log_line(
+            &paths.log_file,
+            &format!("mounted bundled {VISION_PLUGIN} into the web profile"),
+        ),
+        Err(e) => log_line(
+            &paths.log_file,
+            &format!("failed to write web profile manifest: {e}"),
+        ),
+    }
+}
+
+/// Append `dsh-vision-any` to `dsh.profile.bundles`, creating the `dsh` /
+/// `profile` / `bundles` path when absent. Returns true when the manifest was
+/// mutated (and must be written back); false when already mounted or when the
+/// existing shape is not a plain object (left untouched).
+fn append_vision_bundle(manifest: &mut serde_json::Value) -> bool {
+    let Some(root) = manifest.as_object_mut() else {
+        return false;
+    };
+    let Some(dsh) = root
+        .entry("dsh")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return false;
+    };
+    let Some(profile) = dsh
+        .entry("profile")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return false;
+    };
+    let Some(bundles) = profile
+        .entry("bundles")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+    else {
+        return false;
+    };
+    if bundles.iter().any(|v| v.as_str() == Some(VISION_PLUGIN)) {
+        return false;
+    }
+    bundles.push(serde_json::json!(VISION_PLUGIN));
+    true
+}
+
+/// Recursive contents copy (files and directories; no metadata promises).
+fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            fs::create_dir_all(&to)?;
+            copy_dir_contents(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 /// Extract a .tar.gz archive into `dest`. `strip_first` drops the leading
 /// path component (npm tarballs root at `package/`); entries with a leading
-/// `./` are normalized first.
-fn extract_tarball(tgz: &Path, dest: &Path, strip_first: bool) -> Result<(), String> {
+/// `./` are normalized first. `on_entry` is invoked after every extracted
+/// entry with the running entry count (used for splash progress reporting).
+fn extract_tarball(
+    tgz: &Path,
+    dest: &Path,
+    strip_first: bool,
+    on_entry: &mut dyn FnMut(usize),
+) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("创建目录失败: {e}"))?;
     let file = fs::File::open(tgz).map_err(|e| format!("打开归档失败: {e}"))?;
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
+    let mut count = 0usize;
     for entry in archive.entries().map_err(|e| format!("解包失败: {e}"))? {
         let mut entry = entry.map_err(|e| format!("解包失败: {e}"))?;
         let archive_path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
@@ -300,13 +969,15 @@ fn extract_tarball(tgz: &Path, dest: &Path, strip_first: bool) -> Result<(), Str
         entry
             .unpack(&target)
             .map_err(|e| format!("解包 {:?} 失败: {e}", target))?;
+        count += 1;
+        on_entry(count);
     }
     Ok(())
 }
 
 /// First-run bootstrap: unpack `runtime/runtime-archive.tar.gz` into the
 /// runtime dir when the extracted tree is missing (fresh install).
-fn extract_runtime_archive(paths: &Paths) -> Result<(), String> {
+fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String> {
     if paths.node_exe.exists() && paths.dsh_bin.exists() {
         return Ok(());
     }
@@ -315,7 +986,28 @@ fn extract_runtime_archive(paths: &Paths) -> Result<(), String> {
         return Err(format!("运行时组件缺失: {}", archive.display()));
     }
     log_line(&paths.log_file, "extracting bundled runtime archive (first run) ...");
-    extract_tarball(&archive, &paths.runtime_dir, false)?;
+    // The archive is streamed (no upfront total), so report a smoothed
+    // entry-count progress: reaches ~95% around 24k files and caps at 99%
+    // until extraction completes.
+    let app2 = app.clone();
+    let mut last_emit = 0usize;
+    let mut on_entry = |count: usize| {
+        if count - last_emit < 100 {
+            return;
+        }
+        last_emit = count;
+        let percent = (1.0 - (-(count as f64) / 8000.0).exp()) * 99.0;
+        let _ = app2.emit_to(
+            "main",
+            "dsh-progress",
+            serde_json::json!({
+                "stage": "extract",
+                "percent": (percent as u32).min(99),
+                "detail": format!("已解压 {count} 个文件"),
+            }),
+        );
+    };
+    extract_tarball(&archive, &paths.runtime_dir, false, &mut on_entry)?;
     if !paths.node_exe.exists() || !paths.dsh_bin.exists() {
         return Err("运行时解压不完整".to_string());
     }
@@ -413,6 +1105,145 @@ fn effective_key(paths: &Paths, config: &AppConfig) -> Option<String> {
         }
     }
     keyring_get().or_else(|| config.api_key.clone())
+}
+
+/// Read one named entry from the credentials file (any name, not just the
+/// DeepSeek key). The launching environment wins, mirroring dsh's own
+/// credential layering (`KEY=… dsh` is read-only there).
+fn read_credential(paths: &Paths, name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            let cred_file = paths.dsh_home.join(".credentials.yaml");
+            let content = fs::read_to_string(&cred_file).ok()?;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some((k, v)) = trimmed.split_once(':') {
+                    if k.trim() == name {
+                        let v = v.trim().trim_matches('\'').trim_matches('"');
+                        if !v.is_empty() {
+                            return Some(v.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        })
+}
+
+/// Discover every LLM provider on this machine: the DSH built-in DeepSeek
+/// entry (its base URL comes from `llm-deepseek.baseURL` / `DEEPSEEK_BASE_URL`
+/// and defaults to api.deepseek.com) plus every provider declared under
+/// `llm-pi-ai.providers.<id>` in `$DSH_HOME/settings.yaml` (any wire API —
+/// the adapter matcher decides which balance endpoint family fits).
+fn llm_providers(paths: &Paths) -> Vec<LlmProvider> {
+    let settings_path = paths.dsh_home.join("settings.yaml");
+    let raw = fs::read_to_string(&settings_path).unwrap_or_default();
+    let env_base = std::env::var("DEEPSEEK_BASE_URL").ok().filter(|v| !v.is_empty());
+    llm_providers_from_yaml(&raw, env_base.as_deref())
+}
+
+fn llm_providers_from_yaml(raw: &str, env_base: Option<&str>) -> Vec<LlmProvider> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap_or(serde_yaml::Value::Null);
+    let mut out = Vec::new();
+
+    // 1. built-in DeepSeek (base URL overridable through dsh config/env)
+    let ds_base = doc
+        .get("llm-deepseek")
+        .and_then(|v| v.get("baseURL"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or(env_base)
+        .unwrap_or("https://api.deepseek.com");
+    out.push(LlmProvider {
+        id: "deepseek-official".to_string(),
+        display_name: "DeepSeek".to_string(),
+        base_url: ds_base.trim_end_matches('/').to_string(),
+        api: "deepseek".to_string(),
+        key_env: CREDENTIAL_NAME.to_string(),
+    });
+
+    // 2. pi-ai providers — every wire API participates; matching happens later
+    if let Some(providers) = doc
+        .get("llm-pi-ai")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.as_mapping())
+    {
+        for (id_value, cfg_value) in providers {
+            let Some(id) = id_value.as_str() else { continue };
+            let Some(cfg) = cfg_value.as_mapping() else { continue };
+            let Some(base_url) = cfg
+                .get("baseURL")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let Some(key_env) = cfg
+                .get("apiKeyEnv")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let api = cfg
+                .get("api")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let display_name = cfg
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id);
+            out.push(LlmProvider {
+                id: id.to_string(),
+                display_name: display_name.to_string(),
+                base_url: base_url.trim_end_matches('/').to_string(),
+                api: api.to_string(),
+                key_env: key_env.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Route a provider to a balance adapter from its wire-API hint and base URL
+/// host. Known protocols get a deterministic adapter; unknown combinations get
+/// `Probe` (try both endpoint families at fetch time).
+fn adapter_for(api: &str, base_url: &str) -> Adapter {
+    let api = api.to_ascii_lowercase();
+    let host = host_of(base_url).unwrap_or_default().to_ascii_lowercase();
+
+    if api.contains("deepseek") || host.contains("deepseek") {
+        return Adapter::DeepSeek;
+    }
+    if api.contains("openai") || host.contains("openai") {
+        return Adapter::OpenAIBilling;
+    }
+    // protocols without any key-accessible balance/billing endpoint
+    for marker in [
+        "anthropic",
+        "google",
+        "gemini",
+        "vertex",
+        "bedrock",
+        "mistral",
+        "azure",
+        "xai",
+        "grok",
+    ] {
+        if api.contains(marker) || host.contains(marker) {
+            return Adapter::Unsupported;
+        }
+    }
+    Adapter::Probe
+}
+
+fn host_of(base_url: &str) -> Option<&str> {
+    let rest = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))?;
+    Some(rest.split('/').next().unwrap_or(rest))
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +1421,32 @@ async fn health_check_loop(app: AppHandle) {
 
         if healthy {
             if !state.ui_ready.swap(true, Ordering::SeqCst) {
+                let _ = app.emit_to(
+                    "main",
+                    "dsh-progress",
+                    serde_json::json!({
+                        "stage": "ready",
+                        "percent": 100,
+                        "detail": "服务已就绪",
+                    }),
+                );
                 let _ = app.emit_to("main", "dsh-ready", url.clone());
+
+                // Fallback title bar injection: normally the initialization
+                // scripts mount everything on the dsh page; re-eval after
+                // navigation covers exotic cases where document-created
+                // injection failed.
+                let script = format!("{}\n{}", TITLEBAR_SCRIPT, THEME_TRANSITION_SCRIPT);
+                for delay in [3u64, 10] {
+                    let app3 = app.clone();
+                    let script3 = script.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        if let Some(w) = app3.get_webview_window("main") {
+                            let _ = w.eval(&script3);
+                        }
+                    });
+                }
             }
             let dsh_running = state.dsh.lock().unwrap().child.is_some();
             if !dsh_running && !state.adopted.load(Ordering::SeqCst) {
@@ -611,6 +1467,16 @@ async fn health_check_loop(app: AppHandle) {
                     "main",
                     "dsh-status",
                     format!("正在启动 DeepSeek Harness 服务…（{attempts}/90）"),
+                );
+                let percent = ((attempts as f64 / 90.0) * 99.0) as u32;
+                let _ = app.emit_to(
+                    "main",
+                    "dsh-progress",
+                    serde_json::json!({
+                        "stage": "boot",
+                        "percent": percent.min(99),
+                        "detail": format!("正在启动服务（{attempts}/90）"),
+                    }),
                 );
                 if attempts == 90 {
                     // show the error, but KEEP polling: an update rollback can
@@ -670,13 +1536,23 @@ async fn health_check_loop(app: AppHandle) {
 // balance
 // ---------------------------------------------------------------------------
 
+const DEFAULT_DEEPSEEK_BASE: &str = "https://api.deepseek.com";
+
+/// Validate/query the DeepSeek key against the official endpoint (used by the
+/// settings window's key registration).
 async fn fetch_balance(key: &str) -> Result<Balance, String> {
+    fetch_deepseek_balance(DEFAULT_DEEPSEEK_BASE, key).await
+}
+
+/// GET {base}/user/balance with the DeepSeek response schema — works for
+/// api.deepseek.com and DeepSeek-compatible relays.
+async fn fetch_deepseek_balance(base: &str, key: &str) -> Result<Balance, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
     let resp = client
-        .get(BALANCE_URL)
+        .get(format!("{base}/user/balance"))
         .header("Authorization", format!("Bearer {key}"))
         .header("Accept", "application/json")
         .send()
@@ -692,6 +1568,217 @@ async fn fetch_balance(key: &str) -> Result<Balance, String> {
     }
 }
 
+#[derive(Deserialize)]
+struct BillingUsageResp {
+    total_usage: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct BillingSubscriptionResp {
+    has_payment_method: Option<bool>,
+    soft_limit_usd: Option<f64>,
+    hard_limit_usd: Option<f64>,
+}
+
+/// Query an OpenAI-compatible gateway's dashboard billing endpoints. The
+/// subscription call is best-effort: a gateway may serve usage without it.
+async fn fetch_openai_usage(base: &str, key: &str) -> Result<ProviderUsage, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
+    let usage_url = format!("{base}/dashboard/billing/usage");
+    let usage_resp = client
+        .get(&usage_url)
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    let usage = match usage_resp.status().as_u16() {
+        200 => usage_resp
+            .json::<BillingUsageResp>()
+            .await
+            .map_err(|e| format!("解析消费响应失败: {e}"))?,
+        401 | 403 => return Err("API Key 无效（鉴权失败），请检查 Key".to_string()),
+        other => return Err(format!("消费接口返回状态码 {other}")),
+    };
+    // subscription limits are optional — missing them is not an error
+    let sub = match client
+        .get(format!("{base}/dashboard/billing/subscription"))
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(r) => r.json::<BillingSubscriptionResp>().await.ok(),
+        Err(_) => None,
+    };
+    Ok(ProviderUsage {
+        total_usage_usd: usage.total_usage,
+        soft_limit_usd: sub.as_ref().and_then(|s| s.soft_limit_usd),
+        hard_limit_usd: sub.as_ref().and_then(|s| s.hard_limit_usd),
+        has_payment_method: sub.as_ref().and_then(|s| s.has_payment_method),
+    })
+}
+
+const UNSUPPORTED_NOTE: &str = "该平台未提供可通过 API Key 查询的余额/账单接口";
+
+fn adapter_key(adapter: Adapter) -> &'static str {
+    match adapter {
+        Adapter::DeepSeek => "deepseek",
+        Adapter::OpenAIBilling => "openai",
+        Adapter::Unsupported | Adapter::Probe => "unsupported",
+    }
+}
+
+fn adapter_from_cache(cached: Option<&str>) -> Option<Adapter> {
+    match cached {
+        Some("deepseek") => Some(Adapter::DeepSeek),
+        Some("openai") => Some(Adapter::OpenAIBilling),
+        Some(_) => Some(Adapter::Unsupported),
+        None => None,
+    }
+}
+
+/// Run one adapter against a provider. `Probe` tries the OpenAI-style billing
+/// endpoints first (the common gateway case), then the DeepSeek-style balance
+/// endpoint, and reports the platform as unsupported when neither answers.
+async fn attempt_adapter(
+    adapter: Adapter,
+    base: &str,
+    key: &str,
+) -> Result<(String, Option<Balance>, Option<ProviderUsage>), String> {
+    match adapter {
+        Adapter::DeepSeek => fetch_deepseek_balance(base, key)
+            .await
+            .map(|b| ("deepseek".to_string(), Some(b), None)),
+        Adapter::OpenAIBilling => fetch_openai_usage(base, key)
+            .await
+            .map(|u| ("openai".to_string(), None, Some(u))),
+        Adapter::Unsupported => Err(UNSUPPORTED_NOTE.to_string()),
+        Adapter::Probe => match fetch_openai_usage(base, key).await {
+            Ok(u) => Ok(("openai".to_string(), None, Some(u))),
+            Err(openai_err) => match fetch_deepseek_balance(base, key).await {
+                Ok(b) => Ok(("deepseek".to_string(), Some(b), None)),
+                Err(deepseek_err) => Err(format!(
+                    "{UNSUPPORTED_NOTE}（openai 风格失败: {openai_err}；deepseek 风格失败: {deepseek_err}）"
+                )),
+            },
+        },
+    }
+}
+
+async fn fetch_one_provider(
+    provider: LlmProvider,
+    key: Option<String>,
+    cached: Option<String>,
+) -> (String, ProviderStatus) {
+    let base_kind = if provider.api.to_ascii_lowercase().contains("deepseek") {
+        "balance"
+    } else {
+        "usage"
+    };
+    let unconfigured = ProviderStatus {
+        id: provider.id.clone(),
+        display_name: provider.display_name.clone(),
+        kind: base_kind.to_string(),
+        configured: false,
+        balance: None,
+        usage: None,
+        error: None,
+    };
+    let Some(key) = key else {
+        return (String::new(), unconfigured);
+    };
+
+    let explicit = adapter_for(&provider.api, &provider.base_url);
+    let from_cache = adapter_from_cache(cached.as_deref());
+    let mut resolved = from_cache.unwrap_or(explicit);
+    let mut attempt = attempt_adapter(resolved, &provider.base_url, &key).await;
+    // a cached route that stopped answering: retry once with the fresh match
+    if attempt.is_err() && from_cache.is_some() && explicit != resolved {
+        resolved = explicit;
+        attempt = attempt_adapter(resolved, &provider.base_url, &key).await;
+    }
+
+    let (key2, balance, usage, error) = match attempt {
+        Ok((k, b, u)) => (k, b, u, None),
+        Err(e) => (adapter_key(resolved).to_string(), None, None, Some(e)),
+    };
+    let kind = if balance.is_some() {
+        "balance"
+    } else if usage.is_some() {
+        "usage"
+    } else if key2 == "unsupported" {
+        "unsupported"
+    } else {
+        base_kind
+    };
+    (
+        key2,
+        ProviderStatus {
+            id: provider.id,
+            display_name: provider.display_name,
+            kind: kind.to_string(),
+            configured: true,
+            balance,
+            usage,
+            error,
+        },
+    )
+}
+
+/// Query every discovered LLM platform. Providers are routed to a balance
+/// adapter from their wire API + base URL (with a probe fallback for unknown
+/// combinations); all are queried concurrently and one failing platform only
+/// fails its own status entry. Successful adapter routes are cached per
+/// provider id so probing doesn't repeat every refresh cycle.
+async fn fetch_provider_statuses(
+    paths: &Paths,
+    config: &AppConfig,
+    adapters: &Mutex<HashMap<String, String>>,
+) -> Vec<ProviderStatus> {
+    let providers = llm_providers(paths);
+    let mut handles = Vec::with_capacity(providers.len());
+    for provider in providers {
+        let key = if provider.id == "deepseek-official" {
+            effective_key(paths, config)
+        } else {
+            read_credential(paths, &provider.key_env)
+        };
+        let cached = adapters.lock().unwrap().get(&provider.id).cloned();
+        handles.push(tauri::async_runtime::spawn(fetch_one_provider(
+            provider, key, cached,
+        )));
+    }
+
+    let mut statuses = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match handle.await {
+            Ok((adapter_key2, status)) => {
+                if !adapter_key2.is_empty() {
+                    adapters
+                        .lock()
+                        .unwrap()
+                        .insert(status.id.clone(), adapter_key2);
+                }
+                statuses.push(status);
+            }
+            Err(e) => statuses.push(ProviderStatus {
+                id: "unknown".to_string(),
+                display_name: "未知平台".to_string(),
+                kind: "usage".to_string(),
+                configured: false,
+                balance: None,
+                usage: None,
+                error: Some(format!("后台任务失败: {e}")),
+            }),
+        }
+    }
+    statuses
+}
+
 async fn refresh_balance(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -705,43 +1792,50 @@ async fn refresh_balance(
         }
         *last = Some(Instant::now());
     }
-    let key = {
+    let (config, paths) = {
         let config = state.config.lock().unwrap().clone();
         let paths = resolve_paths(app, &config);
-        effective_key(&paths, &config)
+        (config, paths)
     };
-    match key {
-        None => {
-            let _ = state.balance.lock().unwrap().take();
-            update_tray(app, state);
-            Ok(None)
+    let statuses = fetch_provider_statuses(&paths, &config, &state.adapters).await;
+    *state.providers.lock().unwrap() = Some(statuses.clone());
+
+    let ds = statuses.iter().find(|s| s.id == "deepseek-official");
+    let ds_configured = ds.map(|s| s.configured).unwrap_or(false);
+    let ds_error = ds.and_then(|s| s.error.clone());
+    let balance = ds.and_then(|s| s.balance.clone());
+    *state.balance.lock().unwrap() = balance.clone();
+    update_tray(app, state);
+
+    match (ds_configured, balance, ds_error) {
+        (true, Some(bal), _) => {
+            let low = balance_is_low(
+                &Some(bal.clone()),
+                state.config.lock().unwrap().balance_low_threshold,
+            );
+            let _ = app.emit(
+                "balance-updated",
+                serde_json::json!({
+                    "balance": bal,
+                    "low": low,
+                    "at": chrono::Local::now().format("%H:%M:%S").to_string()
+                }),
+            );
+            Ok(Some(bal))
         }
-        Some(key) => match fetch_balance(&key).await {
-            Ok(bal) => {
-                *state.balance.lock().unwrap() = Some(bal.clone());
-                update_tray(app, state);
-                let low = balance_is_low(
-                    &Some(bal.clone()),
-                    state.config.lock().unwrap().balance_low_threshold,
-                );
-                let _ = app.emit(
-                    "balance-updated",
-                    serde_json::json!({
-                        "balance": bal,
-                        "low": low,
-                        "at": chrono::Local::now().format("%H:%M:%S").to_string()
-                    }),
-                );
-                Ok(Some(bal))
-            }
-            Err(e) => Err(e),
-        },
+        (true, None, Some(e)) => Err(e),
+        (true, None, None) => Ok(None),
+        (false, _, _) => Ok(None),
     }
 }
 
 async fn periodic_loop(app: AppHandle) {
+    let mut first_pass = true;
     loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        // the first pass runs after 10s (a quick second chance if the initial
+        // boot refresh hit a transient network error), then the normal 60s cadence
+        tokio::time::sleep(Duration::from_secs(if first_pass { 10 } else { 60 })).await;
+        first_pass = false;
         let state = app.state::<AppState>();
 
         // refresh bridge reachability (cheap local ping)
@@ -816,6 +1910,15 @@ async fn periodic_loop(app: AppHandle) {
 // bridge listener (shell side): dsh's bridge plugin POSTs /turn-end here
 // ---------------------------------------------------------------------------
 
+fn json_response(status: u16, body: serde_json::Value) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+    tiny_http::Response::from_data(bytes)
+        .with_status_code(status)
+        .with_header(
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
+        )
+}
+
 fn start_bridge_listener(app: AppHandle, port: u16) {
     thread::spawn(move || {
         let server = match tiny_http::Server::http(("127.0.0.1", port)) {
@@ -830,33 +1933,198 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                 return;
             }
         };
-        let state = app.state::<AppState>();
         let paths = {
-            let config = state.config.lock().unwrap().clone();
+            let config = app.state::<AppState>().config.lock().unwrap().clone();
             resolve_paths(&app, &config)
         };
         log_line(&paths.log_file, &format!("bridge listener on 127.0.0.1:{port}"));
+        // handle each request on its own thread: /refresh can block up to the
+        // balance-fetch timeout and must never queue /balance or /turn-end
+        // behind it (the in-app widget's /desktop proxy has a 3s deadline).
         loop {
-            match server.recv() {
-                Ok(mut req) => {
-                    let url = req.url().to_string();
-                    let method = req.method().clone();
-                    let mut body = String::new();
-                    let _ = req.as_reader().read_to_string(&mut body);
-                    let _ = req.respond(tiny_http::Response::from_string("ok").with_status_code(200));
-                    if url == "/turn-end" && method == tiny_http::Method::Post {
-                        let app2 = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let state2 = app2.state::<AppState>();
-                            let _ = refresh_balance(&app2, &state2).await;
-                        });
-                    }
-                }
+            let mut req = match server.recv() {
+                Ok(req) => req,
                 Err(e) => {
                     log_line(&paths.log_file, &format!("bridge listener error: {e}"));
                     break;
                 }
-            }
+            };
+            let app2 = app.clone();
+            thread::spawn(move || {
+                let url = req.url().to_string();
+                let method = req.method().clone();
+                let path = url.split('?').next().unwrap_or("").to_string();
+                match (method.as_str(), path.as_str()) {
+                    ("POST", "/turn-end") => {
+                        let _ = req.respond(tiny_http::Response::from_string("ok").with_status_code(200));
+                        let app3 = app2.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state2 = app3.state::<AppState>();
+                            let _ = refresh_balance(&app3, &state2).await;
+                        });
+                    }
+                    ("GET", "/balance") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        let configured = effective_key(&paths2, &config).is_some()
+                            || state2
+                                .providers
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .is_some_and(|p| p.iter().any(|s| s.configured));
+                        let balance = state2.balance.lock().unwrap().clone();
+                        let providers = state2.providers.lock().unwrap().clone();
+                        let low = balance_is_low(&balance, config.balance_low_threshold);
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "configured": configured,
+                                "registeredAt": config.key_registered_at,
+                                "balance": balance,
+                                "providers": providers,
+                                "low": low,
+                            }),
+                        ));
+                    }
+                    ("GET", "/refresh") => {
+                        let app3 = app2.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        tauri::async_runtime::spawn(async move {
+                            let state2 = app3.state::<AppState>();
+                            let result = refresh_balance(&app3, &state2).await;
+                            let _ = tx.send(result);
+                        });
+                        let state2 = app2.state::<AppState>();
+                        match rx.recv_timeout(Duration::from_secs(12)) {
+                            Ok(result) => match result {
+                                Ok(balance) => {
+                                    let config = state2.config.lock().unwrap().clone();
+                                    let paths2 = resolve_paths(&app2, &config);
+                                    let configured = effective_key(&paths2, &config).is_some();
+                                    let low = balance_is_low(&balance, config.balance_low_threshold);
+                                    let _ = req.respond(json_response(
+                                        200,
+                                        serde_json::json!({
+                                            "ok": true,
+                                            "configured": configured,
+                                            "registeredAt": config.key_registered_at,
+                                            "balance": balance,
+                                            "low": low,
+                                        }),
+                                    ));
+                                }
+                                Err(e) => {
+                                    let _ = req.respond(json_response(
+                                        502,
+                                        serde_json::json!({ "ok": false, "error": e }),
+                                    ));
+                                }
+                            },
+                            Err(_) => {
+                                let _ = req.respond(json_response(
+                                    504,
+                                    serde_json::json!({ "ok": false, "error": "余额刷新超时" }),
+                                ));
+                            }
+                        }
+                    }
+                    ("GET", "/about") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        let dsh_version = fs::read_to_string(paths2.runtime_dir.join("version.json"))
+                            .ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| {
+                                v.get("dsh").and_then(|v| v.as_str()).map(String::from)
+                            });
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "appName": "DSH Desktop",
+                                "appVersion": env!("CARGO_PKG_VERSION"),
+                                "dshVersion": dsh_version,
+                                "author": "Anixuil",
+                                "blog": "https://www.anixuil.top",
+                                "repo": "https://github.com/Anixuil/dsh-desktop",
+                            }),
+                        ));
+                    }
+                    ("GET", "/update-status") => {
+                        let app3 = app2.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        tauri::async_runtime::spawn(async move {
+                            let state2 = app3.state::<AppState>();
+                            let config = state2.config.lock().unwrap().clone();
+                            let paths2 = resolve_paths(&app3, &config);
+                            let result = match reqwest::Client::builder()
+                                .timeout(Duration::from_secs(15))
+                                .build()
+                            {
+                                Ok(client) => {
+                                    fetch_update_status(&client, &paths2, &config).await
+                                }
+                                Err(e) => Err(format!("HTTP 客户端失败: {e}")),
+                            };
+                            let _ = tx.send(result);
+                        });
+                        match rx.recv_timeout(Duration::from_secs(20)) {
+                            Ok(Ok(status)) => {
+                                let mut payload = serde_json::to_value(&status)
+                                    .unwrap_or(serde_json::json!({}));
+                                payload["ok"] = serde_json::json!(true);
+                                let _ = req.respond(json_response(200, payload));
+                            }
+                            Ok(Err(e)) => {
+                                let _ = req.respond(json_response(
+                                    502,
+                                    serde_json::json!({ "ok": false, "error": e }),
+                                ));
+                            }
+                            Err(_) => {
+                                let _ = req.respond(json_response(
+                                    504,
+                                    serde_json::json!({ "ok": false, "error": "检查更新超时" }),
+                                ));
+                            }
+                        }
+                    }
+                    ("POST", "/open-external") => {
+                        let mut body = Vec::new();
+                        let _ = req.as_reader().read_to_end(&mut body);
+                        let url = serde_json::from_slice::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("url").and_then(|u| u.as_str()).map(String::from)
+                            })
+                            .unwrap_or_default();
+                        match open_external_impl(&url) {
+                            Ok(()) => {
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({ "ok": true }),
+                                ));
+                            }
+                            Err(e) => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": e }),
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = req.respond(json_response(
+                            404,
+                            serde_json::json!({ "ok": false, "error": "not found" }),
+                        ));
+                    }
+                }
+            });
         }
     });
 }
@@ -921,6 +2189,7 @@ async fn set_api_key(
 
     if key.is_empty() {
         config.api_key = None;
+        config.key_registered_at = None;
         let _ = keyring_set(None);
         save_config(&paths.config_file, &config);
         *state.config.lock().unwrap() = config.clone();
@@ -947,6 +2216,8 @@ async fn set_api_key(
     // primary storage: Windows Credential Manager; config.json only as fallback
     let vault_ok = keyring_set(Some(&key));
     config.api_key = if vault_ok { None } else { Some(key.clone()) };
+    // each successful registration restarts the in-app consumption window
+    config.key_registered_at = Some(chrono::Utc::now().timestamp_millis());
     save_config(&paths.config_file, &config);
     *state.config.lock().unwrap() = config.clone();
     // deliver to DSH: credentials file (works always) + bridge service (live event)
@@ -962,6 +2233,9 @@ async fn set_api_key(
         .await;
 
     *state.balance.lock().unwrap() = Some(balance.clone());
+    // refresh the full multi-provider snapshot too (the registered key is new)
+    let statuses = fetch_provider_statuses(&paths, &config, &state.adapters).await;
+    *state.providers.lock().unwrap() = Some(statuses);
     update_tray(&app, &state);
     let low = balance_is_low(&Some(balance.clone()), config.balance_low_threshold);
     let _ = app.emit(
@@ -1002,6 +2276,30 @@ fn open_dsh_home(app: AppHandle, state: State<'_, AppState>) -> Result<(), Strin
     Ok(())
 }
 
+/// Open an http(s) URL in the system default browser. The scheme whitelist
+/// is the whole safety boundary: nothing else ever reaches explorer.exe.
+fn open_external_impl(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("仅支持打开 http/https 链接".to_string());
+    }
+    // explorer.exe doubles as a ShellExecute delegate: http(s) URLs are
+    // handed to the default browser, and the argument passes through
+    // CreateProcess directly (no `cmd /C start` metacharacter parsing).
+    let _ = Command::new("explorer")
+        .arg(url)
+        .spawn()
+        .map_err(|e| format!("打开链接失败: {e}"))?;
+    Ok(())
+}
+
+/// Tauri command (settings window) — the in-app About section reaches the
+/// same helper through the bridge listener's POST /open-external route.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    open_external_impl(&url)
+}
+
 #[tauri::command]
 fn open_settings_window(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("settings") {
@@ -1011,7 +2309,7 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
     }
     let w = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DSH Desktop 设置")
-        .inner_size(560.0, 680.0)
+        .inner_size(560.0, 780.0)
         .min_inner_size(480.0, 560.0)
         .data_directory(webview_data_dir(&app))
         .initialization_script(INIT_SCRIPT)
@@ -1076,7 +2374,8 @@ async fn fetch_update_status(
         .update_repo
         .clone()
         .or_else(|| std::env::var("DSH_DESKTOP_UPDATE_REPO").ok())
-        .filter(|r| !r.trim().is_empty());
+        .filter(|r| !r.trim().is_empty())
+        .or_else(|| Some(DEFAULT_UPDATE_REPO.to_string()));
     let mut app_latest = None;
     let mut app_url = None;
     let mut app_asset = None;
@@ -1180,15 +2479,37 @@ fn apply_dsh_tarball_bytes(runtime: &Path, bytes: &[u8], log: &Path) -> Result<S
 
     // extract (npm tarball root is `package/`, stripped)
     let dsh_new = stage.join("dsh-new");
-    extract_tarball(&tgz_path, &dsh_new, true)?;
+    let mut no_progress = |_count: usize| {};
+    extract_tarball(&tgz_path, &dsh_new, true, &mut no_progress)?;
 
-    // restore the bridge package into the new tree
-    let bridge_src = runtime.join("bridge-src");
-    if bridge_src.exists() {
+    // restore the desktop plugin packages (and the bundled vision plugin)
+    // into the new tree
+    let plugins_src = runtime.join("plugins-src");
+    if plugins_src.exists() {
+        for name in DESKTOP_PLUGINS
+            .iter()
+            .copied()
+            .chain(std::iter::once(VISION_PLUGIN))
+        {
+            let src = plugins_src.join(name);
+            if !src.exists() {
+                continue;
+            }
+            let dst = dsh_new.join("node_modules").join(name);
+            fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+            copy_dir_contents(&src, &dst).map_err(|e| format!("恢复桌面插件 {name} 失败: {e}"))?;
+        }
+    } else if runtime.join("bridge-src").exists() {
+        // pre-plugins-src installs keep the legacy canonical dir: restore the
+        // bridge from it so a dsh update never strips the shell bridge.
         let bdst = dsh_new.join("node_modules").join("dsh-desktop-bridge");
         fs::create_dir_all(&bdst).map_err(|e| e.to_string())?;
-        for f in ["package.json", "index.js"] {
-            fs::copy(bridge_src.join(f), bdst.join(f))
+        for f in ["package.json", "index.js", "client.js"] {
+            let from = runtime.join("bridge-src").join(f);
+            if !from.exists() {
+                continue;
+            }
+            fs::copy(&from, bdst.join(f))
                 .map_err(|e| format!("恢复桥接插件失败: {e}"))?;
         }
     }
@@ -1601,6 +2922,8 @@ pub fn run() {
             bridge_ok: AtomicBool::new(false),
             runtime_ready: AtomicBool::new(false),
             balance: Mutex::new(None),
+            providers: Mutex::new(None),
+            adapters: Mutex::new(HashMap::new()),
             config: Mutex::new(AppConfig::default()),
             last_refresh: Mutex::new(None),
             last_update_check: Mutex::new(None),
@@ -1612,6 +2935,7 @@ pub fn run() {
             refresh_balance_cmd,
             open_logs,
             open_dsh_home,
+            open_external,
             open_settings_window,
             check_update,
             apply_dsh_update,
@@ -1636,16 +2960,55 @@ pub fn run() {
             let paths = resolve_paths(&handle, &config);
             log_line(&paths.log_file, "DSH Desktop starting");
 
-            // main window: splash first, navigates to the dsh web UI when healthy
+            // main window: splash first, navigates to the dsh web UI when healthy.
+            // Frameless (custom title bar) + shadow for the Win11 rounded corners.
             let w = WebviewWindowBuilder::new(&handle, "main", WebviewUrl::App("index.html".into()))
                 .title("DeepSeek Harness")
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 640.0)
+                .decorations(false)
+                .shadow(true)
                 .data_directory(webview_data_dir(&handle))
                 .initialization_script(INIT_SCRIPT)
+                .initialization_script(TITLEBAR_SCRIPT)
+                .initialization_script(THEME_TRANSITION_SCRIPT)
                 .build()
                 .map_err(|e| format!("创建主窗口失败: {e}"))?;
             let _ = w.set_focus();
+
+            // tauri-runtime-wry swallows webview creation errors (e.g. WebView2
+            // ERROR_BUSY right after a previous instance exited), which would
+            // leave the app running as a windowless tray zombie. Detect it and
+            // refuse to start instead.
+            if w.hwnd().is_err() {
+                log_line(
+                    &paths.log_file,
+                    "main window webview creation failed (WebView2 busy?) — exiting",
+                );
+                handle.exit(1);
+                return Ok(());
+            }
+
+            // Diagnostics: the injected title bar reports its own state so
+            // silent failures inside the remote dsh page stay visible.
+            {
+                let log_file = paths.log_file.clone();
+                let _ = handle.listen("dsh-titlebar-state", move |event| {
+                    let (state, detail) = serde_json::from_str::<serde_json::Value>(event.payload())
+                        .ok()
+                        .and_then(|p| {
+                            Some((
+                                p.get("state")?.as_str()?.to_string(),
+                                p.get("detail")?.as_str()?.to_string(),
+                            ))
+                        })
+                        .unwrap_or_default();
+                    log_line(
+                        &log_file,
+                        &format!("titlebar state: {state} {detail}").trim_end(),
+                    );
+                });
+            }
 
             // bootstrap runtime + spawn dsh in the background so the splash
             // can show first-run extraction progress instead of blocking setup.
@@ -1657,10 +3020,19 @@ pub fn run() {
                 if !paths.node_exe.exists() || !paths.dsh_bin.exists() {
                     let _ = app2.emit_to(
                         "main",
+                        "dsh-progress",
+                        serde_json::json!({
+                            "stage": "extract",
+                            "percent": 0,
+                            "detail": "准备解压运行时组件",
+                        }),
+                    );
+                    let _ = app2.emit_to(
+                        "main",
                         "dsh-status",
                         "首次运行：正在解压运行时组件，请稍候…".to_string(),
                     );
-                    match extract_runtime_archive(&paths) {
+                    match extract_runtime_archive(&app2, &paths) {
                         Ok(()) => {}
                         Err(e) => {
                             log_line(&paths.log_file, &format!("runtime extraction failed: {e}"));
@@ -1669,9 +3041,27 @@ pub fn run() {
                             return;
                         }
                     }
+                    let _ = app2.emit_to(
+                        "main",
+                        "dsh-progress",
+                        serde_json::json!({
+                            "stage": "extract",
+                            "percent": 100,
+                            "detail": "运行时组件解压完成",
+                        }),
+                    );
                 }
                 state.runtime_ready.store(true, Ordering::SeqCst);
                 ensure_runtime_files(&paths);
+                let _ = app2.emit_to(
+                    "main",
+                    "dsh-progress",
+                    serde_json::json!({
+                        "stage": "boot",
+                        "percent": 0,
+                        "detail": "正在启动 DeepSeek Harness 服务",
+                    }),
+                );
                 let mut dsh = state.dsh.lock().unwrap();
                 match spawn_dsh(&paths, &boot_cfg) {
                     Ok(child) => dsh.child = Some(child),
@@ -1695,10 +3085,11 @@ pub fn run() {
 
             setup_tray(&handle)?;
 
-            // initial balance after a moment
+            // initial balance right after boot (the health of the dsh child is
+            // irrelevant — balance comes from the platforms' own APIs)
             let app2 = handle.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 let state = app2.state::<AppState>();
                 let _ = refresh_balance(&app2, &state).await;
             });
@@ -1767,10 +3158,15 @@ mod tests {
         )
         .unwrap();
         fs::write(dsh.join("lib/bin.js"), "// old runtime marker").unwrap();
-        let bridge = dir.join("bridge-src");
-        fs::create_dir_all(&bridge).unwrap();
-        fs::write(bridge.join("package.json"), r#"{"name":"bridge"}"#).unwrap();
-        fs::write(bridge.join("index.js"), "// bridge marker").unwrap();
+        let plugins = dir.join("plugins-src");
+        for name in ["dsh-desktop-bridge", "dsh-desktop-session-manager"] {
+            let pkg = plugins.join(name);
+            fs::create_dir_all(pkg.join("lib")).unwrap();
+            fs::write(pkg.join("package.json"), format!(r#"{{"name":"{name}"}}"#)).unwrap();
+            fs::write(pkg.join("index.js"), format!("// {name} marker")).unwrap();
+            fs::write(pkg.join("client.js"), format!("// {name} client marker")).unwrap();
+            fs::write(pkg.join("lib/mod.js"), format!("// {name} lib marker")).unwrap();
+        }
         fs::write(
             dir.join("version.json"),
             format!(r#"{{"node":"v24.15.0","dsh":"{old_version}"}}"#),
@@ -1800,8 +3196,14 @@ mod tests {
             fs::read_to_string(root.join("dsh/node_modules/@deepseek-ai/dsh/package.json"))
                 .unwrap();
         assert!(manifest.contains("0.9.9"));
-        // bridge restored into the new tree
+        // every desktop plugin restored into the new tree, lib/ files included
         assert!(root.join("dsh/node_modules/dsh-desktop-bridge/index.js").exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-session-manager/index.js")
+            .exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-session-manager/lib/mod.js")
+            .exists());
         // version.json bumped
         let vjson = fs::read_to_string(root.join("version.json")).unwrap();
         assert!(vjson.contains("0.9.9"));
@@ -1826,8 +3228,290 @@ mod tests {
     }
 
     #[test]
-    fn update_state_survives_and_clears() {
-        let root = std::env::temp_dir().join(format!("dsh-upd-test-{}-d", std::process::id()));
+    fn update_restores_legacy_bridge_src() {
+        // Installs created before the plugins-src generalization keep the
+        // legacy runtime/bridge-src canonical dir; a dsh update must still
+        // restore the bridge package from it.
+        let root = std::env::temp_dir().join(format!("dsh-upd-test-{}-legacy", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        make_runtime(&root, "0.1.0-rc.5");
+        // simulate the pre-plugins-src layout
+        fs::remove_dir_all(root.join("plugins-src")).unwrap();
+        let bridge = root.join("bridge-src");
+        fs::create_dir_all(&bridge).unwrap();
+        fs::write(bridge.join("package.json"), r#"{"name":"dsh-desktop-bridge"}"#).unwrap();
+        fs::write(bridge.join("index.js"), "// bridge marker").unwrap();
+        fs::write(bridge.join("client.js"), "// bridge client marker").unwrap();
+
+        let tarball = make_tarball(&[(
+            "package/node_modules/@deepseek-ai/dsh/package.json",
+            r#"{"version":"0.9.9"}"#,
+        )]);
+        let result = apply_dsh_tarball_bytes(&root, &tarball, &root.join("test.log"));
+        assert!(result.is_ok(), "update failed: {result:?}");
+        assert!(root.join("dsh/node_modules/dsh-desktop-bridge/index.js").exists());
+        assert!(root.join("dsh/node_modules/dsh-desktop-bridge/client.js").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn patch_overlay_fills_home_layer_gap() {
+        let root = std::env::temp_dir().join(format!("dsh-patch-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // no home layer -> full rows
+        let full = desktop_patch_overlay(&root);
+        for name in DESKTOP_PLUGINS {
+            assert!(full.contains(&format!("id: {name}")), "full overlay missing {name}");
+        }
+
+        // home layer mounts both -> empty insert (no duplicate loader ids)
+        fs::write(
+            root.join("cordis.patch.yml"),
+            format!("- insert:\n    - id: {}\n    - id: {}\n", DESKTOP_PLUGINS[0], DESKTOP_PLUGINS[1]),
+        )
+        .unwrap();
+        let empty = desktop_patch_overlay(&root);
+        assert!(empty.contains("- insert: []"), "expected empty insert, got: {empty}");
+        assert!(!empty.contains(&format!("id: {}", DESKTOP_PLUGINS[0])));
+
+        // home layer mounts only the bridge -> overlay fills the gap with full rows
+        fs::write(
+            root.join("cordis.patch.yml"),
+            format!("- insert:\n    - id: {}\n", DESKTOP_PLUGINS[0]),
+        )
+        .unwrap();
+        let gap = desktop_patch_overlay(&root);
+        for name in DESKTOP_PLUGINS {
+            assert!(gap.contains(&format!("id: {name}")), "gap overlay missing {name}");
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn patch_file_content_syncs() {
+        let root = std::env::temp_dir().join(format!("dsh-patch-test-{}-sync", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("dsh-bridge.patch.yml");
+
+        // missing -> written
+        write_if_different(&target, "first\n");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "first\n");
+        let first_modified = fs::metadata(&target).unwrap().modified().unwrap();
+
+        // identical -> skipped (mtime untouched)
+        write_if_different(&target, "first\n");
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), first_modified);
+
+        // different -> overwritten
+        write_if_different(&target, "second\n");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "second\n");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn test_paths(root: &Path) -> Paths {
+        Paths {
+            config_file: root.join("config.json"),
+            logs_dir: root.join("logs"),
+            log_file: root.join("logs").join("dsh.log"),
+            patch_file: root.join("dsh-bridge.patch.yml"),
+            runtime_dir: root.join("runtime"),
+            node_exe: root.join("runtime/node/node.exe"),
+            dsh_bin: root
+                .join("runtime/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+            dsh_home: root.join(".dsh"),
+        }
+    }
+
+    /// Minimal fixture mirroring the upstream shell's `navIcon` fallback, so
+    /// the patch runs against the exact anchor bytes without the full bundle.
+    fn settings_shell_fixture() -> String {
+        format!(
+            "function navIcon(id) {{\n\t\t\tif (id === \"models\") return null;\n{SETTINGS_NAV_ICONS_ANCHOR}\n\t\t}}\n"
+        )
+    }
+
+    fn settings_shell_bundle(root: &Path) -> PathBuf {
+        root.join("runtime")
+            .join("dsh")
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh-client-ui-settings-general")
+            .join("lib")
+            .join("client.js")
+    }
+
+    #[test]
+    fn settings_nav_icons_patch_applies_once_and_degrades() {
+        let root = std::env::temp_dir().join(format!("dsh-navicons-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let bundle = settings_shell_bundle(&root);
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::write(&bundle, settings_shell_fixture()).unwrap();
+
+        // applies: dedicated branches land before the fallback, marker present
+        patch_settings_nav_icons(&paths);
+        let patched = fs::read_to_string(&bundle).unwrap();
+        assert!(patched.contains(SETTINGS_NAV_ICONS_MARKER));
+        assert!(patched.contains(r#"id === "vision-any""#));
+        assert!(patched.contains(r#"id === "session-manager""#));
+        assert!(patched.contains(r#"id === "about""#));
+        assert!(patched.contains("IconListPenOutline16"));
+        assert!(patched.contains("IconUserOutline16"));
+        assert!(patched.contains(r#"viewBox: "0 0 16 16""#));
+
+        // idempotent: second run leaves the file byte-identical
+        let once = fs::read(&bundle).unwrap();
+        patch_settings_nav_icons(&paths);
+        assert_eq!(fs::read(&bundle).unwrap(), once);
+
+        // missing bundle -> skip without panicking
+        fs::remove_file(&bundle).unwrap();
+        patch_settings_nav_icons(&paths);
+
+        // changed upstream (no anchor) -> skip, file untouched
+        fs::write(&bundle, "function navIcon(id) { return null; }\n").unwrap();
+        let before = fs::read(&bundle).unwrap();
+        patch_settings_nav_icons(&paths);
+        assert_eq!(fs::read(&bundle).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vision_bundle_initializes_fresh_web_profile() {
+        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-fresh", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+
+        ensure_web_profile_vision_bundle(&paths);
+
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(paths.dsh_home.join("profiles/web/package.json")).unwrap(),
+        )
+        .unwrap();
+        let names: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                VISION_PLUGIN
+            ]
+        );
+        // `dsh plugin` compatible profile scaffolding
+        assert!(paths.dsh_home.join("profiles/web/pnpm-workspace.yaml").exists());
+        assert!(paths.dsh_home.join("profiles/web/cordis.patch.yml").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vision_bundle_appends_to_existing_profile_once() {
+        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-append", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let web = paths.dsh_home.join("profiles/web");
+        fs::create_dir_all(&web).unwrap();
+        let manifest_path = web.join("package.json");
+        fs::write(
+            &manifest_path,
+            r#"{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": { "some-plugin": "^1.0.0" },
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "some-plugin"] } }
+}"#,
+        )
+        .unwrap();
+
+        ensure_web_profile_vision_bundle(&paths);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let names: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "some-plugin",
+                VISION_PLUGIN
+            ]
+        );
+        // user's other manifest fields untouched
+        assert_eq!(manifest["dependencies"]["some-plugin"], "^1.0.0");
+
+        // second run is a no-op: bytes identical, no duplicate entry
+        let after_first = fs::read_to_string(&manifest_path).unwrap();
+        ensure_web_profile_vision_bundle(&paths);
+        assert_eq!(fs::read_to_string(&manifest_path).unwrap(), after_first);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vision_bundle_creates_missing_dsh_path() {
+        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-nodsh", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let web = paths.dsh_home.join("profiles/web");
+        fs::create_dir_all(&web).unwrap();
+        let manifest_path = web.join("package.json");
+        fs::write(
+            &manifest_path,
+            r#"{"name":"dsh-profile-web","private":true,"dependencies":{}}"#,
+        )
+        .unwrap();
+
+        ensure_web_profile_vision_bundle(&paths);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let names: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(names, vec![VISION_PLUGIN]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vision_bundle_skips_invalid_manifest() {
+        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-bad", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let web = paths.dsh_home.join("profiles/web");
+        fs::create_dir_all(&web).unwrap();
+        let manifest_path = web.join("package.json");
+        fs::write(&manifest_path, "not json {{{").unwrap();
+
+        ensure_web_profile_vision_bundle(&paths); // must not panic
+        assert_eq!(fs::read_to_string(&manifest_path).unwrap(), "not json {{{");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_state_survives_and_clears() {        let root = std::env::temp_dir().join(format!("dsh-upd-test-{}-d", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         make_runtime(&root, "0.1.0-rc.5");
@@ -1886,5 +3570,96 @@ mod tests {
         let vjson = fs::read_to_string(root.join("version.json")).unwrap();
         assert!(vjson.contains("0.1.0-rc.5"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn llm_providers_parses_settings_yaml() {
+        let raw = r#"
+llm-pi-ai:
+  providers:
+    anixuilgpt:
+      displayName: CODEX
+      apiKeyEnv: ANIXUILGPT_API_KEY
+      api: openai-responses
+      baseURL: https://apinebula.ai/v1
+      models:
+        - id: gpt-5.4
+    anthropic-relay:
+      displayName: Claude Relay
+      apiKeyEnv: CLAUDE_KEY
+      api: anthropic-messages
+      baseURL: https://relay.example/v1
+agent-default-model:
+  provider: deepseek-official
+"#;
+        let providers = llm_providers_from_yaml(raw, None);
+        // built-in DeepSeek + every pi-ai provider (any wire API)
+        assert_eq!(providers.len(), 3);
+        let ds = providers.iter().find(|p| p.id == "deepseek-official").expect("built-in");
+        assert_eq!(ds.base_url, "https://api.deepseek.com");
+        assert_eq!(ds.key_env, "DEEPSEEK_API_KEY");
+        assert_eq!(ds.api, "deepseek");
+        let pi = providers.iter().find(|p| p.id == "anixuilgpt").expect("pi provider");
+        assert_eq!(pi.display_name, "CODEX");
+        assert_eq!(pi.base_url, "https://apinebula.ai/v1");
+        assert_eq!(pi.api, "openai-responses");
+        let relay = providers.iter().find(|p| p.id == "anthropic-relay").expect("relay");
+        assert_eq!(relay.api, "anthropic-messages");
+
+        // env override + malformed documents
+        let with_env = llm_providers_from_yaml(raw, Some("https://ds.example.com/v1"));
+        assert_eq!(
+            with_env.iter().find(|p| p.id == "deepseek-official").unwrap().base_url,
+            "https://ds.example.com/v1"
+        );
+        assert_eq!(llm_providers_from_yaml("not: [valid", None).len(), 1);
+    }
+
+    #[test]
+    fn adapter_matching_routes_by_api_and_host() {
+        assert_eq!(adapter_for("deepseek", "https://api.deepseek.com"), Adapter::DeepSeek);
+        assert_eq!(adapter_for("", "https://gateway.deepseek.io/v1"), Adapter::DeepSeek);
+        assert_eq!(adapter_for("openai-responses", "https://apinebula.ai/v1"), Adapter::OpenAIBilling);
+        assert_eq!(adapter_for("openai-chat", "https://x.example/v1"), Adapter::OpenAIBilling);
+        assert_eq!(adapter_for("", "https://api.openai-proxy.example/v1"), Adapter::OpenAIBilling);
+        assert_eq!(adapter_for("anthropic-messages", "https://relay.example/v1"), Adapter::Unsupported);
+        assert_eq!(adapter_for("google-genai", "https://x.example/v1"), Adapter::Unsupported);
+        // unknown combos probe at fetch time
+        assert_eq!(adapter_for("", "https://mystery.example/v1"), Adapter::Probe);
+    }
+
+    #[test]
+    fn balance_parses_deepseek_api_response() {
+        // Exact shape returned by GET https://api.deepseek.com/user/balance
+        // (snake_case fields). A camelCase rename here would make every
+        // balance refresh fail with "error decoding response body".
+        let raw = r#"{
+            "is_available": true,
+            "balance_infos": [{
+                "currency": "CNY",
+                "total_balance": "168.88",
+                "granted_balance": "0.00",
+                "topped_up_balance": "168.88"
+            }]
+        }"#;
+        let bal: Balance = serde_json::from_str(raw).expect("balance response must deserialize");
+        assert!(bal.is_available);
+        let info = bal.balance_infos.first().expect("one balance info");
+        assert_eq!(info.currency, "CNY");
+        assert_eq!(info.total_balance, "168.88");
+        assert_eq!(info.granted_balance, "0.00");
+        assert_eq!(info.topped_up_balance, "168.88");
+
+        // serialized form must stay snake_case for the UI/bridge consumers
+        let out = serde_json::to_value(&bal).expect("balance must serialize");
+        assert_eq!(out["is_available"], serde_json::json!(true));
+        assert_eq!(
+            out["balance_infos"][0]["total_balance"],
+            serde_json::json!("168.88")
+        );
+        assert_eq!(
+            out["balance_infos"][0]["granted_balance"],
+            serde_json::json!("0.00")
+        );
     }
 }

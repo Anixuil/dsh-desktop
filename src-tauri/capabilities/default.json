@@ -1,6 +1,13 @@
 {
   "identifier": "default",
-  "description": "Permissions for the local shell windows (splash + settings). Remote DSH UI has no IPC access.",
+  "description": "Permissions for the local shell windows (splash + settings). The splash is shown in the undecorated main window, so it needs the window-control commands for its custom title bar buttons.",
   "windows": ["main", "settings"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized"
+  ]
 }

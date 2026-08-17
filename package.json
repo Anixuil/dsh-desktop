@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness Windows desktop shell (Tauri 2 + bundled Node/dsh runtime)",
   "scripts": {
     "dev": "tauri dev",
@@ -9,7 +9,9 @@
     "check": "tauri build --no-bundle",
     "fetch-runtime": "node scripts/fetch-runtime.mjs",
     "bundle-runtime": "node scripts/make-runtime-archive.mjs",
-    "icons": "node scripts/gen-icon.mjs && tauri icon src-tauri/icons/icon.png"
+    "icons": "node scripts/gen-icon.mjs && tauri icon src-tauri/icons/icon.png",
+    "build:plugins": "node scripts/bridge/build.mjs && node scripts/session-manager/build.mjs",
+    "test:plugins": "node scripts/test-client-bundle.mjs && node scripts/test-session-manager.mjs && node scripts/test-session-manager-host.mjs && node scripts/test-bridge-bundle-diff.mjs && node scripts/test-bridge-views.mjs && node scripts/test-bridge-host.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

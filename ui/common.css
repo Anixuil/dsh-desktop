@@ -50,3 +50,16 @@ button.primary:hover { filter: brightness(1.1); }
 #msg.ok { color: var(--ok); }
 #msg.err { color: var(--err); }
 .hint { color: var(--text-dim); font-size: 12px; margin-top: 6px; }
+
+/* ---- about ---- */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.about-head { display: flex; align-items: center; gap: 12px; margin: 2px 0 8px; }
+.about-logo { width: 46px; height: 46px; flex: none; }
+.about-name { font-size: 15px; font-weight: 600; }
+.about-ver { font-size: 12px; color: var(--text-dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.about-links { margin-top: 10px; }
+.about-links a { font-size: 13px; }
+#about-msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+#about-msg.ok { color: var(--ok); }
+#about-msg.err { color: var(--err); }
