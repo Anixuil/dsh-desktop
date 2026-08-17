@@ -61,6 +61,16 @@ const PROFILE_PNPM_WORKSPACE: &str = "packages:\n  - .\n\nnodeLinker: hoisted\na
 /// Injected on every document (including the remote dsh web UI): the desktop
 /// app never shows the browser's default right-click context menu.
 const INIT_SCRIPT: &str = r#"window.addEventListener('contextmenu', (e) => e.preventDefault(), true);"#;
+
+/// Initialization script that publishes the persisted motion intensity as
+/// `window.__DSH_MOTION__` ("quiet" | "rich") on every document of a window —
+/// including the remote dsh web UI. Page scripts read it before first paint,
+/// so the splash/settings/injected transitions never flash the wrong mode.
+/// Live changes ride the `motion-updated` event.
+fn motion_init_script(motion: MotionIntensity) -> String {
+    let value = serde_json::to_string(&motion).unwrap_or_else(|_| "\"rich\"".to_string());
+    format!("window.__DSH_MOTION__ = {value};")
+}
 /// Served client bundle of the settings shell (`dsh-client-ui-settings-general`),
 /// relative to `runtime_dir`. Its `navIcon` hard-codes a glyph per settings
 /// section id and falls back to the settings gear for unknown ids — the
@@ -138,6 +148,27 @@ const TITLEBAR_SCRIPT: &str = r#"
     try { console.log('[dsh-desktop titlebar]', state, detail || ''); } catch (e) {}
   }
 
+  // Motion intensity: mirror the persisted value so quiet mode can drop the
+  // entrance animation and micro-transitions on this page. `__DSH_MOTION__`
+  // is injected by the shell before document scripts run; live changes arrive
+  // through the `motion-updated` event.
+  var MOTION_ATTR = 'data-dsh-motion';
+  function motionValue() {
+    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+  }
+  function applyMotionAttr(m) {
+    try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
+  }
+  applyMotionAttr(motionValue());
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('motion-updated', function (e) {
+        var m = e && e.payload && e.payload.motion;
+        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
+      });
+    }
+  } catch (e) {}
+
   // Bar colors are driven by the dsh design tokens (`--dsw-alias-*`): the dsh
   // app flips them when the user switches themes (body[data-ds-dark-theme]),
   // so the title bar follows light/dark automatically. Fallbacks match the
@@ -150,16 +181,21 @@ const TITLEBAR_SCRIPT: &str = r#"
     'box-sizing:border-box;padding:0 8px 0 14px;' +
     'font-family:var(--dsw-font-family,"Segoe UI","Microsoft YaHei",system-ui,sans-serif);' +
     'color:var(--dsw-alias-label-primary,#0f1115);' +
-    '-webkit-user-select:none;user-select:none;}' +
+    '-webkit-user-select:none;user-select:none;' +
+    'animation:dsh-bar-in .34s cubic-bezier(.22,1,.36,1) both;}' +
+    '@keyframes dsh-bar-in{from{opacity:0;transform:translateY(-8px)}}' +
+    'html[data-dsh-motion="quiet"] #' + BAR_ID + '{animation:none;}' +
     '#' + BAR_ID + ' .__t{font-size:12px;line-height:1;color:var(--dsw-alias-label-secondary,#61666b);white-space:nowrap;overflow:hidden;}' +
     '#' + BAR_ID + ' .__c{display:flex;align-items:center;gap:2px;flex:none;}' +
     '#' + BAR_ID + ' button{width:34px;height:26px;display:inline-flex;align-items:center;justify-content:center;' +
     'border:none;border-radius:6px;background:transparent;padding:0;margin:0;cursor:pointer;' +
-    'color:var(--dsw-alias-label-secondary,#3b3f46);outline:none;}' +
+    'color:var(--dsw-alias-label-secondary,#3b3f46);outline:none;' +
+    'transition:background .16s ease,color .16s ease,transform .12s cubic-bezier(.34,1.56,.64,1);}' +
     '#' + BAR_ID + ' button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(17,24,39,.07));}' +
-    '#' + BAR_ID + ' button:active{background:var(--dsw-alias-interactive-bg-hover,rgba(17,24,39,.13));}' +
+    '#' + BAR_ID + ' button:active{background:var(--dsw-alias-interactive-bg-hover,rgba(17,24,39,.13));transform:scale(.9);}' +
     '#' + BAR_ID + ' button.__close:hover{background:#e81123;color:#fff;}' +
     '#' + BAR_ID + ' button.__close:active{background:#c50f1f;color:#fff;}' +
+    'html[data-dsh-motion="quiet"] #' + BAR_ID + ' button{transition:none;}' +
     '#' + BAR_ID + ' svg{width:10px;height:10px;display:block;pointer-events:none;}' +
     'html body{padding-top:' + H + 'px !important;box-sizing:border-box !important;}';
 
@@ -257,6 +293,8 @@ const TITLEBAR_SCRIPT: &str = r#"
 ///   transform/opacity only.
 /// - Falls back to overlay-only when View Transitions or reduced-motion
 ///   policies are unavailable; boot-time application is never animated.
+/// - Follows the persisted motion intensity: `quiet` (or reduced-motion)
+///   flips instantly, `rich` plays the full ocean transition.
 const THEME_TRANSITION_SCRIPT: &str = r#"
 (function () {
   if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
@@ -269,6 +307,30 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
       return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     } catch (e) { return false; }
   }
+
+  // Motion intensity: rich plays the full ocean transition (waves + whale
+  // glide); quiet flips instantly like reduced-motion. The persisted value is
+  // injected as `window.__DSH_MOTION__` before page scripts and updates live
+  // through the `motion-updated` event.
+  var MOTION_ATTR = 'data-dsh-motion';
+  function applyMotionAttr(m) {
+    try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
+  }
+  function isQuiet() {
+    return prefersReduced() || document.documentElement.getAttribute(MOTION_ATTR) === 'quiet';
+  }
+  function motionValue() {
+    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+  }
+  applyMotionAttr(motionValue());
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('motion-updated', function (e) {
+        var m = e && e.payload && e.payload.motion;
+        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
+      });
+    }
+  } catch (e) {}
 
   var css =
     '::view-transition-group(root){animation-duration:.62s;animation-timing-function:cubic-bezier(.22,1,.36,1)}' +
@@ -292,8 +354,10 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
     '@keyframes wv-glide{from{transform:translateX(-12vw) rotate(-12deg)}55%{transform:translateX(44vw) rotate(5deg)}to{transform:translateX(112vw) rotate(-8deg)}}';
 
   // Two full swell periods per 1200px strip → seamless translateX(±50%) loop.
-  var WAVE_A = 'M0 84 C75 46 150 46 225 84 C300 122 375 122 450 84 C525 46 600 46 675 84 C750 122 825 122 900 84 C975 46 1050 46 1125 84 C1162 100 1181 110 1200 116 V120 H0 Z';
-  var WAVE_B = 'M0 100 C90 70 180 70 270 100 C360 130 450 130 540 100 C630 70 720 70 810 100 C900 130 990 130 1080 100 C1140 84 1170 78 1200 74 V120 H0 Z';
+  // Each 600px half is one identical swell cycle whose start/end slopes match
+  // (ctrl pairs mirror across the seam), so the loop has no visible joint.
+  var WAVE_A = 'M0 84 C75 46 225 46 300 84 C375 122 525 122 600 84 C675 46 825 46 900 84 C975 122 1125 122 1200 84 V120 H0 Z';
+  var WAVE_B = 'M0 100 C90 62 210 62 300 100 C390 138 510 138 600 100 C690 62 810 62 900 100 C990 138 1110 138 1200 100 V120 H0 Z';
 
   function ensureStyle() {
     if (!document.head || document.getElementById(STYLE_ID)) return;
@@ -356,7 +420,7 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
       else body.removeAttribute(ATTR);
       applied = true;
     };
-    if (!prefersReduced() && document.readyState === 'complete') {
+    if (!isQuiet() && document.readyState === 'complete') {
       try {
         if (typeof document.startViewTransition === 'function') {
           document.startViewTransition(function () {
@@ -391,7 +455,7 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
         if (this !== document.body || attr !== ATTR) return original.apply(this, arguments);
         var targetHas = name === 'setAttribute';
         if (this.hasAttribute(ATTR) === targetHas) return original.apply(this, arguments);
-        if (active || prefersReduced()) return original.apply(this, arguments);
+        if (active || isQuiet()) return original.apply(this, arguments);
         active = true;
         flipWithTransition(this, targetHas);
         return undefined;
@@ -402,6 +466,494 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
   }
 
   installHook();
+})();
+"#;
+
+/// Injected on every document of the main window (remote dsh web UI only).
+/// Re-skins the whole dsh interface with the desktop's ocean theme by
+/// overriding the dsh design tokens (`--dsw-static-*` / `--dsw-alias-*`,
+/// defined on `body` / `body[data-ds-dark-theme]` by dsh-client-ui-theme).
+/// The app consumes these tokens everywhere, so a token override restyles the
+/// entire UI without touching its DOM:
+///
+/// - Light theme becomes "sea glass": clearly blue-tinted surfaces, deep-sea
+///   blue primary buttons (the near-black buttons become ocean blue), and
+///   water edges instead of plain black-alpha borders.
+/// - Dark theme becomes "deep sea": the same navy ramp as the desktop shell
+///   pages (ocean-950 … foam white), with water-light borders.
+/// - DeepSeek brand blues stay untouched (the whale stays the whale).
+/// - A pointer-transparent ambient layer adds living ocean motion over both
+///   themes: two counter-drifting wave bands at the bottom, rising bubbles,
+///   and two slowly breathing glows. Transform/opacity only; gated by the
+///   persisted motion intensity (`rich` animates, `quiet` freezes waves and
+///   glows and hides bubbles) and by prefers-reduced-motion.
+/// - Everything follows the app's live `data-ds-dark-theme` flips (the
+///   THEME_TRANSITION_SCRIPT above owns the transition itself).
+///
+/// Selectors carry extra specificity (`html body`, `html
+/// body[data-ds-dark-theme]`) so the overrides win regardless of injection
+/// order relative to the app's stylesheets.
+const OCEAN_THEME_SCRIPT: &str = r#"
+(function () {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  // The shell re-evals this script after navigation (3s/10s fallback); the
+  // first instance owns the listeners, re-arm watchers and state machine —
+  // later evals must not register duplicate dsh-wave-state listeners.
+  if (window.__DSH_OCEAN_READY__) return;
+  try { window.__DSH_OCEAN_READY__ = true; } catch (e) {}
+  var STYLE_ID = '__dsh_ocean_theme__';
+  var AMBIENT_ID = '__dsh_ocean_ambient__';
+
+  function report(state, detail) {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.emit('dsh-ocean-theme', { state: state, detail: detail || '' });
+      }
+    } catch (e) {}
+    try { console.log('[dsh-desktop ocean-theme]', state, detail || ''); } catch (e) {}
+  }
+
+  // Motion intensity — defensively, the title bar script already set the attr
+  var MOTION_ATTR = 'data-dsh-motion';
+  function motionValue() {
+    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+  }
+  function applyMotionAttr(m) {
+    try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
+  }
+  applyMotionAttr(motionValue());
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('motion-updated', function (e) {
+        var m = e && e.payload && e.payload.motion;
+        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
+        syncEngine();
+      });
+    }
+  } catch (e) {}
+
+  // Seamless strips: two identical 600px periods per 1200px strip with slope
+  // continuity at the seams, so the translateX loop has no visible joint.
+  // One profile per band: the main band's shape is fixed — states modulate
+  // its speed / amplitude / color instead of swapping shapes.
+  var P_SWELL  = 'M0 84 C75 46 225 46 300 84 C375 122 525 122 600 84 C675 46 825 46 900 84 C975 122 1125 122 1200 84 V120 H0 Z';
+  var P_RIPPLE = 'M0 84 C90 64 210 64 300 84 C390 104 510 104 600 84 C690 64 810 64 900 84 C990 104 1110 104 1200 84 V120 H0 Z';
+
+  var css =
+    // ---- light theme: sea glass (blue-forward) ----
+    'html body{' +
+    '--dsw-static-neutral-bluish-00:rgb(243,247,253);' +
+    '--dsw-static-neutral-bluish-50:rgb(233,240,250);' +
+    '--dsw-static-neutral-bluish-60:rgb(230,238,249);' +
+    '--dsw-static-neutral-bluish-75:rgb(223,233,246);' +
+    '--dsw-static-neutral-bluish-100:rgb(212,225,242);' +
+    '--dsw-static-neutral-bluish-150:rgb(202,218,239);' +
+    '--dsw-static-neutral-bluish-200:rgb(188,206,232);' +
+    '--dsw-static-neutral-bluish-300:rgb(166,188,220);' +
+    '--dsw-static-neutral-bluish-400:rgb(122,142,176);' +
+    '--dsw-static-neutral-bluish-500:rgb(101,121,155);' +
+    '--dsw-static-neutral-bluish-600:rgb(80,97,129);' +
+    '--dsw-static-neutral-bluish-700:rgb(58,73,103);' +
+    '--dsw-static-neutral-bluish-750:rgb(48,62,89);' +
+    '--dsw-static-neutral-bluish-800:rgb(37,49,72);' +
+    '--dsw-static-neutral-bluish-850:rgb(28,38,57);' +
+    '--dsw-static-neutral-bluish-875:rgb(23,31,48);' +
+    '--dsw-static-neutral-bluish-900:rgb(17,25,40);' +
+    '--dsw-static-neutral-bluish-950:rgb(12,19,32);' +
+    '--dsw-alias-brand-primary:rgb(41,66,132);' +
+    '--dsw-alias-brand-primary-new-colorprimary-new-color:rgb(41,66,132);' +
+    '--dsw-alias-button-primary-hover:rgb(56,88,168);' +
+    '--dsw-alias-border-l1:rgba(24,60,120,.10);' +
+    '--dsw-alias-border-l2:rgba(24,60,120,.16);' +
+    '--dsw-alias-border-l2-darkmode-thin:rgba(24,60,120,.16);' +
+    '--dsw-alias-border-l3:rgba(24,60,120,.22);' +
+    '--dsw-alias-border-l4:rgba(24,60,120,.28);' +
+    '--dsw-alias-interactive-bg-hover:rgba(30,74,165,.07);' +
+    '--dsw-alias-interactive-bg-hover-accent:rgba(30,74,165,.14);' +
+    '--dsw-alias-interactive-bg-active:rgba(30,74,165,.12);' +
+    '--dsw-alias-bg-skeleton:rgba(30,74,165,.06);' +
+    '--dsw-specific-sidebar-fill:rgb(231,240,250);' +
+    '--dsw-alias-scrollbar-bg-l1:rgba(96,140,220,.32);' +
+    '--dsw-alias-scrollbar-bg-l2:rgba(96,140,220,.32);' +
+    '--dsw-alias-scrollbar-hover-l1:rgba(122,172,250,.55);' +
+    '--dsw-alias-scrollbar-hover-l2:rgba(122,172,250,.55);' +
+    '}' +
+    // ---- dark theme: deep sea (matches the desktop shell pages) ----
+    'html body[data-ds-dark-theme]{' +
+    '--dsw-static-neutral-bluish-00:rgb(246,249,253);' +
+    '--dsw-static-neutral-bluish-50:rgb(240,244,251);' +
+    '--dsw-static-neutral-bluish-100:rgb(232,238,248);' +
+    '--dsw-static-neutral-bluish-200:rgb(211,222,244);' +
+    '--dsw-static-neutral-bluish-300:rgb(183,197,226);' +
+    '--dsw-static-neutral-bluish-400:rgb(143,163,200);' +
+    '--dsw-static-neutral-bluish-500:rgb(122,140,176);' +
+    '--dsw-static-neutral-bluish-600:rgb(95,112,147);' +
+    '--dsw-static-neutral-bluish-700:rgb(52,73,122);' +
+    '--dsw-static-neutral-bluish-750:rgb(38,57,99);' +
+    '--dsw-static-neutral-bluish-800:rgb(27,44,80);' +
+    '--dsw-static-neutral-bluish-850:rgb(20,33,63);' +
+    '--dsw-static-neutral-bluish-875:rgb(16,26,49);' +
+    '--dsw-static-neutral-bluish-900:rgb(13,21,40);' +
+    '--dsw-static-neutral-bluish-950:rgb(10,17,34);' +
+    '--dsw-alias-border-inverted:rgba(150,195,255,.06);' +
+    '--dsw-alias-border-inverted2:rgba(150,195,255,.08);' +
+    '--dsw-alias-border-l1:rgba(150,195,255,.08);' +
+    '--dsw-alias-border-l2:rgba(150,195,255,.14);' +
+    '--dsw-alias-border-l2-darkmode-thin:rgba(150,195,255,.09);' +
+    '--dsw-alias-border-l3:rgba(150,195,255,.20);' +
+    '--dsw-alias-border-l4:rgba(150,195,255,.26);' +
+    '--dsw-alias-interactive-bg-hover:rgba(150,200,255,.10);' +
+    '--dsw-alias-interactive-bg-hover-accent:rgba(150,200,255,.20);' +
+    '--dsw-alias-interactive-bg-active:rgba(150,200,255,.16);' +
+    '--dsw-alias-bg-skeleton:rgba(150,200,255,.08);' +
+    '--dsw-alias-scrollbar-bg-l1:rgba(96,140,220,.34);' +
+    '--dsw-alias-scrollbar-bg-l2:rgba(96,140,220,.34);' +
+    '--dsw-alias-scrollbar-hover-l1:rgba(122,172,250,.55);' +
+    '--dsw-alias-scrollbar-hover-l2:rgba(122,172,250,.55);' +
+    '}' +
+    // ---- ambient ocean layer: 4 blue bands + 2 red bands + waiting pulse +
+    //      settle sweep, mixed per wave state via [data-wave-state] presets.
+    //      Bands run at fixed speeds forever (no phase jumps); states only
+    //      crossfade layer opacities — transform/opacity compositing only. ----
+    '#' + AMBIENT_ID + '{position:fixed;inset:0;pointer-events:none;z-index:2147481000;overflow:hidden;color:rgba(80,130,220,.45);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '{color:rgba(150,200,255,.55);}' +
+    '#' + AMBIENT_ID + ' .oa-glow{position:absolute;border-radius:50%;will-change:transform;opacity:.5;transition:opacity 1.1s cubic-bezier(.22,1,.36,1);}' +
+    '#' + AMBIENT_ID + ' .oa-g1{width:640px;height:640px;top:-330px;right:-200px;background:radial-gradient(circle,rgba(77,107,254,.12),transparent 65%);}' +
+    '#' + AMBIENT_ID + ' .oa-g2{width:520px;height:520px;bottom:-270px;left:-160px;background:radial-gradient(circle,rgba(60,198,232,.09),transparent 65%);}' +
+    '#' + AMBIENT_ID + ' .oa-g3{width:560px;height:560px;bottom:-300px;right:-160px;background:radial-gradient(circle,rgba(248,121,121,.16),transparent 65%);opacity:0;}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-g1{background:radial-gradient(circle,rgba(77,107,254,.22),transparent 65%);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-g2{background:radial-gradient(circle,rgba(60,198,232,.15),transparent 65%);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-g3{background:radial-gradient(circle,rgba(248,121,121,.22),transparent 65%);}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + ' .oa-g1{animation:oa-glow1 30s ease-in-out infinite alternate;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + ' .oa-g2{animation:oa-glow2 38s ease-in-out infinite alternate;}' +
+    '@keyframes oa-glow1{to{transform:translate(60px,40px) scale(1.06);}}' +
+    '@keyframes oa-glow2{to{transform:translate(-50px,-30px) scale(1.1);}}' +
+    '#' + AMBIENT_ID + ' .oa-waves{position:absolute;left:0;right:0;bottom:0;height:110px;color:rgba(77,107,254,.16);' +
+    'transition:color 1.1s cubic-bezier(.22,1,.36,1);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-waves{color:rgba(96,140,255,.20);}' +
+    // two bands only: back (slower, dimmer, counter-drifting) + main.
+    // Both are translated by the rAF engine (phase accumulates → speed
+    // changes never jump); color/opacity ride CSS transitions per state.
+    '#' + AMBIENT_ID + ' .oa-wv{position:absolute;left:0;width:200%;will-change:transform;transform-origin:bottom center;' +
+    'transition:opacity 1.1s cubic-bezier(.22,1,.36,1);}' +
+    '#' + AMBIENT_ID + ' .oa-wv svg{display:block;width:100%;height:100%;}' +
+    '#' + AMBIENT_ID + ' .oa-wv path{fill:currentColor;}' +
+    '#' + AMBIENT_ID + ' .oa-wv-main{bottom:-8px;height:96px;color:inherit;}' +
+    '#' + AMBIENT_ID + ' .oa-wv-back{bottom:-14px;height:84px;color:rgba(60,140,220,.09);opacity:.85;}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-wv-back{color:rgba(60,198,232,.12);}' +
+    // per-state color of the main band (the state-driven wave)
+    '#' + AMBIENT_ID + '[data-wave-state="calm"] .oa-waves{color:rgba(77,107,254,.16);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-waves{color:rgba(96,165,250,.24);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-waves{color:rgba(60,150,240,.28);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-waves{color:rgba(60,198,232,.30);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-waves{color:rgba(245,194,91,.24);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-waves{color:rgba(248,121,121,.34);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="settle"] .oa-waves{color:rgba(190,215,255,.30);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="calm"] .oa-waves{color:rgba(96,140,255,.20);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-waves{color:rgba(125,180,255,.26);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-waves{color:rgba(110,170,255,.30);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-waves{color:rgba(90,200,255,.32);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-waves{color:rgba(245,194,91,.28);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="error"] .oa-waves{color:rgba(248,121,121,.38);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + '[data-wave-state="settle"] .oa-waves{color:rgba(190,215,255,.32);}' +
+    // ---- wave-state mix presets: glows + bubble groups ----
+    '#' + AMBIENT_ID + '[data-wave-state="calm"] .oa-glow{opacity:.5;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="calm"] .oa-bcalm{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-glow{opacity:.75;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-bcalm{opacity:.6;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-bactive{opacity:.3;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-glow{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-bcalm{opacity:.3;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-bactive{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-glow{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-bcalm{opacity:.2;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-bactive{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-glow{opacity:.5;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-bcalm{opacity:.3;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-glow{opacity:.3;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-g3{opacity:.9;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-bcalm{opacity:.1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-bactive{opacity:.4;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="settle"] .oa-glow{opacity:.7;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="settle"] .oa-bcalm{opacity:.5;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="settle"] .oa-bactive{opacity:.2;}' +
+    // bubbles in two groups (calm / active) crossfaded by state
+    '#' + AMBIENT_ID + ' .oa-bubbles{position:absolute;inset:0;transition:opacity 1.1s cubic-bezier(.22,1,.36,1);opacity:0;}' +
+    '#' + AMBIENT_ID + ' .oa-bubble{position:absolute;bottom:-40px;left:var(--bx,10%);width:var(--bs,6px);height:var(--bs,6px);border-radius:50%;' +
+    'background:radial-gradient(circle at 32% 30%,currentColor,transparent 70%);border:1px solid currentColor;' +
+    'opacity:0;will-change:transform,opacity;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + ' .oa-bubble{animation:oa-rise var(--bd,16s) linear infinite;animation-delay:var(--bdelay,0s);}' +
+    'html[data-dsh-motion="quiet"] #' + AMBIENT_ID + ' .oa-bubble{display:none;}' +
+    '@keyframes oa-rise{0%{transform:translate3d(0,0,0);opacity:0;}8%{opacity:var(--bop,.5);}92%{opacity:var(--bop,.5);}100%{transform:translate3d(var(--bsx,10px),-104vh,0);opacity:0;}}' +
+    // quiet: freeze band motion but keep the state crossfades (essential feedback)
+    'html[data-dsh-motion="quiet"] #' + AMBIENT_ID + ' .oa-wv{transition-duration:.2s;}' +
+    // ---- strong state contrast: edge bar, veils ----
+    '#' + AMBIENT_ID + ' .oa-veil{position:absolute;inset:0;opacity:0;transition:opacity 1.1s cubic-bezier(.22,1,.36,1);}' +
+    '#' + AMBIENT_ID + ' .oa-veil-red{background:rgba(220,60,60,.06);}' +
+    '#' + AMBIENT_ID + ' .oa-veil-cyan{background:rgba(60,198,232,.05);}' +
+    '#' + AMBIENT_ID + ' .oa-veil-dim{background:rgba(30,70,140,.10);}' +
+    'body[data-ds-dark-theme] #' + AMBIENT_ID + ' .oa-veil-dim{background:rgba(0,0,0,.22);}' +
+    // state color bar along the waterline (the most visible cue)
+    '#' + AMBIENT_ID + ' .oa-bar{position:absolute;left:0;right:0;bottom:0;height:3px;opacity:0;transition:background-color 1.1s cubic-bezier(.22,1,.36,1),opacity 1.1s cubic-bezier(.22,1,.36,1);background:rgba(77,107,254,.5);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="calm"] .oa-bar{opacity:.35;background:rgba(77,107,254,.45);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-bar{opacity:.8;background:rgba(125,216,242,.85);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-bar{opacity:.9;background:rgba(96,165,250,.9);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-bar{opacity:1;background:rgba(60,198,232,1);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-bar{opacity:.85;background:rgba(245,194,91,.85);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-bar{opacity:1;background:rgba(248,121,121,1);}' +
+    '#' + AMBIENT_ID + '[data-wave-state="settle"] .oa-bar{opacity:.9;background:rgba(232,238,248,.9);}' +
+    // full-screen color veils per state
+    '#' + AMBIENT_ID + '[data-wave-state="error"] .oa-veil-red{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-veil-cyan{opacity:1;}' +
+    '#' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-veil-dim{opacity:1;}' +
+    // edge-bar breathing (rich only; frequency encodes the state)
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + '[data-wave-state="thinking"] .oa-bar{animation:oa-bar-pulse 1.6s ease-in-out infinite alternate;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + '[data-wave-state="streaming"] .oa-bar{animation:oa-bar-pulse 1s ease-in-out infinite alternate;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + '[data-wave-state="tooling"] .oa-bar{animation:oa-bar-pulse .7s ease-in-out infinite alternate;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + '[data-wave-state="error"] .oa-bar{animation:oa-bar-pulse .45s ease-in-out infinite alternate;}' +
+    'html[data-dsh-motion="rich"] #' + AMBIENT_ID + '[data-wave-state="waiting"] .oa-bar{animation:oa-bar-pulse 2.4s ease-in-out infinite alternate;}' +
+    '@keyframes oa-bar-pulse{from{opacity:.35;}to{opacity:1;}}' +
+    '@media (prefers-reduced-motion:reduce){#' + AMBIENT_ID + '{display:none;}}' +
+    // ---- shared accents ----
+    'html ::selection{background:rgba(77,107,254,.32);}';
+
+  function waveSvg(pathD) {
+    return '<svg viewBox="0 0 1200 120" preserveAspectRatio="none" aria-hidden="true"><path d="' + pathD + '"/></svg>';
+  }
+
+  function band(cls, pathD) {
+    return '<div class="oa-wv ' + cls + '">' + waveSvg(pathD) + '</div>';
+  }
+  function bubbleSpan(spec) {
+    return '<span class="oa-bubble" style="' + spec + '"></span>';
+  }
+  function bubbleGroup(cls, specs) {
+    var html = '';
+    for (var i = 0; i < specs.length; i++) html += bubbleSpan(specs[i]);
+    return '<div class="oa-bubbles ' + cls + '">' + html + '</div>';
+  }
+
+  function ambientHtml() {
+    return '<div class="oa-glow oa-g1"></div>' +
+      '<div class="oa-glow oa-g2"></div>' +
+      '<div class="oa-glow oa-g3"></div>' +
+      '<div class="oa-veil oa-veil-red"></div>' +
+      '<div class="oa-veil oa-veil-cyan"></div>' +
+      '<div class="oa-veil oa-veil-dim"></div>' +
+      '<div class="oa-waves">' +
+      band('oa-wv-back', P_RIPPLE) +
+      band('oa-wv-main', P_SWELL) +
+      '</div>' +
+      '<div class="oa-bar"></div>' +
+      bubbleGroup('oa-bcalm', [
+        '--bx:6%;--bs:6px;--bd:17s;--bdelay:-2s;--bop:.4;--bsx:10px',
+        '--bx:22%;--bs:4px;--bd:21s;--bdelay:-8s;--bop:.35;--bsx:-8px',
+        '--bx:44%;--bs:7px;--bd:15s;--bdelay:-4s;--bop:.4;--bsx:12px',
+        '--bx:68%;--bs:5px;--bd:23s;--bdelay:-14s;--bop:.3;--bsx:-10px',
+        '--bx:88%;--bs:6px;--bd:18s;--bdelay:-6s;--bop:.35;--bsx:12px',
+      ]) +
+      bubbleGroup('oa-bactive', [
+        '--bx:12%;--bs:8px;--bd:10s;--bdelay:-1s;--bop:.55;--bsx:16px',
+        '--bx:30%;--bs:5px;--bd:13s;--bdelay:-5s;--bop:.5;--bsx:-12px',
+        '--bx:52%;--bs:9px;--bd:9s;--bdelay:-3s;--bop:.6;--bsx:18px',
+        '--bx:71%;--bs:6px;--bd:12s;--bdelay:-7s;--bop:.5;--bsx:-14px',
+        '--bx:93%;--bs:7px;--bd:11s;--bdelay:-2s;--bop:.55;--bsx:16px',
+      ]);
+  }
+
+  // ---- single-wave parameter engine ----------------------------------------
+  // One main band + one counter-drifting back band, both driven by rAF.
+  // Phase accumulates forever, so switching the target speed only eases the
+  // increment — the wave never jumps. Amplitude eases the same way; color,
+  // glows, veils and the edge bar ride CSS transitions per state.
+  var WAVE_PARAMS = {
+    calm: { speed: 0.00085, amp: 1.00 },
+    thinking: { speed: 0.00155, amp: 1.15 },
+    streaming: { speed: 0.00340, amp: 1.32 },
+    tooling: { speed: 0.00600, amp: 1.55 },
+    waiting: { speed: 0.00018, amp: 0.90 },
+    error: { speed: 0.00930, amp: 1.40 },
+    settle: { speed: 0.00200, amp: 1.20 },
+  };
+  var waveEngine = {
+    running: false,
+    raf: 0,
+    phase: 0,
+    backPhase: 0.25, // initial offset so the two bands never overlap
+    speed: WAVE_PARAMS.calm.speed,
+    amp: WAVE_PARAMS.calm.amp,
+    target: WAVE_PARAMS.calm,
+    main: null,
+    back: null,
+    start: function () {
+      if (this.running) return;
+      var root = document.getElementById(AMBIENT_ID);
+      if (!root) return;
+      this.main = root.querySelector('.oa-wv-main');
+      this.back = root.querySelector('.oa-wv-back');
+      if (!this.main) return;
+      this.running = true;
+      var self = this;
+      var step = function () {
+        if (!self.running) return;
+        // slow easing: state flips glide in over ~2s instead of snapping
+        self.speed += (self.target.speed - self.speed) * 0.02;
+        self.amp += (self.target.amp - self.amp) * 0.018;
+        // each band accumulates its OWN phase and always moves exactly one
+        // full path period per wrap (-50% of the 200%-wide strip) — the loop
+        // is seamless at any speed; only the per-frame increment changes
+        self.phase = (self.phase + self.speed) % 1;
+        self.backPhase = (self.backPhase + self.speed * 0.5) % 1;
+        self.main.style.transform =
+          'translateX(' + (-self.phase * 50) + '%) scaleY(' + self.amp.toFixed(4) + ')';
+        if (self.back) {
+          self.back.style.transform =
+            'translateX(' + (-self.backPhase * 50) + '%) scaleY(' + (1 + (self.amp - 1) * 0.6).toFixed(4) + ')';
+        }
+        self.raf = requestAnimationFrame(step);
+      };
+      this.raf = requestAnimationFrame(step);
+    },
+    stop: function () {
+      this.running = false;
+      if (this.raf) cancelAnimationFrame(this.raf);
+      this.raf = 0;
+    },
+    setState: function (state) {
+      this.target = WAVE_PARAMS[state] || WAVE_PARAMS.calm;
+    },
+  };
+  function prefersReducedMotion() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+  function motionIsRich() {
+    return document.documentElement.getAttribute(MOTION_ATTR) !== 'quiet';
+  }
+  function syncEngine() {
+    if (motionIsRich() && !prefersReducedMotion()) waveEngine.start();
+    else waveEngine.stop();
+  }
+
+  // ---- wave-state machine (bridge plugin → dsh-wave-state events) ----
+  // Rapid mid-turn flips (streaming ↔ tooling every few seconds) are
+  // debounced with a short dwell so the wave eases instead of jittering;
+  // settle / error / calm always apply immediately.
+  var lastApplied = 0;
+  var pendingState = null;
+  var pendingTimer = 0;
+  function applyState(state) {
+    var root = document.getElementById(AMBIENT_ID);
+    if (!root) return;
+    root.setAttribute('data-wave-state', state);
+    waveEngine.setState(state);
+    // settle eases back to calm on its own
+    if (state === 'settle') {
+      setTimeout(function () {
+        var r = document.getElementById(AMBIENT_ID);
+        if (r && r.getAttribute('data-wave-state') === 'settle') setWaveState('calm');
+      }, 1900);
+    }
+    // error chop decays on its own when nothing else happens
+    if (state === 'error') {
+      setTimeout(function () {
+        var r = document.getElementById(AMBIENT_ID);
+        if (r && r.getAttribute('data-wave-state') === 'error') setWaveState('calm');
+      }, 1800);
+    }
+  }
+  function setWaveState(state) {
+    var root = document.getElementById(AMBIENT_ID);
+    if (!root) return;
+    if (state === root.getAttribute('data-wave-state')) return;
+    var now = Date.now();
+    var dwell = (state === 'settle' || state === 'error' || state === 'calm') ? 0 : 800;
+    if (dwell > 0 && now - lastApplied < dwell) {
+      pendingState = state;
+      clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(function () {
+        var s = pendingState;
+        pendingState = null;
+        if (s) setWaveState(s);
+      }, dwell - (now - lastApplied));
+      return;
+    }
+    lastApplied = now;
+    applyState(state);
+  }
+  // watchdog: an active state that stops receiving events (missed turn/end,
+  // crashed bridge) reverts to calm
+  var watchdog = 0;
+  function armWatchdog() {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(function () {
+      var r = document.getElementById(AMBIENT_ID);
+      if (r) setWaveState('calm');
+    }, 15000);
+  }
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('dsh-wave-state', function (e) {
+        var state = e && e.payload && e.payload.state;
+        var valid = { calm: 1, thinking: 1, streaming: 1, tooling: 1, waiting: 1, error: 1, settle: 1 };
+        if (!valid[state]) return;
+        setWaveState(state);
+        if (state === 'calm' || state === 'settle') clearTimeout(watchdog);
+        else armWatchdog();
+        report('wave', state);
+      });
+    }
+  } catch (e) {}
+
+  function mount() {
+    if (!document.head) return false;
+    var ok = true;
+    try {
+      if (!document.getElementById(STYLE_ID)) {
+        var s = document.createElement('style');
+        s.id = STYLE_ID;
+        s.textContent = css;
+        document.head.appendChild(s);
+        report('mounted', 'ocean design-token skin active');
+      }
+    } catch (e) {
+      report('mount-error', String(e));
+      ok = false;
+    }
+    try {
+      if (document.body && !document.getElementById(AMBIENT_ID)) {
+        var root = document.createElement('div');
+        root.id = AMBIENT_ID;
+        root.setAttribute('data-wave-state', 'calm');
+        root.innerHTML = ambientHtml();
+        document.body.appendChild(root);
+        report('ambient', 'ocean motion layer mounted');
+        syncEngine();
+      }
+    } catch (e) {
+      report('ambient-error', String(e));
+      ok = false;
+    }
+    return ok;
+  }
+
+  // document-start, retried by the same defensive triggers as the title bar
+  if (!mount()) {
+    document.addEventListener('DOMContentLoaded', function () { mount(); }, { once: true });
+    var tries = 0;
+    var iv = setInterval(function () {
+      tries += 1;
+      if (mount() || tries > 120) clearInterval(iv);
+    }, 250);
+  }
+  // slow re-arm: if the dsh app wipes/replaces the DOM, mount again
+  setInterval(function () {
+    if (!document.head) return;
+    if (!document.getElementById(STYLE_ID) || (document.body && !document.getElementById(AMBIENT_ID))) {
+      mount();
+    }
+  }, 1000);
 })();
 "#;
 
@@ -486,6 +1038,18 @@ enum Adapter {
     Probe,
 }
 
+/// Motion intensity of the desktop UI. `Rich` keeps the full ocean ambient
+/// animation set (drifting glows, wave bands, bubbles, the whale theme-switch
+/// transition); `Quiet` keeps only essential micro-interactions, entrances and
+/// feedback, with shorter durations. Serializes to lowercase strings
+/// ("quiet" | "rich") for config.json and the JS bridge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MotionIntensity {
+    Quiet,
+    Rich,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -499,6 +1063,14 @@ pub struct AppConfig {
     /// Unix ms when the current API key was registered (drives the DSH in-app
     /// "consumption since key registration" analytics).
     pub key_registered_at: Option<i64>,
+    /// UI motion intensity (see `MotionIntensity`). Serde default keeps older
+    /// config.json files (without the field) loading as `Rich`.
+    #[serde(default = "default_motion")]
+    pub motion: MotionIntensity,
+}
+
+fn default_motion() -> MotionIntensity {
+    MotionIntensity::Rich
 }
 
 impl Default for AppConfig {
@@ -512,6 +1084,7 @@ impl Default for AppConfig {
             balance_low_threshold: Some(5.0),
             update_repo: None,
             key_registered_at: None,
+            motion: MotionIntensity::Rich,
         }
     }
 }
@@ -532,6 +1105,7 @@ pub struct StatusSnapshot {
     pub log_path: String,
     pub dsh_home: String,
     pub dsh_port: u16,
+    pub motion_intensity: MotionIntensity,
 }
 
 #[derive(Serialize)]
@@ -1581,7 +2155,10 @@ async fn health_check_loop(app: AppHandle) {
                 // scripts mount everything on the dsh page; re-eval after
                 // navigation covers exotic cases where document-created
                 // injection failed.
-                let script = format!("{}\n{}", TITLEBAR_SCRIPT, THEME_TRANSITION_SCRIPT);
+                let script = format!(
+                    "{}\n{}\n{}",
+                    TITLEBAR_SCRIPT, THEME_TRANSITION_SCRIPT, OCEAN_THEME_SCRIPT
+                );
                 for delay in [3u64, 10] {
                     let app3 = app.clone();
                     let script3 = script.clone();
@@ -2086,6 +2663,7 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
         // handle each request on its own thread: /refresh can block up to the
         // balance-fetch timeout and must never queue /balance or /turn-end
         // behind it (the in-app widget's /desktop proxy has a 3s deadline).
+        let log_file = paths.log_file.clone();
         loop {
             let mut req = match server.recv() {
                 Ok(req) => req,
@@ -2095,6 +2673,7 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                 }
             };
             let app2 = app.clone();
+            let log_file2 = log_file.clone();
             thread::spawn(move || {
                 let url = req.url().to_string();
                 let method = req.method().clone();
@@ -2107,6 +2686,38 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             let state2 = app3.state::<AppState>();
                             let _ = refresh_balance(&app3, &state2).await;
                         });
+                    }
+                    ("POST", "/turn-state") => {
+                        // wave-state feed from the bridge plugin: read the JSON
+                        // body, acknowledge, then broadcast to the main window
+                        // (the injected ambient layer listens and crossfades)
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let _ = req.respond(tiny_http::Response::from_string("ok").with_status_code(200));
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                        let state = payload
+                            .get("state")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let detail = payload
+                            .get("detail")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        const WAVE_STATES: [&str; 7] =
+                            ["calm", "thinking", "streaming", "tooling", "waiting", "error", "settle"];
+                        if WAVE_STATES.contains(&state.as_str()) {
+                            let _ = app2.emit(
+                                "dsh-wave-state",
+                                serde_json::json!({ "state": state, "detail": detail }),
+                            );
+                            log_line(
+                                &log_file2,
+                                &format!("wave state: {state} <- {detail}").trim_end(),
+                            );
+                        }
                     }
                     ("GET", "/balance") => {
                         let state2 = app2.state::<AppState>();
@@ -2319,7 +2930,29 @@ fn get_status(app: AppHandle, state: State<'_, AppState>) -> StatusSnapshot {
         log_path: paths.log_file.display().to_string(),
         dsh_home: paths.dsh_home.display().to_string(),
         dsh_port: dsh_port(&config),
+        motion_intensity: config.motion,
     }
+}
+
+/// Persist the UI motion intensity and broadcast `motion-updated` so every
+/// window (splash, settings, and the injected dsh page scripts) applies it
+/// live without a reload.
+#[tauri::command]
+fn set_motion_intensity(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    motion: MotionIntensity,
+) -> Result<MotionIntensity, String> {
+    let mut config = state.config.lock().unwrap().clone();
+    let paths = resolve_paths(&app, &config);
+    config.motion = motion;
+    save_config(&paths.config_file, &config);
+    *state.config.lock().unwrap() = config;
+    let _ = app.emit(
+        "motion-updated",
+        serde_json::json!({ "motion": motion }),
+    );
+    Ok(motion)
 }
 
 #[tauri::command]
@@ -2452,12 +3085,14 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         let _ = w.set_focus();
         return Ok(());
     }
+    let motion = app.state::<AppState>().config.lock().unwrap().motion;
     let w = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DSH Desktop 设置")
         .inner_size(560.0, 780.0)
         .min_inner_size(480.0, 560.0)
         .data_directory(webview_data_dir(&app))
         .initialization_script(INIT_SCRIPT)
+        .initialization_script(motion_init_script(motion))
         .build()
         .map_err(|e| e.to_string())?;
     let _ = w.set_focus();
@@ -3122,7 +3757,8 @@ pub fn run() {
             check_update,
             apply_dsh_update,
             get_autostart,
-            set_autostart
+            set_autostart,
+            set_motion_intensity
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -3166,8 +3802,10 @@ pub fn run() {
                 .visible(!start_hidden)
                 .data_directory(webview_data_dir(&handle))
                 .initialization_script(INIT_SCRIPT)
+                .initialization_script(motion_init_script(config.motion))
                 .initialization_script(TITLEBAR_SCRIPT)
                 .initialization_script(THEME_TRANSITION_SCRIPT)
+                .initialization_script(OCEAN_THEME_SCRIPT)
                 .build()
                 .map_err(|e| format!("创建主窗口失败: {e}"))?;
             if !start_hidden {
@@ -3204,6 +3842,28 @@ pub fn run() {
                     log_line(
                         &log_file,
                         &format!("titlebar state: {state} {detail}").trim_end(),
+                    );
+                });
+            }
+
+            // Diagnostics: the injected ocean skin reports its own state too —
+            // "ocean theme: mounted" in dsh.log proves the token override
+            // stylesheet landed on the dsh page.
+            {
+                let log_file = paths.log_file.clone();
+                let _ = handle.listen("dsh-ocean-theme", move |event| {
+                    let (state, detail) = serde_json::from_str::<serde_json::Value>(event.payload())
+                        .ok()
+                        .and_then(|p| {
+                            Some((
+                                p.get("state")?.as_str()?.to_string(),
+                                p.get("detail")?.as_str()?.to_string(),
+                            ))
+                        })
+                        .unwrap_or_default();
+                    log_line(
+                        &log_file,
+                        &format!("ocean theme: {state} {detail}").trim_end(),
                     );
                 });
             }

@@ -70,13 +70,14 @@ try {
 
   // --- 3. apply() wiring + routes -------------------------------------------
   const handlers = {}
+  const emit = (event, ...args) => (handlers[event] ?? []).forEach((fn) => fn(...args))
   let routeRegistration = null
   const disposers = []
   const mockCtx = {
     effect: (fn) => { fn(); return () => {}; },
     webServer: { register: (registration) => { routeRegistration = registration; } },
     on: (event, fn) => {
-      handlers[event] = fn;
+      (handlers[event] = handlers[event] ?? []).push(fn)
       return () => {};
     },
     get: (name) => (name === 'credentials' ? { set: async () => {}, unset: async () => {} } : undefined),
@@ -85,8 +86,9 @@ try {
   plugin.apply(mockCtx, { port: 0, shellPort: 38657 })
   if (plugin.name !== 'dsh-desktop-bridge' || !plugin.inject.includes('webServer')) throw new Error('bad plugin shape')
   if (routeRegistration?.path !== '/desktop') throw new Error(`bad route path: ${routeRegistration?.path}`)
-  if (typeof handlers['agent/status'] !== 'function') throw new Error('agent/status listener missing')
-  if (typeof handlers['dispose'] !== 'function') throw new Error('dispose listener missing')
+  if ((handlers['agent/status'] ?? []).length === 0) throw new Error('agent/status listener missing')
+  if ((handlers['session/event'] ?? []).length === 0) throw new Error('session/event listener missing')
+  if ((handlers['dispose'] ?? []).length === 0) throw new Error('dispose listener missing')
   console.log('apply wiring ok')
 
   const fakeRes = () => {
@@ -142,12 +144,52 @@ try {
   }
   {
     // agent/status running→idle transition arms the turn-end notifier once
-    handlers['agent/status']({ status: 'running' })
-    handlers['agent/status']({ status: 'idle' })
-    handlers['agent/status']({ status: 'idle' })
+    emit('agent/status', { status: 'running' })
+    emit('agent/status', { status: 'idle' })
+    emit('agent/status', { status: 'idle' })
     console.log('agent/status listener ok')
   }
-  handlers['dispose']()
+  {
+    // --- 4. wave-state classifier: session/event → POST /turn-state --------
+    const wavePosts = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async (url, init) => {
+      if (String(url).endsWith('/turn-state')) {
+        wavePosts.push({ url: String(url), body: JSON.parse(init?.body ?? '{}') })
+        return { ok: true }
+      }
+      return realFetch(url, init)
+    }
+    try {
+      // agent/status fallback first (before any session event is seen):
+      // fresh running → thinking; dropping to idle while active → settle
+      const beforeFallback = wavePosts.length
+      emit('agent/status', { status: 'running' })
+      emit('agent/status', { status: 'idle' })
+      const fallback = wavePosts.slice(beforeFallback).map((p) => p.body.state).join(',')
+      if (fallback !== 'thinking,settle') throw new Error(`wave-state fallback mismatch: ${fallback}`)
+      console.log('wave-state agent/status fallback ok:', fallback)
+
+      const before = wavePosts.length
+      emit('session/event', null, { type: 'turn/start', data: {} })
+      emit('session/event', null, { type: 'assistant/chunk', data: {} })
+      emit('session/event', null, { type: 'assistant/chunk', data: {} }) // dedupe
+      emit('session/event', null, { type: 'tool/call', data: {} })
+      emit('session/event', null, { type: 'tool/result', data: { error: { name: 'x', code: 'y' } } })
+      emit('session/event', null, { type: 'approval/asked', data: {} })
+      emit('session/event', null, { type: 'approval/decided', data: {} })
+      emit('session/event', null, { type: 'turn/end', data: {} })
+      const states = wavePosts.slice(before).map((p) => p.body.state)
+      const expected = 'thinking,streaming,tooling,error,waiting,thinking,settle'
+      if (states.join(',') !== expected) throw new Error(`wave-state mismatch: ${states.join(',')} ≠ ${expected}`)
+      const details = wavePosts.slice(before).map((p) => p.body.detail)
+      if (details[3] !== 'tool/result' || details[4] !== 'approval/asked') throw new Error(`wave-state detail mismatch: ${details.join(',')}`)
+      console.log('wave-state classifier ok:', states.join(' → '))
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+  emit('dispose')
   console.log('dispose ok')
 } finally {
   rmSync(home, { recursive: true, force: true })

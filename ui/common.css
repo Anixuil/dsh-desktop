@@ -1,65 +1,76 @@
-:root {
-  --bg: #0F1117;
-  --bg-panel: #171A23;
-  --border: #2A2F3D;
-  --text: #E6E8EE;
-  --text-dim: #8A90A2;
-  --accent: #6366F1;
-  --ok: #34D399;
-  --warn: #FBBF24;
-  --err: #F87171;
-  color-scheme: dark;
-}
-* { box-sizing: border-box; }
+/* ============================================================
+   DSH Desktop — settings window, ocean theme
+   Layered on ui/theme.css (tokens, primitives, motion system).
+   ============================================================ */
+
 body {
-  margin: 0; padding: 0;
-  background: var(--bg); color: var(--text);
-  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  font-size: 14px;
+  padding: 20px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(900px 500px at 85% -10%, rgba(38, 84, 190, .22), transparent 60%),
+    linear-gradient(180deg, var(--ocean-950), var(--ocean-900));
 }
-h1 { font-size: 18px; margin: 0 0 16px; }
-h2 { font-size: 14px; margin: 24px 0 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; }
-.card {
-  background: var(--bg-panel); border: 1px solid var(--border);
-  border-radius: 12px; padding: 16px;
+
+.wrap { position: relative; z-index: 1; max-width: 640px; margin: 0 auto; }
+
+h2:first-child { margin-top: 0; }
+.wrap > .card + .card { margin-top: 14px; }
+
+/* entrance stagger — cards are the only div children of .wrap
+   (backwards fill so hover lift transitions stay effective afterwards) */
+.wrap > .card { animation: rise-in var(--dur-med) var(--ease-out-soft) backwards; }
+.wrap > .card:nth-of-type(1) { animation-delay: .02s; }
+.wrap > .card:nth-of-type(2) { animation-delay: .08s; }
+.wrap > .card:nth-of-type(3) { animation-delay: .14s; }
+.wrap > .card:nth-of-type(4) { animation-delay: .2s; }
+.wrap > .card:nth-of-type(5) { animation-delay: .26s; }
+.wrap > .card:nth-of-type(6) { animation-delay: .32s; }
+.wrap > .card:nth-of-type(7) { animation-delay: .38s; }
+
+/* quiet mode drops the stagger delays (cards appear together) */
+:root[data-motion="quiet"] .wrap > .card { animation-delay: 0s; }
+
+/* ---- ambient glows (settings: two, subdued) ---- */
+.g-s1 {
+  width: 480px; height: 480px; top: -220px; right: -140px;
+  background: radial-gradient(circle, rgba(77, 107, 254, .24), rgba(77, 107, 254, .06) 48%, transparent 70%);
 }
-label { display: block; margin-bottom: 6px; color: var(--text-dim); font-size: 13px; }
-input[type="password"], input[type="text"] {
-  width: 100%; padding: 9px 12px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text); font-size: 14px; outline: none;
+.g-s2 {
+  width: 420px; height: 420px; bottom: -180px; left: -160px;
+  background: radial-gradient(circle, rgba(60, 198, 232, .14), transparent 70%);
 }
-input:focus { border-color: var(--accent); }
-button {
-  padding: 9px 16px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-panel); color: var(--text); cursor: pointer; font-size: 13px;
+
+/* ---- content ---- */
+.kv + .kv { border-top: 1px solid rgba(96, 150, 235, .07); }
+
+.balance-big {
+  font-size: 28px; font-weight: 700; margin: 8px 0 2px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(90deg, var(--foam), var(--aqua-soft));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
-button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { filter: brightness(1.1); }
-.row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-.kv { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; }
-.kv .k { color: var(--text-dim); }
-.kv .v { font-variant-numeric: tabular-nums; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-.badge.ok { background: rgba(52,211,153,.15); color: var(--ok); }
-.badge.warn { background: rgba(251,191,36,.15); color: var(--warn); }
-.badge.err { background: rgba(248,113,113,.15); color: var(--err); }
-.balance-big { font-size: 28px; font-weight: 700; margin: 8px 0 2px; }
-#msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
-#msg.ok { color: var(--ok); }
-#msg.err { color: var(--err); }
-.hint { color: var(--text-dim); font-size: 12px; margin-top: 6px; }
+
+/* ---- autostart switch row ---- */
+.autostart {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; color: var(--foam); cursor: pointer; user-select: none;
+}
+label.autostart { margin-bottom: 0; }
 
 /* ---- about ---- */
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
 .about-head { display: flex; align-items: center; gap: 12px; margin: 2px 0 8px; }
-.about-logo { width: 46px; height: 46px; flex: none; }
+.about-logo {
+  width: 46px; height: 46px; flex: none;
+  filter: drop-shadow(0 0 10px rgba(77, 107, 254, .4));
+}
+:root[data-motion="rich"] .about-logo { animation: about-float 4s ease-in-out infinite alternate; }
+@keyframes about-float { to { transform: translateY(-3px); } }
 .about-name { font-size: 15px; font-weight: 600; }
-.about-ver { font-size: 12px; color: var(--text-dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.about-ver { font-size: 12px; color: var(--depth); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .about-links { margin-top: 10px; }
 .about-links a { font-size: 13px; }
-#about-msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
-#about-msg.ok { color: var(--ok); }
-#about-msg.err { color: var(--err); }
+
+/* ---- kv layout tweaks ---- */
+#st-home { word-break: break-all; text-align: right; }

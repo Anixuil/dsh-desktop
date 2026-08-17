@@ -3,92 +3,137 @@
 <head>
   <meta charset="utf-8" />
   <title>DSH Desktop 设置</title>
+  <link rel="stylesheet" href="theme.css" />
   <link rel="stylesheet" href="common.css" />
+  <script>
+    // persisted motion intensity injected by the shell before page scripts —
+    // apply it before first paint so ambient animation never flashes the
+    // wrong mode
+    document.documentElement.dataset.motion =
+      window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich';
+  </script>
 </head>
-<body style="padding:20px">
-  <h1>DSH Desktop 设置</h1>
-
-  <div class="card">
-    <h2 style="margin-top:0">运行状态</h2>
-    <div class="kv"><span class="k">DSH 服务</span><span class="v" id="st-dsh">…</span></div>
-    <div class="kv"><span class="k">桥接（对话结束通知）</span><span class="v" id="st-bridge">…</span></div>
-    <div class="kv"><span class="k">运行模式</span><span class="v" id="st-mode">…</span></div>
-    <div class="kv"><span class="k">壳版本 / dsh 版本 / Node</span><span class="v" id="st-versions">…</span></div>
-    <div class="kv"><span class="k">DSH_HOME</span><span class="v" id="st-home" style="word-break:break-all;text-align:right">…</span></div>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="glow g-s1 drift-a"></div>
+    <div class="glow g-s2 drift-b"></div>
   </div>
-
-  <div class="card" style="margin-top:14px">
-    <h2 style="margin-top:0">DeepSeek API Key</h2>
-    <label for="key">API Key（用于对话调用与余额查询，保存在本机）</label>
-    <input type="password" id="key" placeholder="sk-..." autocomplete="off" />
-    <div class="row">
-      <button class="primary" id="save">保存并验证</button>
-      <button id="clear">清除</button>
-      <button id="refresh">立即刷新余额</button>
+  <div class="waves" aria-hidden="true">
+    <div class="wv wv-b">
+      <svg viewBox="0 0 1200 120" preserveAspectRatio="none"><path d="M0 100 C90 62 210 62 300 100 C390 138 510 138 600 100 C690 62 810 62 900 100 C990 138 1110 138 1200 100 V120 H0 Z" fill="rgba(60,140,220,.08)"/></svg>
     </div>
-    <div id="msg"></div>
-  </div>
-
-  <div class="card" style="margin-top:14px">
-    <h2 style="margin-top:0">余额</h2>
-    <div class="kv"><span class="k">状态</span><span class="v" id="bal-status"><span class="badge warn">未获取</span></span></div>
-    <div class="balance-big" id="bal-total">—</div>
-    <div class="kv"><span class="k">充值余额</span><span class="v" id="bal-topped">—</span></div>
-    <div class="kv"><span class="k">赠送余额</span><span class="v" id="bal-granted">—</span></div>
-    <div class="kv"><span class="k">币种</span><span class="v" id="bal-currency">—</span></div>
-    <div class="kv"><span class="k">最近刷新</span><span class="v" id="bal-at">—</span></div>
-    <p class="hint">对话结束后（模型回复完成）自动刷新一次；另有每 60 秒轮询与托盘手动刷新。</p>
-  </div>
-
-  <div class="card" style="margin-top:14px">
-    <h2 style="margin-top:0">自动更新</h2>
-    <div class="kv"><span class="k">壳版本（本应用）</span><span class="v" id="up-app">…</span></div>
-    <div class="kv"><span class="k">dsh 内核版本</span><span class="v" id="up-dsh">…</span></div>
-    <div class="row">
-      <button id="check-update">检查更新</button>
-      <button id="apply-dsh-update" disabled>更新 dsh 内核</button>
+    <div class="wv wv-a">
+      <svg viewBox="0 0 1200 120" preserveAspectRatio="none"><path d="M0 84 C75 46 225 46 300 84 C375 122 525 122 600 84 C675 46 825 46 900 84 C975 122 1125 122 1200 84 V120 H0 Z" fill="rgba(77,107,254,.10)"/></svg>
     </div>
-    <div id="up-msg"></div>
-    <p class="hint">壳更新默认检查 GitHub 仓库 Anixuil/dsh-desktop 的 Releases（可通过 DSH_DESKTOP_UPDATE_REPO 环境变量或配置 update_repo 覆盖）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
-    <label style="margin-top:10px">
-      <input type="checkbox" id="autostart" /> 开机自启（登录 Windows 时自动启动）
-    </label>
-    <p class="hint">开启后登录时应用会静默启动到系统托盘并预热 DSH 服务，不会弹出窗口；之后点击托盘图标或再次双击应用即可秒开主界面。</p>
+  </div>
+  <div class="bubbles" aria-hidden="true">
+    <span class="bubble" style="--bx:10%; --bs:6px; --bd:18s; --bdelay:-3s;  --bop:.3;  --bsx:12px"></span>
+    <span class="bubble" style="--bx:38%; --bs:4px; --bd:22s; --bdelay:-12s; --bop:.25; --bsx:-10px"></span>
+    <span class="bubble" style="--bx:63%; --bs:7px; --bd:15s; --bdelay:-7s;  --bop:.3;  --bsx:14px"></span>
+    <span class="bubble" style="--bx:82%; --bs:5px; --bd:20s; --bdelay:-2s;  --bop:.25; --bsx:-12px"></span>
+    <span class="bubble" style="--bx:94%; --bs:4px; --bd:24s; --bdelay:-15s; --bop:.2;  --bsx:10px"></span>
   </div>
 
-  <div class="card" style="margin-top:14px">
-    <h2 style="margin-top:0">诊断</h2>
-    <div class="row">
-      <button id="open-logs">打开日志目录</button>
-      <button id="open-home">打开 DSH 数据目录</button>
+  <div class="wrap">
+    <h1>DSH Desktop 设置</h1>
+
+    <div class="card">
+      <h2>运行状态</h2>
+      <div class="kv"><span class="k">DSH 服务</span><span class="v" id="st-dsh">…</span></div>
+      <div class="kv"><span class="k">桥接（对话结束通知）</span><span class="v" id="st-bridge">…</span></div>
+      <div class="kv"><span class="k">运行模式</span><span class="v" id="st-mode">…</span></div>
+      <div class="kv"><span class="k">壳版本 / dsh 版本 / Node</span><span class="v" id="st-versions">…</span></div>
+      <div class="kv"><span class="k">DSH_HOME</span><span class="v" id="st-home">…</span></div>
     </div>
-    <p class="hint" id="log-path">—</p>
-  </div>
 
-  <div class="card" style="margin-top:14px">
-    <h2 style="margin-top:0">关于</h2>
-    <div class="about-head">
-      <img class="about-logo" src="whale.svg" alt="DSH Desktop" />
-      <div class="about-title">
-        <div class="about-name">DeepSeek Harness Desktop</div>
-        <div class="about-ver" id="about-version">v…</div>
+    <div class="card">
+      <h2>外观与动效</h2>
+      <div class="kv">
+        <span class="k">动效强度</span>
+        <span class="v">
+          <span class="seg" id="motion-seg" role="radiogroup" aria-label="动效强度">
+            <button type="button" data-motion="quiet" role="radio" aria-checked="false">安静</button>
+            <button type="button" data-motion="rich" role="radio" aria-checked="true">丰富</button>
+          </span>
+        </span>
       </div>
+      <p class="hint">安静：只保留必要的过渡与交互反馈；丰富：完整的海洋氛围动效（光斑漂移、波浪、气泡、主题过渡）。更改立即生效并保存在本机。</p>
     </div>
-    <div class="kv"><span class="k">作者</span><span class="v">Anixuil</span></div>
-    <div class="kv"><span class="k">博客</span><span class="v"><a href="#" id="about-blog">www.anixuil.top</a></span></div>
-    <div class="kv"><span class="k">GitHub 仓库</span><span class="v"><a href="#" id="about-github">github.com/Anixuil/dsh-desktop</a></span></div>
-    <p class="hint">
-      本应用由 Anixuil 开发维护，把 DeepSeek Harness 封装为 Windows 桌面体验（内置 Node 运行时与 dsh 内核）。
-      欢迎访问博客 www.anixuil.top 了解更多，或在 GitHub 仓库查看源码、提交 Issue、参与共建。
-    </p>
-    <div class="row">
-      <button id="about-check-update">检查更新</button>
-      <button id="about-github-btn" class="primary">访问 GitHub 仓库</button>
+
+    <div class="card">
+      <h2>DeepSeek API Key</h2>
+      <label for="key">API Key（用于对话调用与余额查询，保存在本机）</label>
+      <input type="password" id="key" placeholder="sk-..." autocomplete="off" />
+      <div class="row">
+        <button class="primary" id="save">保存并验证</button>
+        <button id="clear">清除</button>
+        <button id="refresh">立即刷新余额</button>
+      </div>
+      <div id="msg"></div>
     </div>
-    <div class="about-links">
-      <a href="#" id="about-release-link" hidden>前往 Releases 下载新版本</a>
+
+    <div class="card">
+      <h2>余额</h2>
+      <div class="kv"><span class="k">状态</span><span class="v" id="bal-status"><span class="badge warn">未获取</span></span></div>
+      <div class="balance-big" id="bal-total">—</div>
+      <div class="kv"><span class="k">充值余额</span><span class="v" id="bal-topped">—</span></div>
+      <div class="kv"><span class="k">赠送余额</span><span class="v" id="bal-granted">—</span></div>
+      <div class="kv"><span class="k">币种</span><span class="v" id="bal-currency">—</span></div>
+      <div class="kv"><span class="k">最近刷新</span><span class="v" id="bal-at">—</span></div>
+      <p class="hint">对话结束后（模型回复完成）自动刷新一次；另有每 60 秒轮询与托盘手动刷新。</p>
     </div>
-    <div id="about-msg"></div>
+
+    <div class="card">
+      <h2>自动更新</h2>
+      <div class="kv"><span class="k">壳版本（本应用）</span><span class="v" id="up-app">…</span></div>
+      <div class="kv"><span class="k">dsh 内核版本</span><span class="v" id="up-dsh">…</span></div>
+      <div class="row">
+        <button id="check-update">检查更新</button>
+        <button id="apply-dsh-update" disabled>更新 dsh 内核</button>
+      </div>
+      <div id="up-msg"></div>
+      <p class="hint">壳更新默认检查 GitHub 仓库 Anixuil/dsh-desktop 的 Releases（可通过 DSH_DESKTOP_UPDATE_REPO 环境变量或配置 update_repo 覆盖）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
+      <label class="autostart">
+        <span class="switch"><input type="checkbox" id="autostart" /><span class="knob"></span></span>
+        <span>开机自启（登录 Windows 时自动启动）</span>
+      </label>
+      <p class="hint">开启后登录时应用会静默启动到系统托盘并预热 DSH 服务，不会弹出窗口；之后点击托盘图标或再次双击应用即可秒开主界面。</p>
+    </div>
+
+    <div class="card">
+      <h2>诊断</h2>
+      <div class="row">
+        <button id="open-logs">打开日志目录</button>
+        <button id="open-home">打开 DSH 数据目录</button>
+      </div>
+      <p class="hint" id="log-path">—</p>
+    </div>
+
+    <div class="card">
+      <h2>关于</h2>
+      <div class="about-head">
+        <img class="about-logo" src="whale.svg" alt="DSH Desktop" />
+        <div class="about-title">
+          <div class="about-name">DeepSeek Harness Desktop</div>
+          <div class="about-ver" id="about-version">v…</div>
+        </div>
+      </div>
+      <div class="kv"><span class="k">作者</span><span class="v">Anixuil</span></div>
+      <div class="kv"><span class="k">博客</span><span class="v"><a href="#" id="about-blog">www.anixuil.top</a></span></div>
+      <div class="kv"><span class="k">GitHub 仓库</span><span class="v"><a href="#" id="about-github">github.com/Anixuil/dsh-desktop</a></span></div>
+      <p class="hint">
+        本应用由 Anixuil 开发维护，把 DeepSeek Harness 封装为 Windows 桌面体验（内置 Node 运行时与 dsh 内核）。
+        欢迎访问博客 www.anixuil.top 了解更多，或在 GitHub 仓库查看源码、提交 Issue、参与共建。
+      </p>
+      <div class="row">
+        <button id="about-check-update">检查更新</button>
+        <button id="about-github-btn" class="primary">访问 GitHub 仓库</button>
+      </div>
+      <div class="about-links">
+        <a href="#" id="about-release-link" hidden>前往 Releases 下载新版本</a>
+      </div>
+      <div id="about-msg"></div>
+    </div>
   </div>
 
   <script src="settings.js"></script>

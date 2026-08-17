@@ -8,10 +8,12 @@
 //     from the DSH session projection cache + session logs)
 //
 // Implementation lives in the modules under lib/: zstd frame scan, session
-// model attribution, usage aggregation, the credentials listener, and the
-// /desktop routes. This entry only wires them into the cordis context.
+// model attribution, usage aggregation, the credentials listener, the
+// /desktop routes, and the wave-state classifier. This entry only wires them
+// into the cordis context.
 import { startCredentialsServer } from './lib/credentials.js'
 import { registerDesktopRoutes } from './lib/desktop-routes.js'
+import { registerWaveState } from './lib/wave-state.js'
 
 export const name = 'dsh-desktop-bridge'
 export const inject = ['webServer']
@@ -30,6 +32,9 @@ export function apply(ctx, config) {
 
   // same-origin /desktop routes + turn-end notifications
   registerDesktopRoutes(ctx, { shellPort })
+
+  // conversation-state classifier → shell /turn-state (drives the wave UI)
+  registerWaveState(ctx, { shellPort })
 
   ctx.on('dispose', () => {
     credentials.close()

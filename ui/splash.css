@@ -1,0 +1,162 @@
+/* ============================================================
+   DSH Desktop — splash (boot) page, ocean theme
+   Layered on ui/theme.css (tokens, primitives, motion system).
+   ============================================================ */
+
+body {
+  /* true vertical centering: the flex container must own full height */
+  height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(1100px 640px at 72% -12%, rgba(40, 88, 196, .30), transparent 62%),
+    radial-gradient(900px 560px at 8% 108%, rgba(20, 78, 150, .22), transparent 60%),
+    linear-gradient(180deg, #0A1122 0%, #0C1730 55%, #0A1428 100%);
+  overflow: hidden;
+}
+
+/* ---- ambient glows: falloff baked into gradients (no filter blur) ---- */
+.g1 {
+  width: 560px; height: 560px; left: -160px; top: -180px;
+  background: radial-gradient(circle, rgba(77, 107, 254, .34), rgba(77, 107, 254, .10) 45%, transparent 70%);
+}
+.g2 {
+  width: 500px; height: 500px; right: -140px; bottom: -160px;
+  background: radial-gradient(circle, rgba(60, 198, 232, .16), transparent 70%);
+}
+.g3 {
+  width: 320px; height: 320px; left: 55%; top: 10%;
+  background: radial-gradient(circle, rgba(124, 140, 248, .14), transparent 70%);
+}
+
+/* ---- centered core ---- */
+.splash {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 32px 24px;
+  transition: opacity .36s var(--ease-out-soft), transform .36s cubic-bezier(.5, 0, .8, .4);
+}
+/* staggered entrance (backwards fill: hidden during delay, normal styles
+   resume afterwards so .stage.dim / .dive transitions stay effective) */
+.splash > * { animation: rise-in var(--dur-med) var(--ease-out-soft) backwards; }
+.splash .emblem { animation-delay: .05s; }
+.splash .brand { animation-delay: .14s; }
+.splash .brand-sub { animation-delay: .18s; }
+.splash .track { animation-delay: .24s; }
+.splash .meta { animation-delay: .3s; }
+.splash .status { animation-delay: .34s; }
+
+/* ready → "dive" transition before navigating to the dsh web UI */
+body.dive .splash { opacity: 0; transform: translateY(14px) scale(1.02); }
+body.dive .winbar { transition: opacity .3s ease; opacity: 0; }
+body.dive .waves, body.dive .bg { transition: opacity .3s ease; opacity: .4; }
+
+/* ---- emblem ---- */
+.emblem {
+  position: relative; width: 104px; height: 104px; margin-bottom: 26px;
+  display: flex; align-items: center; justify-content: center;
+}
+/* rotating arc ring — loading indicator, kept in quiet mode */
+.ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    transparent 0deg, transparent 250deg,
+    var(--ds-blue) 300deg, transparent 350deg, transparent 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  animation: ring-spin 2.2s linear infinite;
+}
+@keyframes ring-spin { to { transform: rotate(360deg); } }
+.ring2 {
+  position: absolute; inset: 12px; border-radius: 50%;
+  border: 1px solid rgba(77, 107, 254, .25);
+}
+.whale {
+  width: 58px; height: 58px;
+  filter: drop-shadow(0 0 14px rgba(77, 107, 254, .55));
+  will-change: transform, filter;
+}
+:root[data-motion="rich"] .whale { animation: breathe 3.6s ease-in-out infinite alternate; }
+@keyframes breathe {
+  from { transform: scale(1); filter: drop-shadow(0 0 10px rgba(77, 107, 254, .4)); }
+  to { transform: scale(1.06); filter: drop-shadow(0 0 22px rgba(77, 107, 254, .75)); }
+}
+
+/* ripple ring — JS re-triggers on each progress event */
+.ripple {
+  position: absolute; inset: 6px; border-radius: 50%;
+  border: 1px solid rgba(96, 165, 250, .7);
+  opacity: 0; pointer-events: none;
+}
+.ripple.go { animation: ripple-out .8s var(--ease-out-soft); }
+:root[data-motion="quiet"] .ripple { display: none; }
+
+/* ---- brand ---- */
+.brand {
+  font-size: 21px; font-weight: 600; letter-spacing: .2px;
+  color: var(--foam);
+}
+.brand-sub {
+  margin-top: 4px; font-size: 12px; letter-spacing: 3px;
+  color: var(--depth); text-transform: uppercase;
+}
+
+/* ---- progress ---- */
+.track {
+  width: 264px; height: 4px; margin-top: 30px;
+  background: rgba(255, 255, 255, .07);
+  border-radius: 999px; overflow: hidden;
+}
+.fill {
+  position: relative; height: 100%; width: 0%;
+  border-radius: 999px; overflow: hidden;
+  background: linear-gradient(90deg, #3653E8, var(--ds-blue), var(--aqua));
+  box-shadow: 0 0 10px rgba(77, 107, 254, .5);
+  transition: width .4s cubic-bezier(.3, .7, .3, 1);
+}
+/* sheen sweeping across the fill (transform loop) */
+.fill::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 42%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, .35), transparent);
+  transform: translateX(-130%) skewX(-20deg);
+}
+:root[data-motion="rich"] .fill::after { animation: sheen-sweep 2.4s var(--ease-out-soft) infinite; }
+:root[data-motion="quiet"] .fill { transition-duration: .15s; }
+
+.meta {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-top: 12px; min-height: 20px;
+}
+.stage {
+  font-size: 13px; color: var(--foam);
+  transition: opacity var(--dur-fast) ease, transform var(--dur-fast) ease;
+}
+.stage.dim { opacity: 0; transform: translateY(4px); }
+.percent {
+  font-size: 13px; color: var(--aqua-soft);
+  font-variant-numeric: tabular-nums;
+}
+.status {
+  margin-top: 4px; min-height: 18px; max-width: 420px;
+  font-size: 12px; color: var(--depth); text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---- error state ---- */
+.error {
+  margin-top: 22px; width: 380px; max-width: 84vw;
+  background: rgba(248, 121, 121, .07);
+  border: 1px solid rgba(248, 121, 121, .35);
+  border-radius: 12px; padding: 14px 16px;
+}
+.error-text { color: var(--err); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+.btn-row button { padding: 8px 18px; }
+body.error-state .ring, body.error-state .whale { animation-play-state: paused; }
+body.error-state .whale { filter: drop-shadow(0 0 12px rgba(248, 113, 113, .5)); }
+body.error-state .error {
+  animation: rise-in var(--dur-med) var(--ease-out-soft) both,
+    shake .5s var(--ease-out-soft) .2s both;
+}
+:root[data-motion="quiet"] body.error-state .error {
+  animation: rise-in var(--dur-med) var(--ease-out-soft) both;
+}

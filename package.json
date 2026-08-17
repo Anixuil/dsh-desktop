@@ -11,7 +11,8 @@
     "bundle-runtime": "node scripts/make-runtime-archive.mjs",
     "icons": "node scripts/gen-icon.mjs && tauri icon src-tauri/icons/icon.png",
     "build:plugins": "node scripts/bridge/build.mjs && node scripts/session-manager/build.mjs",
-    "test:plugins": "node scripts/test-client-bundle.mjs && node scripts/test-session-manager.mjs && node scripts/test-session-manager-host.mjs && node scripts/test-bridge-bundle-diff.mjs && node scripts/test-bridge-views.mjs && node scripts/test-bridge-host.mjs"
+    "test:ui": "node scripts/test-ui-syntax.mjs",
+    "test:plugins": "node scripts/test-client-bundle.mjs && node scripts/test-session-manager.mjs && node scripts/test-session-manager-host.mjs && node scripts/test-bridge-bundle-diff.mjs && node scripts/test-bridge-views.mjs && node scripts/test-bridge-host.mjs && node scripts/test-ui-syntax.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
