@@ -54,6 +54,12 @@ runtime/
 └─ .update-backup.json      dsh 更新后的待验证记录（回滚依据）
 ```
 
+`node/` 与 `dsh/` 默认解压到安装目录下的 `runtime/`。当安装目录对当前用户不可写
+（驱动器根目录 ACL、企业策略或安全软件拦截，首启会报 “拒绝访问 (os error 5)
+when creating dir …\runtime\node”），壳会自动改解压到
+`%LOCALAPPDATA%\com.anixuil.dshdesktop\runtime\`（探测方式是实际创建一个目录）；
+归档与 `plugins-src/` 始终从安装目录读取，卸载时两条路径都会清理。
+
 ### 内置识图插件（dsh-vision-any）
 
 - 构建时从 `codeload.github.com/tianmingwan/dsh-vision-any` 下载**固定 commit**

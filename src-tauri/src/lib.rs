@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     thread,
@@ -21,7 +21,7 @@ use std::{
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
@@ -561,6 +561,7 @@ pub struct AppState {
     last_refresh: Mutex<Option<Instant>>,
     last_update_check: Mutex<Option<Instant>>,
     tray_balance_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
+    tray_autostart_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
 }
 
 struct Paths {
@@ -568,7 +569,13 @@ struct Paths {
     logs_dir: PathBuf,
     log_file: PathBuf,
     patch_file: PathBuf,
+    /// Extracted/writable runtime tree (`node/` + `dsh/`): the install dir
+    /// normally, the per-user local app data dir when the install dir is not
+    /// writable by the running user.
     runtime_dir: PathBuf,
+    /// The bundled runtime location shipped by the installer: holds the packed
+    /// archive and the plugin sources. Read-only access is enough.
+    bundled_runtime_dir: PathBuf,
     node_exe: PathBuf,
     dsh_bin: PathBuf,
     dsh_home: PathBuf,
@@ -585,13 +592,86 @@ fn log_line(path: &Path, text: &str) {
     }
 }
 
-fn runtime_dir(app: &AppHandle) -> PathBuf {
-    let dir = if cfg!(debug_assertions) {
+/// Resolve the runtime layout as `(extracted, bundled)`.
+///
+/// The install dir ships the packed archive + plugin sources (`bundled`);
+/// first-run extraction must never depend on install-dir permissions, because
+/// installs onto drive-root folders, corporate policies, or security software
+/// can leave the install dir read-only for the running user even though the
+/// installer could write it (fresh installs then fail with "拒绝访问 (os
+/// error 5) when creating dir runtime\node").
+///
+/// Decision order:
+/// 1. the install-dir tree is already extracted → keep using it;
+/// 2. a fallback tree already exists (extracted on a previous boot) → keep
+///    booting from it (no surprise location flapping);
+/// 3. the install dir is writable (probed by actually creating a directory)
+///    → extract there, the common case;
+/// 4. otherwise → the per-user local app data dir (always writable).
+fn resolve_runtime_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
+    let bundled = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime")
     } else {
         app.path().resource_dir().unwrap_or_default().join("runtime")
     };
-    strip_verbatim(dir)
+    let bundled = strip_verbatim(bundled);
+    let fallback = strip_verbatim(
+        app.path()
+            .app_local_data_dir()
+            .unwrap_or_default()
+            .join("runtime"),
+    );
+    if runtime_tree_usable(&bundled) {
+        return (bundled.clone(), bundled);
+    }
+    if runtime_tree_usable(&fallback) {
+        return (fallback, bundled);
+    }
+    if dir_writable(&bundled) {
+        return (bundled.clone(), bundled);
+    }
+    (fallback, bundled)
+}
+
+/// The extracted runtime tree is complete enough to boot from.
+fn runtime_tree_usable(dir: &Path) -> bool {
+    dir.join("node").join("node.exe").is_file()
+        && dir.join("dsh")
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("lib")
+            .join("bin.js")
+            .is_file()
+}
+
+/// Monotonic probe-name counter: keeps concurrent `resolve_paths` calls in
+/// the same process from colliding on the probe directory name.
+static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// True when a directory can actually be created inside `dir` right now —
+/// exactly the operation first-run extraction needs. The probe is created and
+/// removed immediately; its name carries the pid + a monotonic counter so
+/// concurrent boots (or concurrent `resolve_paths` calls) cannot collide.
+fn dir_writable(dir: &Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(
+        ".dsh-write-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    match fs::create_dir(&probe) {
+        Ok(()) => {
+            let _ = fs::remove_dir(&probe);
+            true
+        }
+        // A leftover probe with the same name (crashed run with a reused pid)
+        // proves a directory could be created here — treat as writable.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => true,
+        Err(_) => false,
+    }
 }
 
 /// Windows `\\?\` verbatim paths break Node's CJS loader (realpath walks to
@@ -618,7 +698,7 @@ fn resolve_paths(app: &AppHandle, config: &AppConfig) -> Paths {
             .map(PathBuf::from)
             .unwrap_or_else(|_| app.path().app_config_dir().unwrap_or_default()),
     );
-    let runtime = runtime_dir(app);
+    let (runtime, bundled_runtime) = resolve_runtime_dirs(app);
     let dsh_home = config
         .dsh_home
         .as_deref()
@@ -639,10 +719,10 @@ fn resolve_paths(app: &AppHandle, config: &AppConfig) -> Paths {
             .join("lib")
             .join("bin.js"),
         runtime_dir: runtime,
+        bundled_runtime_dir: bundled_runtime,
         dsh_home,
     }
 }
-
 fn dsh_port(config: &AppConfig) -> u16 {
     config.dsh_port.unwrap_or_else(|| {
         std::env::var("DSH_DESKTOP_DSH_PORT")
@@ -716,10 +796,11 @@ fn ensure_runtime_files(paths: &Paths) {
     // The loader resolves plugin entries from the profile's module tree
     // ($DSH_HOME/profiles/node_modules), not from runtime/dsh — deploy the
     // desktop plugin packages there so each `--patch` row can import it.
-    // The canonical copies live in runtime/plugins-src; the copy is a plain
-    // overwrite (a few small files) so shell updates refresh an
-    // already-deployed package, lib/ trees included.
-    let plugins_src = paths.runtime_dir.join("plugins-src");
+    // The canonical copies live in the bundled runtime's plugins-src (read
+    // from the install dir even when the extracted tree lives elsewhere);
+    // the copy is a plain overwrite (a few small files) so shell updates
+    // refresh an already-deployed package, lib/ trees included.
+    let plugins_src = paths.bundled_runtime_dir.join("plugins-src");
     let profile_modules = paths.dsh_home.join("profiles").join("node_modules");
     let mut vision_deployed = false;
     if plugins_src.exists() {
@@ -768,6 +849,13 @@ fn patch_settings_nav_icons(paths: &Paths) {
     let raw = match fs::read_to_string(&bundle) {
         Ok(raw) => raw,
         Err(e) => {
+            // Before first-run extraction finishes the settings bundle does
+            // not exist yet; the post-extraction ensure_runtime_files pass
+            // patches it, so stay silent instead of logging a scary
+            // "unreadable" error on every fresh install.
+            if !bundle.exists() && !paths.node_exe.exists() {
+                return;
+            }
             log_line(
                 &paths.log_file,
                 &format!("settings shell bundle unreadable; nav icons unpatched: {e}"),
@@ -932,6 +1020,34 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Retry-wrapped `create_dir_all`. On Windows a freshly created directory is
+/// briefly handed to real-time scanners/AV on some machines, whose locks
+/// surface as transient access-denied (os error 5) — retry with backoff
+/// instead of failing the whole extraction. Genuine permission problems keep
+/// failing; those are handled by the writable-location fallback instead.
+fn create_dir_all_retry(path: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 4;
+    const BASE_DELAY: Duration = Duration::from_millis(250);
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match fs::create_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if attempt + 1 < ATTEMPTS
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                last = Some(e);
+                thread::sleep(BASE_DELAY * (attempt + 1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("retry loop always records its last error"))
+}
+
 /// Extract a .tar.gz archive into `dest`. `strip_first` drops the leading
 /// path component (npm tarballs root at `package/`); entries with a leading
 /// `./` are normalized first. `on_entry` is invoked after every extracted
@@ -942,7 +1058,7 @@ fn extract_tarball(
     strip_first: bool,
     on_entry: &mut dyn FnMut(usize),
 ) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| format!("创建目录失败: {e}"))?;
+    create_dir_all_retry(dest).map_err(|e| format!("创建目录失败: {e}"))?;
     let file = fs::File::open(tgz).map_err(|e| format!("打开归档失败: {e}"))?;
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
@@ -963,8 +1079,16 @@ fn extract_tarball(
         }
         let stripped: PathBuf = components.iter().collect();
         let target = dest.join(&stripped);
+        // Directory entries carry no payload: pre-create (with retry) so the
+        // tar layer's create_dir sees AlreadyExists and keeps going even when
+        // a scanner briefly holds the fresh parent directory.
+        if entry.header().entry_type().is_dir() {
+            create_dir_all_retry(&target)
+                .map_err(|e| format!("创建目录 {} 失败: {e}", target.display()))?;
+        }
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            create_dir_all_retry(parent)
+                .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
         }
         entry
             .unpack(&target)
@@ -981,9 +1105,27 @@ fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String>
     if paths.node_exe.exists() && paths.dsh_bin.exists() {
         return Ok(());
     }
-    let archive = paths.runtime_dir.join("runtime-archive.tar.gz");
+    // The archive ships in the install dir (readable even when that dir is
+    // not writable); the target is the resolved runtime_dir.
+    let archive = paths.bundled_runtime_dir.join("runtime-archive.tar.gz");
     if !archive.exists() {
         return Err(format!("运行时组件缺失: {}", archive.display()));
+    }
+    if paths.runtime_dir != paths.bundled_runtime_dir {
+        log_line(
+            &paths.log_file,
+            &format!(
+                "install-dir runtime not usable/writable — extracting into {} instead",
+                paths.runtime_dir.display()
+            ),
+        );
+        // Seed the shipped version.json (node version etc.) into the target
+        // so the dsh-version sync below only has to bump the dsh entry.
+        let shipped = paths.bundled_runtime_dir.join("version.json");
+        let target = paths.runtime_dir.join("version.json");
+        if shipped.exists() && !target.exists() {
+            let _ = fs::copy(&shipped, &target);
+        }
     }
     log_line(&paths.log_file, "extracting bundled runtime archive (first run) ...");
     // The archive is streamed (no upfront total), so report a smoothed
@@ -1398,9 +1540,12 @@ async fn health_check_loop(app: AppHandle) {
     let port = dsh_port(&state.config.lock().unwrap().clone());
     let url = dsh_web_url(port);
 
-    // Give the splash page a moment to register its event listeners before
-    // the first health result can fire (early emits used to be lost forever).
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Brief grace so the splash page can register its event listeners before
+    // the first health result fires. Readiness no longer depends on the
+    // event: the splash also polls `get_status` every 500 ms (pollStatus in
+    // ui/index.html), so even a lost early `dsh-ready` costs one poll cycle
+    // instead of a hard 3 s on every boot.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     loop {
         // first-run runtime extraction is still in progress — wait, don't
@@ -2468,7 +2613,12 @@ fn clear_pending_update(runtime: &Path) {
     let _ = fs::remove_file(update_backup_file(runtime));
 }
 
-fn apply_dsh_tarball_bytes(runtime: &Path, bytes: &[u8], log: &Path) -> Result<String, String> {
+fn apply_dsh_tarball_bytes(
+    runtime: &Path,
+    plugins_src_dir: &Path,
+    bytes: &[u8],
+    log: &Path,
+) -> Result<String, String> {
     // stage
     let stage = runtime.join(".update-stage");
     let _ = fs::remove_dir_all(&stage);
@@ -2483,8 +2633,9 @@ fn apply_dsh_tarball_bytes(runtime: &Path, bytes: &[u8], log: &Path) -> Result<S
     extract_tarball(&tgz_path, &dsh_new, true, &mut no_progress)?;
 
     // restore the desktop plugin packages (and the bundled vision plugin)
-    // into the new tree
-    let plugins_src = runtime.join("plugins-src");
+    // into the new tree — the canonical copies live in the bundled runtime
+    // (the install dir) even when the extracted tree lives elsewhere.
+    let plugins_src = plugins_src_dir.join("plugins-src");
     if plugins_src.exists() {
         for name in DESKTOP_PLUGINS
             .iter()
@@ -2499,13 +2650,13 @@ fn apply_dsh_tarball_bytes(runtime: &Path, bytes: &[u8], log: &Path) -> Result<S
             fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
             copy_dir_contents(&src, &dst).map_err(|e| format!("恢复桌面插件 {name} 失败: {e}"))?;
         }
-    } else if runtime.join("bridge-src").exists() {
+    } else if plugins_src_dir.join("bridge-src").exists() {
         // pre-plugins-src installs keep the legacy canonical dir: restore the
         // bridge from it so a dsh update never strips the shell bridge.
         let bdst = dsh_new.join("node_modules").join("dsh-desktop-bridge");
         fs::create_dir_all(&bdst).map_err(|e| e.to_string())?;
         for f in ["package.json", "index.js", "client.js"] {
-            let from = runtime.join("bridge-src").join(f);
+            let from = plugins_src_dir.join("bridge-src").join(f);
             if !from.exists() {
                 continue;
             }
@@ -2771,7 +2922,7 @@ async fn apply_dsh_update(
         .await
         .map_err(|e| e.to_string())?;
 
-    let result = apply_dsh_tarball_bytes(&runtime, &bytes, &log)?;
+    let result = apply_dsh_tarball_bytes(&runtime, &paths.bundled_runtime_dir, &bytes, &log)?;
     // redeploy bridge/patch into DSH_HOME so the next boot picks everything up
     ensure_runtime_files(&paths);
 
@@ -2820,7 +2971,13 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     } else {
         app.autolaunch().disable()
     }
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // keep the tray checkbox in sync with the settings page
+    let state = app.state::<AppState>();
+    if let Some(item) = state.tray_autostart_item.lock().unwrap().as_ref() {
+        let _ = item.set_checked(enabled);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2835,6 +2992,9 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .enabled(false)
         .build(app)?;
     let update = MenuItemBuilder::with_id("check-update", "检查更新").build(app)?;
+    let autostart = CheckMenuItemBuilder::with_id("autostart", "开机自启")
+        .checked(app.autolaunch().is_enabled().unwrap_or(false))
+        .build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&open)
@@ -2844,12 +3004,14 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .item(&refresh)
         .separator()
         .item(&update)
+        .item(&autostart)
         .separator()
         .item(&quit)
         .build()?;
 
     let state = app.state::<AppState>();
     *state.tray_balance_item.lock().unwrap() = Some(balance_item);
+    *state.tray_autostart_item.lock().unwrap() = Some(autostart);
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
@@ -2876,6 +3038,25 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "check-update" => {
                 let _ = open_settings_window(app.clone());
+            }
+            "autostart" => {
+                // toggle: read the checkbox state, flip it, persist, re-check.
+                // set_autostart refreshes the item state on success.
+                let next = {
+                    let state = app.state::<AppState>();
+                    let guard = state.tray_autostart_item.lock().unwrap();
+                    let checked = guard
+                        .as_ref()
+                        .and_then(|item| item.is_checked().ok())
+                        .unwrap_or(false);
+                    !checked
+                };
+                if let Err(e) = set_autostart(app.clone(), next) {
+                    let state = app.state::<AppState>();
+                    let config = state.config.lock().unwrap().clone();
+                    let paths = resolve_paths(app, &config);
+                    log_line(&paths.log_file, &format!("autostart toggle failed: {e}"));
+                }
             }
             "quit" => {
                 let app2 = app.clone();
@@ -2910,7 +3091,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--hidden"]),
         ))
         .manage(AppState {
             dsh: Mutex::new(DshProcess {
@@ -2928,6 +3109,7 @@ pub fn run() {
             last_refresh: Mutex::new(None),
             last_update_check: Mutex::new(None),
             tray_balance_item: Mutex::new(None),
+            tray_autostart_item: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
@@ -2945,6 +3127,12 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            // Autostart launches carry `--hidden`: boot the service in the
+            // background and wait in the tray instead of popping a window at
+            // login. A later launch (double-click) hits the single-instance
+            // plugin and shows the already-warmed window instantly.
+            let start_hidden = std::env::args().any(|a| a == "--hidden");
+
             let config = {
                 let state = app.state::<AppState>();
                 let paths = {
@@ -2960,6 +3148,13 @@ pub fn run() {
             let paths = resolve_paths(&handle, &config);
             log_line(&paths.log_file, "DSH Desktop starting");
 
+            // Refresh the autostart entry so installs that enabled it before
+            // this version pick up the `--hidden` argument (the plugin only
+            // writes args when enable() is called).
+            if app.autolaunch().is_enabled().unwrap_or(false) {
+                let _ = app.autolaunch().enable();
+            }
+
             // main window: splash first, navigates to the dsh web UI when healthy.
             // Frameless (custom title bar) + shadow for the Win11 rounded corners.
             let w = WebviewWindowBuilder::new(&handle, "main", WebviewUrl::App("index.html".into()))
@@ -2968,13 +3163,16 @@ pub fn run() {
                 .min_inner_size(960.0, 640.0)
                 .decorations(false)
                 .shadow(true)
+                .visible(!start_hidden)
                 .data_directory(webview_data_dir(&handle))
                 .initialization_script(INIT_SCRIPT)
                 .initialization_script(TITLEBAR_SCRIPT)
                 .initialization_script(THEME_TRANSITION_SCRIPT)
                 .build()
                 .map_err(|e| format!("创建主窗口失败: {e}"))?;
-            let _ = w.set_focus();
+            if !start_hidden {
+                let _ = w.set_focus();
+            }
 
             // tauri-runtime-wry swallows webview creation errors (e.g. WebView2
             // ERROR_BUSY right after a previous instance exited), which would
@@ -3188,7 +3386,7 @@ mod tests {
             ),
             ("package/lib/bin.js", "// new runtime"),
         ]);
-        let result = apply_dsh_tarball_bytes(&root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
         assert!(result.is_ok(), "update failed: {result:?}");
 
         // new tree in place
@@ -3248,10 +3446,86 @@ mod tests {
             "package/node_modules/@deepseek-ai/dsh/package.json",
             r#"{"version":"0.9.9"}"#,
         )]);
-        let result = apply_dsh_tarball_bytes(&root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
         assert!(result.is_ok(), "update failed: {result:?}");
         assert!(root.join("dsh/node_modules/dsh-desktop-bridge/index.js").exists());
         assert!(root.join("dsh/node_modules/dsh-desktop-bridge/client.js").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dir_writable_probes_real_create_permission() {
+        let root = std::env::temp_dir().join(format!("dsh-writeprobe-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // a fresh, owned directory is writable
+        assert!(dir_writable(&root));
+        // a nested not-yet-existing path under it is also reported writable
+        // (create_dir_all covers the whole chain)
+        assert!(dir_writable(&root.join("a/b")));
+        // a path whose parent chain ends in a FILE is not writable
+        let blocker = root.join("blocker");
+        fs::write(&blocker, "file").unwrap();
+        assert!(!dir_writable(&blocker.join("runtime")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn runtime_tree_usable_requires_node_and_dsh() {
+        let root = std::env::temp_dir().join(format!("dsh-usable-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // full dsh bin path laid out, node.exe still missing -> not bootable
+        fs::create_dir_all(root.join("dsh/node_modules/@deepseek-ai/dsh/lib")).unwrap();
+        fs::write(
+            root.join("dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+            "x",
+        )
+        .unwrap();
+        assert!(!runtime_tree_usable(&root));
+
+        fs::create_dir_all(root.join("node")).unwrap();
+        fs::write(root.join("node/node.exe"), "x").unwrap();
+        assert!(runtime_tree_usable(&root));
+
+        // a dsh tree elsewhere (e.g. dsh/lib/bin.js) does not count
+        fs::remove_dir_all(root.join("dsh")).unwrap();
+        fs::create_dir_all(root.join("dsh/lib")).unwrap();
+        fs::write(root.join("dsh/lib/bin.js"), "x").unwrap();
+        assert!(!runtime_tree_usable(&root));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_tarball_handles_directory_entries() {
+        let root = std::env::temp_dir().join(format!("dsh-extract-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let archive = root.join("a.tar.gz");
+        let gz = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        builder.append_dir("node", ".").unwrap();
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_size(2);
+        file_header.set_mode(0o644);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, "node/node.exe", "x\n".as_bytes())
+            .unwrap();
+        let gz = builder.into_inner().unwrap();
+        fs::write(&archive, gz.finish().unwrap()).unwrap();
+
+        let dest = root.join("out");
+        let mut on_entry = |_count: usize| {};
+        extract_tarball(&archive, &dest, false, &mut on_entry).unwrap();
+        assert!(dest.join("node").is_dir());
+        assert_eq!(fs::read_to_string(dest.join("node/node.exe")).unwrap(), "x\n");
+
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -3321,6 +3595,7 @@ mod tests {
             log_file: root.join("logs").join("dsh.log"),
             patch_file: root.join("dsh-bridge.patch.yml"),
             runtime_dir: root.join("runtime"),
+            bundled_runtime_dir: root.join("runtime"),
             node_exe: root.join("runtime/node/node.exe"),
             dsh_bin: root
                 .join("runtime/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"),
@@ -3538,7 +3813,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         make_runtime(&root, "0.1.0-rc.5");
 
-        let result = apply_dsh_tarball_bytes(&root, b"not a tarball at all", &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, b"not a tarball at all", &root.join("test.log"));
         assert!(result.is_err());
 
         // old tree untouched
@@ -3560,7 +3835,7 @@ mod tests {
 
         // valid tar, but no @deepseek-ai/dsh/package.json → verification fails pre-swap
         let tarball = make_tarball(&[("package/lib/bin.js", "// no manifest")]);
-        let result = apply_dsh_tarball_bytes(&root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
         assert!(result.is_err());
 
         assert_eq!(
