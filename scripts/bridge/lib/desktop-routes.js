@@ -8,7 +8,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { usageReport } from './usage.js'
 
-export function registerDesktopRoutes(ctx, { shellPort }) {
+export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
   let lastRunning = false
   let notified = false
 
@@ -37,11 +37,57 @@ export function registerDesktopRoutes(ctx, { shellPort }) {
     })
     res.end(JSON.stringify(payload))
   }
+
+  // Format an error for the API response envelope.
+  // - Network-level failures (connection refused, timeout, DNS) → "桌面壳不可用: …"
+  // - Shell-level errors (shell responded but returned a non-ok status) → pass
+  //   through the shell's own error message directly.
+  const shellError = (error) => {
+    const msg = error?.message ?? String(error)
+    if (error?.shellReachable === true) return msg
+    return `桌面壳不可用: ${msg}`
+  }
+
+  // GET a JSON endpoint on the shell listener.  When the shell responds with a
+  // non-ok status the error carries the shell's own `error` field (when
+  // present) and is tagged `shellReachable` so the caller can tell the
+  // difference between "shell is down" and "shell rejected this request".
   const shellGet = async (path, timeoutMs) => {
     const resp = await fetch(`http://127.0.0.1:${shellPort}${path}`, {
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!resp.ok) throw new Error(`shell responded ${resp.status}`)
+    if (!resp.ok) {
+      let shellMsg = ''
+      try {
+        const body = await resp.json()
+        shellMsg = body?.error ?? ''
+      } catch {}
+      const err = new Error(shellMsg || `shell responded ${resp.status}`)
+      err.shellReachable = true
+      throw err
+    }
+    return await resp.json()
+  }
+
+  // POST to the shell listener and return the parsed JSON body.  Same
+  // shellReachable tagging as shellGet so the catch block can use shellError().
+  const shellPost = async (path, body, timeoutMs) => {
+    const resp = await fetch(`http://127.0.0.1:${shellPort}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!resp.ok) {
+      let shellMsg = ''
+      try {
+        const payload = await resp.json()
+        shellMsg = payload?.error ?? ''
+      } catch {}
+      const err = new Error(shellMsg || `shell responded ${resp.status}`)
+      err.shellReachable = true
+      throw err
+    }
     return await resp.json()
   }
   const readJsonBody = async (req, maxBytes = 4096) => {
@@ -70,22 +116,90 @@ export function registerDesktopRoutes(ctx, { shellPort }) {
           const body = await readJsonBody(req)
           const url = typeof body?.url === 'string' ? body.url.trim() : ''
           if (!url) return json(res, 400, { ok: false, error: '缺少 url' })
-          const resp = await fetch(`http://127.0.0.1:${shellPort}/open-external`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ url }),
-            signal: AbortSignal.timeout(8000),
-          })
-          if (!resp.ok) {
-            const payload = await resp.json().catch(() => ({}))
-            return json(res, 502, { ok: false, error: payload?.error ?? `shell responded ${resp.status}` })
-          }
+          await shellPost('/open-external', { url }, 8000)
           return json(res, 200, { ok: true })
         } catch (error) {
-          return json(res, 502, { ok: false, error: `桌面壳不可用: ${error?.message ?? error}` })
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/remote-save') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          const result = await shellPost('/remote-save', {
+            enabled: body?.enabled === true,
+            relayUrl: typeof body?.relayUrl === 'string' ? body.relayUrl : '',
+            customRelay: body?.customRelay === true,
+            secret: typeof body?.secret === 'string' ? body.secret : '',
+            deviceId: typeof body?.deviceId === 'string' ? body.deviceId : '',
+          }, 10000)
+          return json(res, 200, result)
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/current-session') {
+        // The bridge client publishes the currently focused session id here so
+        // the wave-state classifier can report THAT conversation's activity
+        // instead of any background session's.
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : null
+          onFocus?.(sessionId || null)
+          return json(res, 200, { ok: true })
+        } catch (error) {
+          return json(res, 400, { ok: false, error: `bad current-session body: ${error?.message ?? error}` })
+        }
+      }
+      if (pathname === '/desktop/motion-save') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          const motion = typeof body?.motion === 'string' ? body.motion : ''
+          const payload = await shellPost('/motion-save', { motion }, 8000)
+          return json(res, 200, payload)
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      // The persistent pairing endpoint is a write operation, so it must be
+      // handled before the GET-only guard below. Keeping it after that guard
+      // makes every save request fail with a misleading 404 at the bridge
+      // layer and prevents the shell/Rust endpoint from being reached.
+      if (pathname === '/desktop/remote-persistent-pairing') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          return json(res, 200, await shellPost('/remote-persistent-pairing', {
+            code: typeof body?.code === 'string' ? body.code : '',
+          }, 10000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
       if (req.method !== 'GET') return json(res, 404, { ok: false, error: 'not found' })
+      if (pathname === '/desktop/motion') {
+        try {
+          return json(res, 200, await shellGet('/motion', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/remote-config') {
+        try {
+          return json(res, 200, await shellGet('/remote-config', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/remote-pairing') {
+        try {
+          return json(res, 200, await shellGet('/remote-pairing', 10000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
       if (pathname === '/desktop/status') {
         return json(res, 200, { ok: true, running: lastRunning });
       }
@@ -93,28 +207,28 @@ export function registerDesktopRoutes(ctx, { shellPort }) {
         try {
           return json(res, 200, await shellGet('/balance', 3000))
         } catch (error) {
-          return json(res, 502, { ok: false, error: `桌面壳不可用: ${error?.message ?? error}` })
+          return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
       if (pathname === '/desktop/refresh') {
         try {
           return json(res, 200, await shellGet('/refresh', 15000))
         } catch (error) {
-          return json(res, 502, { ok: false, error: `桌面壳不可用: ${error?.message ?? error}` })
+          return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
       if (pathname === '/desktop/about') {
         try {
           return json(res, 200, await shellGet('/about', 3000))
         } catch (error) {
-          return json(res, 502, { ok: false, error: `桌面壳不可用: ${error?.message ?? error}` })
+          return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
       if (pathname === '/desktop/update-status') {
         try {
           return json(res, 200, await shellGet('/update-status', 20000))
         } catch (error) {
-          return json(res, 502, { ok: false, error: `桌面壳不可用: ${error?.message ?? error}` })
+          return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
       if (pathname === '/desktop/usage') {

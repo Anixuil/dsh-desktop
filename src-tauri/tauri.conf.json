@@ -25,6 +25,7 @@
     "resources": {
       "../runtime/runtime-archive.tar.gz": "runtime/runtime-archive.tar.gz",
       "../runtime/plugins-src/": "runtime/plugins-src/",
+      "../runtime/relay-client/": "runtime/relay-client/",
       "../runtime/version.json": "runtime/version.json"
     },
     "windows": {

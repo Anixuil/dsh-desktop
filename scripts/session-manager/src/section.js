@@ -11,6 +11,7 @@ const { createElement: el, Fragment, useEffect, useState, useSyncExternalStore }
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { useSessionManager } = require('./use-session-manager.js');
 const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
 
 const MAX_ALL_ROWS = 50;
 const noopSub = () => () => {};
@@ -114,6 +115,10 @@ function SessionManagerSection(props) {
     return () => window.clearTimeout(timer);
   }, [notice, clearNotice]);
 
+  useEffect(() => {
+    if (error !== null) showMessage(t('error.load', { error: String(error?.message ?? error) }));
+  }, [error, t]);
+
   const snapshot = useSyncExternalStore(
     (fn) => (sessions?.list?.subscribe ?? noopSub)(fn),
     () => sessions?.list?.getSnapshot?.() ?? null,
@@ -170,9 +175,6 @@ function SessionManagerSection(props) {
     { className: 'smx_section' },
     el('h2', { className: 'smx_title' }, t('title')),
     el('p', { className: 'smx_intro' }, t('intro', { count: rows.length, archived: archivedCount })),
-    error !== null
-      ? el('p', { className: 'smx_error' }, t('error.load', { error: String(error?.message ?? error) }))
-      : null,
     notice !== null
       ? el('p', { className: 'smx_savedNotice', role: 'status', 'aria-live': 'polite' }, notice.kind === 'deleted' ? t('status.deleted') : t('status.restored'))
       : null,

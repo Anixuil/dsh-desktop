@@ -11,9 +11,29 @@
     // wrong mode
     document.documentElement.dataset.motion =
       window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich';
+    (function () {
+      const preference = window.__DSH_THEME__ || 'system';
+      const useDark = preference === 'dark' ||
+        (preference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = useDark ? 'dark' : 'light';
+    })();
   </script>
 </head>
 <body>
+  <div class="winbar settings-winbar" data-tauri-drag-region="deep">
+    <span class="win-title">DSH Desktop 设置</span>
+    <div class="win-btns">
+      <button id="win-min" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button id="win-max" title="最大化" aria-label="最大化">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button id="win-close" class="danger" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+    </div>
+  </div>
   <div class="bg" aria-hidden="true">
     <div class="glow g-s1 drift-a"></div>
     <div class="glow g-s2 drift-b"></div>
@@ -35,9 +55,25 @@
   </div>
 
   <div class="wrap">
-    <h1>DSH Desktop 设置</h1>
+    <header class="settings-header">
+      <div>
+        <h1>DSH Desktop 设置</h1>
+        <p>管理桌面服务、远程访问与应用维护</p>
+      </div>
+    </header>
 
-    <div class="card">
+    <div class="settings-layout">
+      <nav class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+        <button id="tab-overview" class="settings-tab active" type="button" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0" data-tab="overview">概览</button>
+        <button id="tab-remote" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-remote" tabindex="-1" data-tab="remote">远程访问</button>
+        <button id="tab-updates" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-updates" tabindex="-1" data-tab="updates">更新</button>
+        <button id="tab-diagnostics" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-diagnostics" tabindex="-1" data-tab="diagnostics">诊断</button>
+        <button id="tab-about" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-about" tabindex="-1" data-tab="about">关于</button>
+      </nav>
+
+      <main class="settings-panels">
+        <section id="panel-overview" class="settings-panel active" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
+          <div class="card">
       <h2>运行状态</h2>
       <div class="kv"><span class="k">DSH 服务</span><span class="v" id="st-dsh">…</span></div>
       <div class="kv"><span class="k">桥接（对话结束通知）</span><span class="v" id="st-bridge">…</span></div>
@@ -46,33 +82,7 @@
       <div class="kv"><span class="k">DSH_HOME</span><span class="v" id="st-home">…</span></div>
     </div>
 
-    <div class="card">
-      <h2>外观与动效</h2>
-      <div class="kv">
-        <span class="k">动效强度</span>
-        <span class="v">
-          <span class="seg" id="motion-seg" role="radiogroup" aria-label="动效强度">
-            <button type="button" data-motion="quiet" role="radio" aria-checked="false">安静</button>
-            <button type="button" data-motion="rich" role="radio" aria-checked="true">丰富</button>
-          </span>
-        </span>
-      </div>
-      <p class="hint">安静：只保留必要的过渡与交互反馈；丰富：完整的海洋氛围动效（光斑漂移、波浪、气泡、主题过渡）。更改立即生效并保存在本机。</p>
-    </div>
-
-    <div class="card">
-      <h2>DeepSeek API Key</h2>
-      <label for="key">API Key（用于对话调用与余额查询，保存在本机）</label>
-      <input type="password" id="key" placeholder="sk-..." autocomplete="off" />
-      <div class="row">
-        <button class="primary" id="save">保存并验证</button>
-        <button id="clear">清除</button>
-        <button id="refresh">立即刷新余额</button>
-      </div>
-      <div id="msg"></div>
-    </div>
-
-    <div class="card">
+          <div class="card">
       <h2>余额</h2>
       <div class="kv"><span class="k">状态</span><span class="v" id="bal-status"><span class="badge warn">未获取</span></span></div>
       <div class="balance-big" id="bal-total">—</div>
@@ -80,10 +90,46 @@
       <div class="kv"><span class="k">赠送余额</span><span class="v" id="bal-granted">—</span></div>
       <div class="kv"><span class="k">币种</span><span class="v" id="bal-currency">—</span></div>
       <div class="kv"><span class="k">最近刷新</span><span class="v" id="bal-at">—</span></div>
-      <p class="hint">对话结束后（模型回复完成）自动刷新一次；另有每 60 秒轮询与托盘手动刷新。</p>
+      <p class="hint">服务商与 API Key 请在 DSH 左下角「设置 → 模型」中统一管理。对话结束后（模型回复完成）自动刷新一次；另有每 60 秒轮询与托盘手动刷新。</p>
     </div>
+        </section>
 
-    <div class="card">
+        <section id="panel-remote" class="settings-panel" role="tabpanel" aria-labelledby="tab-remote" data-panel="remote" hidden>
+          <div class="card">
+      <h2>远程访问（手机连接这台电脑）</h2>
+      <label class="autostart">
+        <span class="switch"><input type="checkbox" id="remote-enabled" /><span class="knob"></span></span>
+        <span>启用远程访问（通过中继服务器，非局域网可用）</span>
+      </label>
+      <label class="autostart">
+        <span class="switch"><input type="checkbox" id="remote-custom" /><span class="knob"></span></span>
+        <span>自定义中继服务器（默认使用官方中继，无需填写）</span>
+      </label>
+      <div class="relay-url-block" id="remote-custom-block" hidden>
+        <label for="remote-url">中继服务器地址（wss:// 开头）</label>
+        <input type="text" id="remote-url" placeholder="wss://your-relay.example.com" autocomplete="off" />
+      </div>
+      <div class="relay-url-block" id="remote-default-block">
+        <label>中继服务器地址</label>
+        <div class="relay-default" id="remote-default">wss://remote.anixuil.com</div>
+      </div>
+      <label for="remote-device">设备名（手机访问地址的前缀）</label>
+      <input type="text" id="remote-device" placeholder="my-pc" autocomplete="off" />
+      <div class="row">
+        <button class="primary" id="remote-save">保存并连接</button>
+        <button id="remote-pair">生成配对码</button>
+      </div>
+      <div class="kv"><span class="k">状态</span><span class="v" id="st-remote">…</span></div>
+      <div class="kv"><span class="k">手机访问地址</span><span class="v" id="remote-entry">—</span></div>
+      <div class="kv"><span class="k">配对码</span><span class="v" id="remote-code">—</span></div>
+      <div id="remote-qr-wrap" hidden><img id="remote-qr" alt="手机配对二维码" /><p class="hint">手机相机扫码即可打开并自动填入配对码</p></div>
+      <div id="remote-msg"></div>
+      <p class="hint">默认使用官方中继服务器（wss://remote.anixuil.com），无需自建服务器；如需自建，勾选「自定义中继服务器」填写自己的地址。首次保存会自动向中继注册本设备（无需密钥）。手机（4G/5G 等非局域网网络）打开上方地址，输入配对码即可与这台电脑对话、执行任务。</p>
+    </div>
+        </section>
+
+        <section id="panel-updates" class="settings-panel" role="tabpanel" aria-labelledby="tab-updates" data-panel="updates" hidden>
+          <div class="card">
       <h2>自动更新</h2>
       <div class="kv"><span class="k">壳版本（本应用）</span><span class="v" id="up-app">…</span></div>
       <div class="kv"><span class="k">dsh 内核版本</span><span class="v" id="up-dsh">…</span></div>
@@ -99,8 +145,10 @@
       </label>
       <p class="hint">开启后登录时应用会静默启动到系统托盘并预热 DSH 服务，不会弹出窗口；之后点击托盘图标或再次双击应用即可秒开主界面。</p>
     </div>
+        </section>
 
-    <div class="card">
+        <section id="panel-diagnostics" class="settings-panel" role="tabpanel" aria-labelledby="tab-diagnostics" data-panel="diagnostics" hidden>
+          <div class="card">
       <h2>诊断</h2>
       <div class="row">
         <button id="open-logs">打开日志目录</button>
@@ -108,8 +156,10 @@
       </div>
       <p class="hint" id="log-path">—</p>
     </div>
+        </section>
 
-    <div class="card">
+        <section id="panel-about" class="settings-panel" role="tabpanel" aria-labelledby="tab-about" data-panel="about" hidden>
+          <div class="card">
       <h2>关于</h2>
       <div class="about-head">
         <img class="about-logo" src="whale.svg" alt="DSH Desktop" />
@@ -134,8 +184,12 @@
       </div>
       <div id="about-msg"></div>
     </div>
+        </section>
+      </main>
+    </div>
   </div>
 
+  <script src="qr.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

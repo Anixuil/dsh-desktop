@@ -1,0 +1,5 @@
+{
+  "name": "dsh-vision-any",
+  "private": true,
+  "description": "Desktop overlay for the bundled dsh-vision-any plugin: client half (settings section + inline image preview) and host patches. Synced into runtime/plugins-src/dsh-vision-any by scripts/sync-vision-any.mjs."
+}

@@ -124,6 +124,57 @@ try {
     console.log(`/desktop/update-status proxy ok (status ${res2.status})`)
   }
   {
+    // Remote-access proxies: GET config and POST save must answer with the
+    // { ok, ... } envelope either way (200 proxied, 502 when the shell is
+    // unreachable) — never 404.
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/remote-config' }, res)
+    if ((res.status !== 200 && res.status !== 502) || !res.body.includes('"ok"')) throw new Error(`remote-config route failed: ${res.status} ${res.body}`)
+    console.log(`/desktop/remote-config proxy ok (status ${res.status})`)
+    const saveReq = {
+      method: 'POST',
+      url: '/desktop/remote-save',
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({ enabled: false, relayUrl: '', customRelay: false, secret: '', deviceId: '' }))
+      },
+    }
+    const res2 = fakeRes()
+    await routeRegistration.handler(saveReq, res2)
+    if ((res2.status !== 200 && res2.status !== 502) || !res2.body.includes('"ok"')) throw new Error(`remote-save route failed: ${res2.status} ${res2.body}`)
+    console.log(`/desktop/remote-save proxy ok (status ${res2.status})`)
+    const persistentReq = {
+      method: 'POST',
+      url: '/desktop/remote-persistent-pairing',
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({ code: 'abcdef' }))
+      },
+    }
+    const res3 = fakeRes()
+    await routeRegistration.handler(persistentReq, res3)
+    if ((res3.status !== 200 && res3.status !== 502) || !res3.body.includes('"ok"')) throw new Error(`remote-persistent-pairing route failed: ${res3.status} ${res3.body}`)
+    console.log(`/desktop/remote-persistent-pairing proxy ok (status ${res3.status})`)
+  }
+  {
+    // Motion proxies: GET /desktop/motion and POST /desktop/motion-save must
+    // answer with the { ok, ... } envelope either way (200 proxied, or 502
+    // when the shell is unreachable) — never 404.
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/motion' }, res)
+    if ((res.status !== 200 && res.status !== 502) || !res.body.includes('"ok"')) throw new Error(`motion route failed: ${res.status} ${res.body}`)
+    console.log(`/desktop/motion proxy ok (status ${res.status})`)
+    const saveReq = {
+      method: 'POST',
+      url: '/desktop/motion-save',
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({ motion: 'quiet' }))
+      },
+    }
+    const res2 = fakeRes()
+    await routeRegistration.handler(saveReq, res2)
+    if ((res2.status !== 200 && res2.status !== 502) || !res2.body.includes('"ok"')) throw new Error(`motion-save route failed: ${res2.status} ${res2.body}`)
+    console.log(`/desktop/motion-save proxy ok (status ${res2.status})`)
+  }
+  {
     // open-external: GET → 404; POST with a non-http(s) url → the shell
     // rejects it (400 → surfaced as 502) without ever launching a browser,
     // and an unreachable shell yields the same 502 envelope.
@@ -143,6 +194,38 @@ try {
     console.log('/desktop/open-external route ok (404 on GET, rejected url never reaches explorer)')
   }
   {
+    // Error-message distinction: a shell that RESPONDS with a non-ok status
+    // carrying its own error must have that error passed through verbatim (no
+    // "桌面壳不可用" mislabel), while a genuine network failure keeps the
+    // "桌面壳不可用" prefix.
+    const realFetch = globalThis.fetch
+    const respondWith = (status, body) => {
+      globalThis.fetch = async () => ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+      })
+    }
+    try {
+      respondWith(502, { ok: false, error: '查询 dsh 最新版本失败: 网络不可达' })
+      const res = fakeRes()
+      await routeRegistration.handler({ method: 'GET', url: '/desktop/update-status' }, res)
+      const payload = JSON.parse(res.body)
+      if (!payload.error.startsWith('查询 dsh 最新版本失败')) throw new Error(`shell error not passed through: ${payload.error}`)
+      if (payload.error.includes('桌面壳不可用')) throw new Error(`shell error mislabeled as unavailable: ${payload.error}`)
+      console.log(`update-status shell error passed through: ${payload.error}`)
+
+      globalThis.fetch = async () => { throw new TypeError('fetch failed') }
+      const res2 = fakeRes()
+      await routeRegistration.handler({ method: 'GET', url: '/desktop/about' }, res2)
+      const payload2 = JSON.parse(res2.body)
+      if (!payload2.error.startsWith('桌面壳不可用')) throw new Error(`network error not labeled unavailable: ${payload2.error}`)
+      console.log(`about network error keeps unavailable prefix: ${payload2.error}`)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+  {
     // agent/status running→idle transition arms the turn-end notifier once
     emit('agent/status', { status: 'running' })
     emit('agent/status', { status: 'idle' })
@@ -150,7 +233,7 @@ try {
     console.log('agent/status listener ok')
   }
   {
-    // --- 4. wave-state classifier: session/event → POST /turn-state --------
+    // --- 4. wave-state classifier: per-session + focused-session reporting -----
     const wavePosts = []
     const realFetch = globalThis.fetch
     globalThis.fetch = async (url, init) => {
@@ -160,32 +243,74 @@ try {
       }
       return realFetch(url, init)
     }
+    const setFocus = async (sessionId) => {
+      const res = fakeRes()
+      await routeRegistration.handler({
+        method: 'POST',
+        url: '/desktop/current-session',
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from(JSON.stringify({ sessionId }))
+        },
+      }, res)
+      if (res.status !== 200) throw new Error(`current-session route failed: ${res.status} ${res.body}`)
+    }
     try {
-      // agent/status fallback first (before any session event is seen):
-      // fresh running → thinking; dropping to idle while active → settle
-      const beforeFallback = wavePosts.length
-      emit('agent/status', { status: 'running' })
-      emit('agent/status', { status: 'idle' })
-      const fallback = wavePosts.slice(beforeFallback).map((p) => p.body.state).join(',')
-      if (fallback !== 'thinking,settle') throw new Error(`wave-state fallback mismatch: ${fallback}`)
-      console.log('wave-state agent/status fallback ok:', fallback)
+      // without a focused session, no activity is reported to the shell
+      emit('session/event', { id: 's2' }, { type: 'assistant/chunk', data: {} })
+      if (wavePosts.length !== 0) throw new Error('reported a wave before any focus')
 
+      // the bridge client's focus publish path (route → setFocused)
+      await setFocus('s1')
+      if (wavePosts.length !== 0) throw new Error('focusing a calm session should not move the wave')
+
+      // a background conversation (s2) must not drive the wave
       const before = wavePosts.length
-      emit('session/event', null, { type: 'turn/start', data: {} })
-      emit('session/event', null, { type: 'assistant/chunk', data: {} })
-      emit('session/event', null, { type: 'assistant/chunk', data: {} }) // dedupe
-      emit('session/event', null, { type: 'tool/call', data: {} })
-      emit('session/event', null, { type: 'tool/result', data: { error: { name: 'x', code: 'y' } } })
-      emit('session/event', null, { type: 'approval/asked', data: {} })
-      emit('session/event', null, { type: 'approval/decided', data: {} })
-      emit('session/event', null, { type: 'turn/end', data: {} })
+      emit('session/event', { id: 's2' }, { type: 'turn/start', data: {} })
+      emit('session/event', { id: 's2' }, { type: 'assistant/chunk', data: {} })
+      emit('session/event', { id: 's2' }, { type: 'tool/call', data: {} })
+      if (wavePosts.length !== before) throw new Error('background conversation leaked into wave')
+
+      // the focused conversation (s1) drives it
+      emit('session/event', { id: 's1' }, { type: 'turn/start', data: {} })
+      emit('session/event', { id: 's1' }, { type: 'assistant/chunk', data: {} })
+      emit('session/event', { id: 's1' }, { type: 'assistant/chunk', data: {} }) // dedupe
+      emit('session/event', { id: 's1' }, { type: 'tool/call', data: {} })
+      emit('session/event', { id: 's1' }, { type: 'tool/result', data: { error: { name: 'x', code: 'y' } } })
+      emit('session/event', { id: 's1' }, { type: 'approval/asked', data: {} })
+      emit('session/event', { id: 's1' }, { type: 'approval/decided', data: {} })
       const states = wavePosts.slice(before).map((p) => p.body.state)
-      const expected = 'thinking,streaming,tooling,error,waiting,thinking,settle'
+      const expected = 'thinking,streaming,tooling,error,waiting,thinking'
       if (states.join(',') !== expected) throw new Error(`wave-state mismatch: ${states.join(',')} ≠ ${expected}`)
       const details = wavePosts.slice(before).map((p) => p.body.detail)
       if (details[3] !== 'tool/result' || details[4] !== 'approval/asked') throw new Error(`wave-state detail mismatch: ${details.join(',')}`)
-      console.log('wave-state classifier ok:', states.join(' → '))
+      console.log('wave-state focused classifier ok:', states.join(' → '))
+
+      // switching focus re-syncs the wave to the newly focused session (s2 is
+      // mid-tooling from its ignored-but-still-tracked background activity)
+      const beforeSwitch = wavePosts.length
+      await setFocus('s2')
+      const switched = wavePosts.slice(beforeSwitch).map((p) => p.body.state)
+      if (switched.length !== 1 || switched[0] !== 'tooling') throw new Error(`focus switch mismatch: ${switched.join(',')}`)
+      console.log('wave-state focus switch ok:', switched.join(' → '))
+
+      // per-session agent/status fallback: an unfocused agent never reports;
+      // a focused one reports thinking→settle even without any session/event
+      const beforeAgent = wavePosts.length
+      emit('agent/status', { agent: { id: 's3' }, status: 'running' })
+      emit('agent/status', { agent: { id: 's3' }, status: 'idle' })
+      if (wavePosts.length !== beforeAgent) throw new Error('unfocused agent/status leaked into wave')
+      await setFocus('s3')
+      const beforeS3 = wavePosts.length
+      emit('agent/status', { agent: { id: 's3' }, status: 'running' })
+      emit('agent/status', { agent: { id: 's3' }, status: 'idle' })
+      const agentStates = wavePosts.slice(beforeS3).map((p) => p.body.state)
+      if (agentStates.join(',') !== 'thinking,settle') throw new Error(`agent/status focus mismatch: ${agentStates.join(',')}`)
+      console.log('wave-state agent/status fallback ok:', agentStates.join(' → '))
     } finally {
+      // release any pending decay timers before the fake fetch goes away
+      emit('session/disposed', { id: 's1' })
+      emit('session/disposed', { id: 's2' })
+      emit('session/disposed', { id: 's3' })
       globalThis.fetch = realFetch
     }
   }

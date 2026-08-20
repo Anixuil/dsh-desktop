@@ -11,11 +11,15 @@ buildClientBundle({
   pkgDir,
   files: [
     'styles.js',
+    'message.js',
     'helpers.js',
     'locales.js',
     'balance-badge.js',
     'balance-panel.js',
     'about-section.js',
+    'appearance-section.js',
+    'remote-section.js',
+    'qr.js',
     'index.js',
   ],
 })

@@ -15,6 +15,7 @@ buildClientBundle({
     'locales.js',
     'use-session-manager.js',
     'styles.js',
+    'message.js',
     'section.js',
     'index.js',
   ],

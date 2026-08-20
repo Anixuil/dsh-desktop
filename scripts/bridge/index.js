@@ -30,11 +30,13 @@ export function apply(ctx, config) {
     getCredentials: () => ctx.get('credentials'),
   })
 
-  // same-origin /desktop routes + turn-end notifications
-  registerDesktopRoutes(ctx, { shellPort })
+  // conversation-state classifier → shell /turn-state (drives the wave UI).
+  // Its setFocused() is wired into /desktop/current-session so the classifier
+  // reports only the conversation currently focused in the UI.
+  const wave = registerWaveState(ctx, { shellPort })
 
-  // conversation-state classifier → shell /turn-state (drives the wave UI)
-  registerWaveState(ctx, { shellPort })
+  // same-origin /desktop routes + turn-end notifications
+  registerDesktopRoutes(ctx, { shellPort, onFocus: wave.setFocused })
 
   ctx.on('dispose', () => {
     credentials.close()

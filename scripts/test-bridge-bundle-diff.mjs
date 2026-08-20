@@ -94,10 +94,12 @@ if (typeof factory !== 'function') throw new Error('client bundle never register
 const result = factory(sandbox.require);
 result.apply(mockCtx);
 
-if (registrations.length !== 2) throw new Error(`expected 2 registrations, got ${registrations.length}`);
+if (registrations.length !== 4) throw new Error(`expected 4 registrations, got ${registrations.length}`);
 const balanceReg = registrations.find((r) => r.slotName === 'sidebar.footer.action');
-const aboutReg = registrations.find((r) => r.slotName === 'settings.section');
-if (!balanceReg || !aboutReg) throw new Error(`missing bridge registrations: ${registrations.map((r) => r.slotName).join(', ')}`);
+const aboutReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'about');
+const remoteReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'remote-access');
+const appearanceReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'appearance');
+if (!balanceReg || !aboutReg || !remoteReg || !appearanceReg) throw new Error(`missing bridge registrations: ${registrations.map((r) => r.slotName).join(', ')}`);
 const { reg, component } = balanceReg;
 const injected = reg.inject();
 const renderVariant = (wide) =>
@@ -141,4 +143,8 @@ if (aboutReg.reg.id !== 'about' || aboutReg.reg.order !== 30) {
   throw new Error(`about registration mismatch: ${JSON.stringify(aboutReg.reg)}`);
 }
 console.log('about settings.section registration ok (id=about, order=30)');
+if (appearanceReg.reg.id !== 'appearance' || appearanceReg.reg.order !== 5) {
+  throw new Error(`appearance registration mismatch: ${JSON.stringify(appearanceReg.reg)}`);
+}
+console.log('appearance settings.section registration ok (id=appearance, order=5)');
 console.log('bridge client bundle equivalence test PASSED');

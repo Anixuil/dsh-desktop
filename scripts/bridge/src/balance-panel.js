@@ -43,10 +43,12 @@ function BalancePanelView(props) {
     const info = p.kind === "balance" ? p.balance?.balance_infos?.[0] : null;
     const usageData = p.kind === "usage" ? p.usage : null;
     const unsupported = p.kind === "unsupported";
+    const hasRemaining = Number.isFinite(usageData?.remaining);
     const big = p.kind === "balance"
       ? info?.total_balance ?? "—"
-      : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
-    const cur = p.kind === "balance" ? info?.currency ?? "" : "USD";
+      : hasRemaining ? usageData.remaining.toFixed(2)
+        : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
+    const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
     return jsxs("section", { className: "dbb_card", children: [
       jsxs("div", { className: "dbb_providerHead", children: [
         jsx("span", { className: "dbb_providerName", children: p.display_name }),
@@ -62,14 +64,40 @@ function BalancePanelView(props) {
         jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
       ] }),
       p.kind === "usage" && usageData && jsxs(Fragment, { children: [
+        hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
+        }),
         jsxs("div", { className: "dbb_balanceSub", children: [
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
         ] }),
-        jsx("div", { className: "dbb_note", children: t("balance.usageNote") })
+        jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
       ] }),
       p.error && jsx("div", { className: "dbb_error", children: p.error })
+    ] }, p.id);
+  };
+
+  /** A provider card carries real data only when it actually returned a
+   *  balance or a usage total — everything else is folded out of the main list. */
+  const hasProviderData = (p) => Boolean(
+    (p && p.kind === "balance" && p.balance) || (p && p.kind === "usage" && p.usage),
+  );
+
+  /** Compact row for the folded group: name + reason (+ error text, muted). */
+  const providerCardFolded = (p) => {
+    const reason = !p.configured
+      ? t("badge.unconfigured")
+      : p.kind === "unsupported"
+        ? t("balance.unsupported")
+        : t("badge.offline");
+    const reasonClass = (!p.configured || p.kind === "unsupported")
+      ? "dbb_badge dbb_badgeWarn"
+      : "dbb_badge dbb_badgeErr";
+    return jsxs("div", { className: "dbb_foldedItem", children: [
+      jsx("span", { className: "dbb_foldedName", children: p.display_name }),
+      jsx("span", { className: reasonClass, children: reason }),
+      p.error ? jsx("div", { className: "dbb_foldedError", children: p.error }) : null,
     ] }, p.id);
   };
 
@@ -87,6 +115,8 @@ function BalancePanelView(props) {
   const topModels = (usage?.byModel ?? []).slice(0, 6);
   const maxModel = topModels.reduce((m, r) => Math.max(m, r.tokens.total), 0);
   const topSessions = (usage?.sessions ?? []).slice(0, 6);
+  const activeProviders = (providers ?? []).filter(hasProviderData);
+  const foldedProviders = (providers ?? []).filter((p) => !hasProviderData(p));
 
   return jsx("section", {
     ref: panelRef,
@@ -135,7 +165,13 @@ function BalancePanelView(props) {
             ] }),
             error && jsx("div", { className: "dbb_error", children: t("badge.offline") })
           ] })
-          : providers.map(providerCard),
+          : jsxs(Fragment, { children: [
+            activeProviders.map(providerCard),
+            foldedProviders.length > 0 && jsx("details", { className: "dbb_folded", children: [
+              jsx("summary", { className: "dbb_foldedSummary", children: t("balance.folded", { count: foldedProviders.length }) }),
+              foldedProviders.map(providerCardFolded),
+            ] }),
+          ] }),
         jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
         usageError
           ? jsx("div", { className: "dbb_error", children: t("usage.error") })

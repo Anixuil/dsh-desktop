@@ -1,0 +1,11 @@
+{
+  "name": "dsh-desktop-relay-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PC-side agent for the dsh-desktop relay: outbound connection, opaque HTTP/WS frame forwarding to the local dsh web, loopback status endpoint",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}

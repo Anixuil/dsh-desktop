@@ -104,7 +104,8 @@ const fakeRes = () => {
   console.log('unarchive ok:', JSON.stringify(state.archivedSessionIds));
 }
 
-// 4. delete a live session is refused
+// 4. delete an attached session whose store internals are unreachable (a
+//    future dsh build, or a bare mock) degrades to the old refusal
 {
   mockCtx.sessions.get = (id) => (id === 'session-1' ? {} : undefined);
   const res = fakeRes();
@@ -112,8 +113,8 @@ const fakeRes = () => {
   const req = { method: 'POST', url: '/desktop-sessions/delete', [Symbol.asyncIterator]: async function* () { yield body; } };
   await routeHandler(req, res);
   const payload = JSON.parse(res.body);
-  if (res.status !== 409 || payload.ok !== false || payload.code !== 'live') throw new Error(`live guard failed: ${res.status} ${res.body}`);
-  console.log('live guard ok');
+  if (res.status !== 409 || payload.ok !== false || payload.code !== 'live') throw new Error(`degrade guard failed: ${res.status} ${res.body}`);
+  console.log('degrade guard ok');
 }
 
 // 5. delete a non-live session removes the dir and purges the cache
@@ -130,6 +131,193 @@ const fakeRes = () => {
   const proj = JSON.parse(readFileSync(join(home, 'storages', 'session_projcache.json'), 'utf8'));
   if ('session-1' in (proj.tables?.sessions ?? {})) throw new Error('projcache row still present after delete');
   console.log('delete ok:', JSON.stringify(payload));
+}
+
+// 6. an attached-but-idle session (the archived case: still resident in the
+//    host session store, idle agent) is released through the store entry's
+//    detach and then deleted
+{
+  const attachedDir = join(home, 'sessions', '--fake-ws--', 'session-attached-7');
+  mkdirSync(attachedDir, { recursive: true });
+  writeFileSync(join(attachedDir, 'session.jsonl.zstd'), 'attached idle session');
+  const store = new Map();
+  store.set('session-attached-7', { detach: () => { store.delete('session-attached-7'); } });
+  mockCtx.sessions = {
+    get: (id) => (id === 'session-attached-7'
+      ? { id: 'session-attached-7', header: { id: 'session-attached-7', origin: 'root' } }
+      : undefined),
+    store,
+  };
+  mockCtx.agents = { get: () => ({ status: 'idle', inbox: { hasPending: false } }), isOwnedBy: () => false };
+  const res = fakeRes();
+  const body = JSON.stringify({ id: 'session-attached-7' });
+  const req = { method: 'POST', url: '/desktop-sessions/delete', [Symbol.asyncIterator]: async function* () { yield body; } };
+  await routeHandler(req, res);
+  const payload = JSON.parse(res.body);
+  if (res.status !== 200 || payload.ok !== true) throw new Error(`attached-idle delete failed: ${res.status} ${res.body}`);
+  const { existsSync: exists2 } = await import('node:fs');
+  if (exists2(attachedDir)) throw new Error('attached session dir still exists after delete');
+  if (store.has('session-attached-7')) throw new Error('store entry was not detached');
+  console.log('attached-idle delete ok:', JSON.stringify(payload));
+}
+
+// 7. an attached session with work in flight (running agent) is refused
+{
+  mockCtx.sessions.get = (id) => (id === 'session-running-8'
+    ? { id: 'session-running-8', header: { id: 'session-running-8', origin: 'root' } }
+    : undefined);
+  mockCtx.sessions.store = new Map();
+  mockCtx.agents = {
+    get: () => ({ status: 'running', inbox: { hasPending: false } }),
+    isOwnedBy: () => false,
+  };
+  const res = fakeRes();
+  const body = JSON.stringify({ id: 'session-running-8' });
+  const req = { method: 'POST', url: '/desktop-sessions/delete', [Symbol.asyncIterator]: async function* () { yield body; } };
+  await routeHandler(req, res);
+  const payload = JSON.parse(res.body);
+  if (res.status !== 409 || payload.ok !== false || payload.code !== 'live') throw new Error(`running guard failed: ${res.status} ${res.body}`);
+  console.log('running guard ok:', JSON.stringify(payload));
+}
+
+// 7b. an attached session with an idle agent but unclaimed inbox input is refused
+{
+  mockCtx.sessions.get = (id) => (id === 'session-pending-8b'
+    ? { id: 'session-pending-8b', header: { id: 'session-pending-8b', origin: 'root' } }
+    : undefined);
+  mockCtx.sessions.store = new Map();
+  mockCtx.agents = {
+    get: () => ({ status: 'idle', inbox: { hasPending: true } }),
+    isOwnedBy: () => false,
+  };
+  const res = fakeRes();
+  const body = JSON.stringify({ id: 'session-pending-8b' });
+  const req = { method: 'POST', url: '/desktop-sessions/delete', [Symbol.asyncIterator]: async function* () { yield body; } };
+  await routeHandler(req, res);
+  const payload = JSON.parse(res.body);
+  if (res.status !== 409 || payload.ok !== false || payload.code !== 'live') throw new Error(`pending-inbox guard failed: ${res.status} ${res.body}`);
+  console.log('pending-inbox guard ok:', JSON.stringify(payload));
+}
+
+// 8. a subagent-owned attached session is refused regardless of idle state
+{
+  mockCtx.sessions.get = (id) => (id === 'session-child-9'
+    ? { id: 'session-child-9', header: { id: 'session-child-9', origin: 'subagent' } }
+    : undefined);
+  mockCtx.sessions.store = new Map();
+  mockCtx.agents = { get: () => undefined, isOwnedBy: () => false };
+  const res = fakeRes();
+  const body = JSON.stringify({ id: 'session-child-9' });
+  const req = { method: 'POST', url: '/desktop-sessions/delete', [Symbol.asyncIterator]: async function* () { yield body; } };
+  await routeHandler(req, res);
+  const payload = JSON.parse(res.body);
+  if (res.status !== 409 || payload.ok !== false || payload.code !== 'live') throw new Error(`subagent guard failed: ${res.status} ${res.body}`);
+  console.log('subagent guard ok:', JSON.stringify(payload));
+}
+
+// 9. sidebar session-delete patch: pure-function behaviour over the REAL
+//    shipped workspace bundle (when the runtime tree is present), idempotence,
+//    graceful degradation, and syntax validity of the patched output.
+{
+  const { applyWorkspaceDeletePatch, WORKSPACE_BUNDLE_ID, WORKSPACE_DELETE_MARKER } = await import('./session-manager/lib/workspace-patch.js');
+  const nodePath = join(import.meta.dirname, '..', 'runtime', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-client-ui-workspace', 'lib', 'client.js');
+  const { existsSync: bundleExists, copyFileSync, readFileSync: readBundle } = await import('node:fs');
+  if (bundleExists(nodePath)) {
+    // Patch a pristine COPY of the shipped bundle: the live runtime file may
+    // already carry the marker from a real boot, which is exactly the state
+    // the function must tolerate without re-patching.
+    const workDir = mkdtempSync(join(tmpdir(), 'dsm-workspace-patch-'));
+    const bundleCopy = join(workDir, 'client.js');
+    copyFileSync(nodePath, bundleCopy);
+    const source = readBundle(bundleCopy, 'utf8');
+    // The live runtime file may already carry the marker from a real boot; the
+    // function must tolerate that state (either reporting 'already patched' or
+    // self-healing an older patch), so always run it against the copy.
+    const applied = applyWorkspaceDeletePatch(source);
+    if (!applied.applied && applied.reason !== 'already patched') {
+      throw new Error(`workspace patch failed against real bundle: ${applied.reason}`);
+    }
+    const out = applied.source;
+    for (const needle of [
+      WORKSPACE_DELETE_MARKER,
+      'id: "delete",',
+      'if (id === "delete") onDelete(node.id, row.title);',
+      'onDelete: onSessionDelete,',
+      'confirmSessionDelete',
+      'deleteSession: async (sessionId) => {',
+      'clearCurrent: () => {',
+      'refreshSessions: () => {',
+      '"menu.deleteSession"',
+      '"delete.session.title"',
+    ]) {
+      if (!out.includes(needle)) throw new Error(`patched bundle missing ${needle}`);
+    }
+    if ((out.split('onDelete: onSessionDelete,').length - 1) !== 2) throw new Error('onDelete forwarded at exactly two call sites');
+    // regression: the session-delete modal must be a comma-separated sibling of
+    // the workspace-delete modal. A missing comma is still VALID syntax (it
+    // parses as a call chain) but throws "jsxs is not a function" at render —
+    // which blanked the sidebar. Pin the exact seam.
+    const TAB = '\t';
+    const modalSeam = `${TAB.repeat(5)}}),\n${TAB.repeat(5)}(0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Modal, {\n${TAB.repeat(6)}open: sessionDeleteTarget !== null,`;
+    if (!out.includes(modalSeam)) throw new Error('session-delete modal not comma-separated from the workspace-delete modal');
+    // syntax check (parse without executing: the bundle needs window.__ModuleLoader__)
+    const vm = await import('node:vm');
+    new vm.Script(out, { filename: 'patched-workspace-client.js' });
+    // idempotence: a second pass over the copy is a no-op
+    const again = applyWorkspaceDeletePatch(out);
+    if (again.applied !== false || again.reason !== 'already patched') throw new Error(`re-patch should be a no-op: ${again.reason}`);
+    console.log('workspace bundle patch ok (real bundle, syntax ok, idempotent)');
+  } else {
+    console.log('workspace bundle patch: runtime bundle absent, skipping real-bundle case');
+  }
+  // degradation: anchors missing -> nothing written, loud reason
+  const nonsense = applyWorkspaceDeletePatch('function navIcon(id) { return null; }\n');
+  if (nonsense.applied !== false || !String(nonsense.reason).includes('anchor mismatch')) {
+    throw new Error(`unexpected degradation result: ${nonsense.reason}`);
+  }
+  console.log('workspace bundle patch degradation ok');
+}
+
+// 10. wiring: plugin activation patches the bundle the client-modules registry
+//     reports and refreshes its revision (exercised against a copy of the real
+//     shipped bundle so the anchors resolve; skipped when the runtime is absent)
+{
+  const { WORKSPACE_BUNDLE_ID } = await import('./session-manager/lib/workspace-patch.js');
+  const realBundle = join(import.meta.dirname, '..', 'runtime', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-client-ui-workspace', 'lib', 'client.js');
+  const { existsSync: realExists, copyFileSync, readFileSync: readSync } = await import('node:fs');
+  if (!realExists(realBundle)) {
+    console.log('workspace bundle patch wiring: runtime bundle absent, skipping');
+  } else {
+    const wsHome = mkdtempSync(join(tmpdir(), 'dsm-patch-wiring-'));
+    const bundlePath = join(wsHome, 'client.js');
+    copyFileSync(realBundle, bundlePath);
+    const before = readSync(bundlePath, 'utf8');
+    const wasPristine = !before.includes('dsh-desktop-session-delete');
+    const rebuiltIds = [];
+    const fakeClientModules = {
+      clientPath: (id) => (id === WORKSPACE_BUNDLE_ID ? bundlePath : undefined),
+      rebuilt: (id) => { rebuiltIds.push(id); },
+    };
+    const wiringCtx = {
+      effect: (fn) => { fn(); return () => {}; },
+      get: (name) => (name === 'clientModules' ? fakeClientModules : undefined),
+      logger: { info: () => {}, warn: (msg) => { throw new Error(`unexpected warn: ${msg}`); } },
+      webServer: { register: () => () => {} },
+      sessions: { get: () => undefined },
+      workspaceRegistry: { archivedSessionIds: [], enqueueOperation: (fn) => fn(), requireState: () => ({ archivedSessionIds: [] }), setState: async () => {} },
+      sessionQuery: null,
+    };
+    const hostModule = await import('./session-manager/index.js');
+    hostModule.apply(wiringCtx, {});
+    const patchedSource = readSync(bundlePath, 'utf8');
+    if (!patchedSource.includes('dsh-desktop-session-delete')) throw new Error('wiring did not patch the reported bundle');
+    // The rev refresh only fires when the patch actually wrote the file: a
+    // pristine bundle is patched and an older patched bundle is self-healed,
+    // while an up-to-date bundle is intentionally left untouched.
+    const changed = patchedSource !== before;
+    if (changed && !rebuiltIds.includes(WORKSPACE_BUNDLE_ID)) throw new Error('wiring did not refresh the bundle revision');
+    console.log(`workspace bundle patch wiring ok (${wasPristine ? 'patched' : changed ? 'self-healed' : 'already patched, untouched'})`);
+  }
 }
 
 rmSync(home, { recursive: true, force: true });

@@ -38,6 +38,7 @@ const sandbox = {
   window: globalThis,
   document: globalThis.document,
   console,
+  TextEncoder: globalThis.TextEncoder,
   require: (id) => {
     if (id === 'react') return react;
     if (id === 'react/jsx-runtime') return { jsx: jsxStub, jsxs: jsxStub, Fragment: react.Fragment };
@@ -51,6 +52,209 @@ const factory = globalThis.__ModuleLoader__Factory;
 const result = factory(sandbox.require);
 if (typeof result.views?.BalancePanelView !== 'function') throw new Error('bundle must export views.BalancePanelView');
 if (typeof result.views?.AboutSectionView !== 'function') throw new Error('bundle must export views.AboutSectionView');
+if (typeof result.views?.AppearanceSectionView !== 'function') throw new Error('bundle must export views.AppearanceSectionView');
+if (typeof result.views?.RemoteSectionView !== 'function') throw new Error('bundle must export views.RemoteSectionView');
+if (typeof result.qr?.qrSvgDataUri !== 'function') throw new Error('bundle must export qr.qrSvgDataUri');
+if (typeof result.qr?.matrixFor !== 'function') throw new Error('bundle must export qr.matrixFor');
+
+// 0. zero-dependency QR encoder sanity: data URI shape, payload sensitivity
+{
+  const url = 'https://anixuil-pc.remote.example.com/?code=123456';
+  const uri = result.qr.qrSvgDataUri(url);
+  if (!uri.startsWith('data:image/svg+xml')) throw new Error(`qr data uri missing prefix: ${uri.slice(0, 40)}`);
+  const other = result.qr.qrSvgDataUri(url.replace('123456', '654321'));
+  if (uri === other) throw new Error('qr output must differ per payload');
+  let threw = false;
+  try {
+    result.qr.qrSvgDataUri('x'.repeat(90));
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error('qr must reject payloads beyond v5-M capacity');
+  console.log('qr encoder ok');
+}
+
+// 0b. independent decode verification: walk the matrix back into codewords,
+//     check the format info reads 0x5412 (ECC M + mask 0), verify every RS
+//     block's syndrome is zero with an independently written GF table, and
+//     recover the byte-mode payload text.
+{
+  const url = 'https://anixuil-pc.remote.example.com/?code=123456';
+  const m = result.qr.matrixFor(url)
+  const n = m.length
+  const version = (n - 17) / 4
+  if (![1, 2, 3, 4, 5].includes(version)) throw new Error(`unexpected qr version ${version}`)
+  // 1) format info, first copy (ISO 18004 fig. 25): bits 0-5 up the left
+  //    column (0..5,8), 6 (7,8), 7 (8,8), 8 (8,7), 9-14 along the top row (8,5..0)
+  let format = 0
+  for (let i = 0; i <= 5; i++) format |= (m[i][8] & 1) << i
+  format |= (m[7][8] & 1) << 6
+  format |= (m[8][8] & 1) << 7
+  format |= (m[8][7] & 1) << 8
+  for (let i = 9; i <= 14; i++) format |= (m[8][14 - i] & 1) << i
+  if (format !== 0x5412) throw new Error(`format info mismatch: 0x${format.toString(16)} != 0x5412`)
+  // 2) de-mask (mask 0: invert when (r+c) even) and de-interleave data + ecc
+  const isFunctionModule = (r, c) => {
+    if (r === 6 || c === 6) return true // timing
+    // format-info cells only (not the whole row/column 8): top-left corner,
+    // right edge, bottom edge
+    if (r === 8 && c <= 8) return true
+    if (c === 8 && r <= 8) return true
+    if (c === 8 && r >= n - 8) return true // right format strip incl. dark module (n-8, 8)
+    if (r === 8 && c >= n - 8) return true // bottom format strip (bit 7 of copy 2 at (8, n-8))
+    for (const [r0, c0] of [[0, 0], [0, n - 7], [n - 7, 0]]) {
+      if (r >= r0 - 1 && r <= r0 + 7 && c >= c0 - 1 && c <= c0 + 7) return true // finder + separator
+    }
+    const ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30]]
+    for (const ar of ALIGN[version - 1]) {
+      for (const ac of ALIGN[version - 1]) {
+        const onFinder = (ar <= 8 && ac <= 8) || (ar <= 8 && ac >= n - 9) || (ar >= n - 9 && ac <= 8)
+        if (onFinder) continue // alignment overlaps a finder: not drawn
+        if (r >= ar - 2 && r <= ar + 2 && c >= ac - 2 && c <= ac + 2) return true // alignment
+      }
+    }
+    return false
+  }
+  const bits = []
+  const skipped = []
+  let upward = true
+  for (let c = n - 1; c >= 1; c -= 2) {
+    if (c === 6) c-- // skip the timing column; direction still toggles this pair
+    for (let row = 0; row < n; row++) {
+      for (let k = 0; k < 2; k++) {
+        const r = upward ? n - 1 - row : row
+        const col = c - k
+        if (isFunctionModule(r, col)) {
+          if (skipped.length < 60) skipped.push(`(${r},${col})`)
+          continue
+        }
+        const masked = m[r][col] & 1
+        const data = masked ^ (((r + col) % 2 === 0) ? 1 : 0)
+        bits.push(data)
+      }
+    }
+    upward = !upward
+  }
+  // 3) codewords per version (ECC M): blocks/data/ecc table
+  const LAYOUT = [[1, 16, 10], [1, 28, 16], [1, 44, 26], [2, 32, 18], [2, 43, 24]]
+  const [blocks, dataPerBlock, eccPerBlock] = LAYOUT[version - 1]
+  const totalBytes = blocks * (dataPerBlock + eccPerBlock)
+  // remainder bits carry no data; trim the extracted stream to the codeword length
+  const dataBits = bits.slice(0, totalBytes * 8)
+  const codewords = []
+  for (let i = 0; i < totalBytes; i++) {
+    let byte = 0
+    for (let j = 0; j < 8; j++) byte = (byte << 1) | dataBits[i * 8 + j]
+    codewords.push(byte)
+  }
+  // debug: compare encoder codewords with decoder-extracted codewords
+  const { encodeData, interleave, reservedCell } = result.qr._internals
+  const expectedBits = encodeData(url, blocks * dataPerBlock * 8)
+  const expectedCw = interleave(blocks, dataPerBlock, eccPerBlock, expectedBits)
+  const diffs = []
+  for (let i = 0; i < expectedCw.length; i++) {
+    if (expectedCw[i] !== codewords[i]) diffs.push(`${i}:enc=${expectedCw[i]} ext=${codewords[i]}`)
+  }
+  if (diffs.length > 0) {
+    // compare placement coordinates around the first mismatch
+    const { getLastPlacement } = result.qr._internals
+    const placement = getLastPlacement()
+    const decCoords = []
+    let up = true
+    for (let c = n - 1; c >= 1; c -= 2) {
+      if (c === 6) c--
+      for (let row = 0; row < n; row++) {
+        for (let k = 0; k < 2; k++) {
+          const r = up ? n - 1 - row : row
+          const col = c - k
+          if (!isFunctionModule(r, col)) decCoords.push([r, col])
+        }
+      }
+      up = !up
+    }
+    const firstBad = diffs[0].split(':')[0] * 8
+    const report = []
+    for (let i = firstBad - 6; i < firstBad + 8; i++) {
+      const enc = placement[i]
+      const dec = decCoords[i]
+      report.push(`${i}:enc=${enc ? enc.join(',') : 'undef'} dec=${dec ? dec.join(',') : 'undef'}${enc && dec && (enc[0] !== dec[0] || enc[1] !== dec[1]) ? ' MISMATCH' : ''}`)
+    }
+    throw new Error(`codeword mismatches (${diffs.length}): ${diffs.slice(0, 8).join(' | ')} | bits=${bits.length} | ${report.join(' | ')}`)
+  }
+  // de-interleave
+  const dataBlocks = []
+  for (let b = 0; b < blocks; b++) {
+    const block = []
+    for (let i = 0; i < dataPerBlock; i++) block.push(codewords[i * blocks + b])
+    for (let i = 0; i < eccPerBlock; i++) block.push(codewords[blocks * dataPerBlock + i * blocks + b])
+    dataBlocks.push(block)
+  }
+  // 4) independent GF(256) + RS syndrome check
+  const EXP = new Uint8Array(512)
+  const LOG = new Uint8Array(256)
+  {
+    let x = 1
+    for (let i = 0; i < 255; i++) {
+      EXP[i] = x
+      LOG[x] = i
+      x <<= 1
+      if (x & 0x100) x ^= 0x11d
+    }
+    for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]
+  }
+  const gmul2 = (a, b) => (a === 0 || b === 0) ? 0 : EXP[LOG[a] + LOG[b]]
+  for (const block of dataBlocks) {
+    // debug: recompute ecc for this data block and compare with the block's tail
+    const { rsEcc: encRsEcc } = result.qr._internals
+    const recomputed = encRsEcc(block.slice(0, dataPerBlock), eccPerBlock)
+    const tail = block.slice(dataPerBlock)
+    const eccOk = recomputed.every((v, i) => v === tail[i])
+    if (!eccOk) throw new Error(`de-interleave mismatch: recomputed ecc != block tail (data=${block.slice(0, 8).join(',')} tail=${tail.slice(0, 6).join(',')} recomputed=${recomputed.slice(0, 6).join(',')})`)
+    // syndrome: evaluate the received polynomial at α^0..α^(ecc-1)
+    for (let e = 0; e < eccPerBlock; e++) {
+      let acc = 0
+      for (const byte of block) acc = gmul2(acc, EXP[e]) ^ byte
+      if (acc !== 0) throw new Error(`rs syndrome ${e} != 0: block is corrupted or mis-encoded`)
+    }
+  }
+  // 5) recover byte-mode text
+  const first = dataBlocks[0][0]
+  if (first >> 4 !== 0b0100) throw new Error(`expected byte mode, got ${first >> 4}`)
+  const len = ((first & 0x0f) << 4) | (dataBlocks[0][1] >> 4)
+  const textBytes = []
+  // Rebuild the original byte order: block 0's data then block 1's data
+  // (the interleaved stream spreads blocks byte-by-byte).
+  const allData = []
+  for (let b = 0; b < blocks; b++) {
+    for (let i = 0; i < dataPerBlock; i++) allData.push(dataBlocks[b][i])
+  }
+  // bytes start after the 12-bit header: byte 0 low nibble + byte 1 high nibble
+  const stream = []
+  for (const byte of allData) for (let j = 7; j >= 0; j--) stream.push((byte >> j) & 1)
+  const probe = []
+  for (let i = 0; i < Math.min(len, 10); i++) {
+    let byte = 0
+    for (let j = 0; j < 8; j++) byte = (byte << 1) | stream[12 + i * 8 + j]
+    probe.push(byte)
+  }
+  const expectedProbe = []
+  for (let i = 0; i < Math.min(len, 10); i++) {
+    let byte = 0
+    for (let j = 0; j < 8; j++) byte = (byte << 1) | expectedBits[12 + i * 8 + j]
+    expectedProbe.push(byte)
+  }
+  if (probe.join(',') !== expectedProbe.join(',')) {
+    throw new Error(`byte extraction drift: extracted=${probe.map((b) => b.toString(16)).join(' ')} expected=${expectedProbe.map((b) => b.toString(16)).join(' ')}`)
+  }
+  for (let i = 0; i < len; i++) {
+    let byte = 0
+    for (let j = 0; j < 8; j++) byte = (byte << 1) | stream[12 + i * 8 + j]
+    textBytes.push(byte)
+  }
+  const decoded = Buffer.from(textBytes).toString('utf8')
+  if (decoded !== url) throw new Error(`decode mismatch: ${JSON.stringify(decoded)} != ${JSON.stringify(url)}`)
+  console.log('qr independent decode verification ok (format + RS syndrome + text round-trip)')
+}
 
 const t = (key, params) => key + (params ? ' ' + JSON.stringify(params) : '');
 const noop = () => {};
@@ -105,7 +309,7 @@ const usageFixture = {
       registeredAt: 1735689600000,
       providers: [
         { id: 'deepseek-official', kind: 'balance', configured: true, display_name: 'DeepSeek', balance: { is_available: true, balance_infos: [{ total_balance: '88.00', currency: 'CNY', topped_up_balance: '88.00', granted_balance: '0.00' }] } },
-        { id: 'gateway', kind: 'usage', configured: true, display_name: 'Gateway', usage: { total_usage_usd: 12.34, soft_limit_usd: 100, hard_limit_usd: 200, has_payment_method: true } },
+        { id: 'gateway', kind: 'usage', configured: true, display_name: 'Gateway', usage: { remaining: 56.78, unit: 'CNY', is_valid: true, total_usage_usd: 12.34, soft_limit_usd: 100, hard_limit_usd: 200, has_payment_method: true } },
         { id: 'unsupported', kind: 'unsupported', configured: true, display_name: 'UnsupportedCo' },
         { id: 'unconfigured', kind: 'balance', configured: false, display_name: 'NoKeyCo' },
         { id: 'broken', kind: 'balance', configured: true, error: 'boom', display_name: 'BrokenCo' },
@@ -113,8 +317,12 @@ const usageFixture = {
     },
     usage: usageFixture,
   });
-  for (const marker of ['DeepSeek', '88.00', 'Gateway', '$12.34', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes']) {
+  for (const marker of ['DeepSeek', '88.00', 'Gateway', '56.78', 'CNY', 'usage.active', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes']) {
     if (!markup.includes(marker)) throw new Error(`providers render missing ${marker}\n${markup}`);
+  }
+  // the three data-less providers are folded into a collapsed summary group
+  for (const marker of ['balance.folded', 'dbb_foldedSummary', 'dbb_foldedItem']) {
+    if (!markup.includes(marker)) throw new Error(`providers render missing folded marker ${marker}\n${markup}`);
   }
   console.log('multi-provider render ok');
 }
@@ -156,8 +364,65 @@ const usageFixture = {
   const latest = renderAbout({ info: null, update: { checking: false, status: { ok: true } } });
   if (!latest.includes('about.latest')) throw new Error(`about latest state missing\n${latest}`);
   const err = renderAbout({ info: null, loadError: 'boom', update: null });
-  if (!err.includes('about.offline') || !err.includes('boom')) throw new Error(`about offline state missing\n${err}`);
+  if (err.includes('about.offline') || err.includes('boom')) throw new Error(`about error leaked into page content\n${err}`);
   console.log('about section render ok');
+}
+
+// 6. remote section view: online (custom relay) / default relay / disabled /
+//    offline states
+{
+  const renderRemote = (props) => renderToString(react.createElement(result.views.RemoteSectionView, {
+    t,
+    cfg: null,
+    loadError: null,
+    busy: false,
+    notice: null,
+    onChange: noop,
+    onSave: noop,
+    ...props,
+  }));
+  const online = renderRemote({
+    cfg: { enabled: true, relayUrl: 'wss://remote.example.com', customRelay: true, defaultRelayUrl: 'wss://remote.anixuil.com', secret: 'secret-12345', deviceId: 'my-pc', running: true, online: true, entry: 'https://my-pc.remote.example.com/' },
+    pairingCode: '482913',
+  });
+  for (const marker of ['remote.title', 'remote.enabled', 'remote.customRelay', 'wss://remote.example.com', 'my-pc', 'https://my-pc.remote.example.com/', 'remote.stateOnline', 'remote.save', 'remote.pair', 'remote.pairCode', '482913']) {
+    if (!online.includes(marker)) throw new Error(`remote online render missing ${marker}\n${online}`);
+  }
+  // Default relay mode: no URL input, the public default is shown read-only.
+  const def = renderRemote({
+    cfg: { enabled: true, relayUrl: 'wss://remote.anixuil.com', customRelay: false, defaultRelayUrl: 'wss://remote.anixuil.com', secret: '', deviceId: 'my-pc', running: true, online: true, entry: 'https://my-pc.remote.anixuil.com/' },
+  });
+  if (!def.includes('wss://remote.anixuil.com')) throw new Error(`remote default relay render missing default URL\n${def}`);
+  const disabled = renderRemote({ cfg: { enabled: false, relayUrl: '', customRelay: false, defaultRelayUrl: 'wss://remote.anixuil.com', secret: '', deviceId: '' } });
+  if (!disabled.includes('remote.stateOff') || !disabled.includes('remote.entryNone')) {
+    throw new Error(`remote disabled state missing\n${disabled}`);
+  }
+  const offline = renderRemote({ cfg: null, loadError: 'boom' });
+  if (offline.includes('remote.offline') || offline.includes('boom')) throw new Error(`remote error leaked into page content\n${offline}`);
+  console.log('remote section render ok');
+}
+
+// 7. appearance section view: quiet / rich toggle states + offline state
+{
+  const renderAppearance = (props) => renderToString(react.createElement(result.views.AppearanceSectionView, {
+    t,
+    motion: null,
+    loadError: null,
+    busy: false,
+    notice: null,
+    onChange: noop,
+    ...props,
+  }));
+  const quiet = renderAppearance({ motion: 'quiet' });
+  for (const marker of ['appearance.title', 'appearance.motionLabel', 'appearance.motionQuiet', 'appearance.motionRich', 'appearance.hint']) {
+    if (!quiet.includes(marker)) throw new Error(`appearance quiet render missing ${marker}\n${quiet}`);
+  }
+  if (!quiet.includes('aria-checked="true"')) throw new Error(`appearance quiet should mark the quiet option checked\n${quiet}`);
+  const rich = renderAppearance({ motion: 'rich' });
+  if (rich === quiet) throw new Error('appearance rich/quiet renders must differ');
+  const offline = renderAppearance({ motion: null, loadError: 'boom' });
+  if (offline.includes('appearance.offline') || offline.includes('boom')) throw new Error(`appearance error leaked into page content\n${offline}`);
+  console.log('appearance section render ok');
 }
 
 console.log('bridge views fixture tests PASSED');

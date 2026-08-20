@@ -6,18 +6,24 @@
 //   * POST /desktop-sessions/unarchive  — restore an archived session
 //   * POST /desktop-sessions/delete     — hard-delete a session + derived caches
 //
+// On top of the routes, activation also idempotently patches the served
+// workspace-browser client bundle (see lib/workspace-patch.js) so sidebar
+// session rows gain a permanent-delete entry that calls our delete route.
+//
 // The archive set lives inside dsh's workspaceRegistry, so unarchive/scrub go
 // through the registry's own durability path (see lib/registry-patch.js):
 // writes fire dsh's domain-change broadcast and the sidebar refreshes live.
+import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { CODES } from './lib/contract.js'
 import { deleteSession } from './lib/delete.js'
 import { ensureRegistryPatch } from './lib/registry-patch.js'
 import { buildSessionsIndex } from './lib/sessions-index.js'
+import { applyWorkspaceDeletePatch, WORKSPACE_BUNDLE_ID } from './lib/workspace-patch.js'
 
 export const name = 'dsh-desktop-session-manager'
-export const inject = ['webServer', 'sessions', 'workspaceRegistry', 'sessionQuery']
+export const inject = ['webServer', 'sessions', 'workspaceRegistry', 'sessionQuery', 'agents']
 
 const MAX_BODY_BYTES = 64 * 1024
 
@@ -49,6 +55,49 @@ export function apply(ctx, config) {
   }
 
   const guard = (res, error) => json(res, 400, { ok: false, code: 'bad_request', error: String(error?.message ?? error) })
+
+  // Sidebar session-delete: idempotently patch the SERVED workspace-browser
+  // bundle so every session row gains a danger 永久删除 menu entry that calls
+  // /desktop-sessions/delete, confirms in a modal, clears the selection when
+  // the deleted session was current, and refreshes the baseline so the row
+  // disappears from every grouping surface. Reading the bundle through the
+  // client-modules registry (not inject — it may be absent in a degraded
+  // composition) guarantees we patch exactly the file the browser fetches.
+  const patchWorkspaceBundle = () => {
+    const clientModules = ctx.get?.('clientModules')
+    if (clientModules === undefined || typeof clientModules.clientPath !== 'function') return
+    let bundlePath
+    try {
+      bundlePath = clientModules.clientPath(WORKSPACE_BUNDLE_ID)
+    } catch {
+      return
+    }
+    if (bundlePath === undefined) return
+    try {
+      const current = readFileSync(bundlePath, 'utf8')
+      const patched = applyWorkspaceDeletePatch(current)
+      if (patched.applied && patched.source !== current) {
+        writeFileSync(bundlePath, patched.source)
+        if (typeof clientModules.rebuilt === 'function') {
+          try {
+            clientModules.rebuilt(WORKSPACE_BUNDLE_ID)
+          } catch (error) {
+            ctx.logger?.warn?.(`workspace bundle rev refresh failed: ${error?.message ?? error}`)
+          }
+        }
+        ctx.logger?.info?.(`sidebar session-delete patch applied -> ${bundlePath}`)
+      } else if (patched.reason !== 'already patched') {
+        ctx.logger?.warn?.(`workspace bundle left untouched: ${patched.reason}`)
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(`sidebar session-delete patch failed: ${error?.message ?? error}`)
+    }
+  }
+  patchWorkspaceBundle()
+  // The client-modules fiber activates in the same wave as our inject
+  // services; retry on the next tick so a fresh (post-kernel-update) bundle is
+  // patched even when the registry wins the race against this activation.
+  if (typeof setImmediate === 'function') setImmediate(patchWorkspaceBundle)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',

@@ -1,6 +1,7 @@
 # dsh-desktop bridge rows — managed by DSH Desktop, do not edit by hand.
 # Inserts the shell↔DSH bridge entry (turn-end notifications + credential
-# writes) and the session-manager plugin (list/delete/unarchive sessions).
+# writes), the session-manager plugin (list/delete/unarchive sessions), and
+# the change-history plugin (diff review + rollback of AI file edits).
 - insert:
     - id: dsh-desktop-bridge
       name: dsh-desktop-bridge
@@ -9,3 +10,5 @@
         port: 38658
     - id: dsh-desktop-session-manager
       name: dsh-desktop-session-manager
+    - id: dsh-desktop-change-history
+      name: dsh-desktop-change-history

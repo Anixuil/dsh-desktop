@@ -1,0 +1,15 @@
+{
+  "name": "dsh-desktop-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public relay pairing phones with dsh-desktop PCs: opaque HTTP/WS frame forwarding, device registry, heartbeat, shared-secret bearer auth",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node ../test-relay.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}

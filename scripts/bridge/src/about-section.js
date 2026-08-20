@@ -10,6 +10,7 @@ const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
 
 const BLOG_URL = 'https://www.anixuil.top';
 const REPO_URL = 'https://github.com/Anixuil/dsh-desktop';
@@ -48,9 +49,6 @@ function AboutSectionView(props) {
     children: [
       jsx('h2', { className: 'dbb_aboutTitle', children: t('about.title') }),
       jsx('p', { className: 'dbb_aboutIntro', children: t('about.intro') }),
-      loadError !== null
-        ? jsx('p', { className: 'dbb_error', children: `${t('about.offline')}（${loadError}）` })
-        : null,
       jsxs('div', { className: 'dbb_aboutCard', children: [
         jsxs('div', { className: 'dbb_aboutHead', children: [
           jsx('span', { className: 'dbb_aboutLogo', children: jsx(primitives.FishLogo, { size: 22 }) }),
@@ -115,14 +113,11 @@ function AboutSectionView(props) {
               children: t('about.release'),
             })
           : null,
-        updateText !== null
+        updateText !== null && update?.error == null
           ? jsx('p', {
               className: update?.error !== undefined && update?.error !== null ? 'dbb_error' : 'dbb_aboutStatus',
               children: updateText,
             })
-          : null,
-        notice?.kind === 'err'
-          ? jsx('p', { className: 'dbb_error', children: notice.text })
           : null,
       ] }),
     ],
@@ -152,6 +147,10 @@ function AboutSection(props) {
       });
     return () => { cancelled = true; };
   }, []);
+
+  react.useEffect(() => { if (loadError !== null) showMessage(`${t('about.offline')}（${loadError}）`); }, [loadError, t]);
+  react.useEffect(() => { if (update?.error != null) showMessage(update.error); }, [update]);
+  react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
 
   const openExternal = async (url) => {
     if (!url) return;

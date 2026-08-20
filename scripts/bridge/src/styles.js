@@ -64,6 +64,12 @@ const css = `
 .dbb_empty{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;text-align:center;padding:22px 8px}
 .dbb_note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;margin-top:8px}
 .dbb_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
+.dbb_folded{margin-top:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);overflow:hidden}
+.dbb_foldedSummary{box-sizing:border-box;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;padding:8px 12px;user-select:none}
+.dbb_foldedSummary:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_foldedItem{box-sizing:border-box;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--dsw-alias-border-l2);padding:7px 12px;display:flex}
+.dbb_foldedName{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dbb_foldedError{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;flex-basis:100%}
 
 .dbb_about{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
 .dbb_aboutTitle{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}
@@ -85,6 +91,29 @@ const css = `
 .dbb_aboutSecondary:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dbb_aboutRelease{align-self:flex-start;text-align:left}
 .dbb_aboutStatus{color:var(--dsw-alias-state-success-primary);margin:0;font-size:12px;line-height:18px}
+
+.dbb_remote{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
+.dbb_remoteSwitch{align-items:center;gap:8px;cursor:pointer;font-size:13px;line-height:20px;display:flex}
+.dbb_remoteSwitch input{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}
+.dbb_remoteSwitchText{color:var(--dsw-alias-label-primary)}
+.dbb_remoteField{flex-direction:column;gap:4px;display:flex}
+.dbb_remotePersistent{flex-direction:column;gap:6px;padding-top:4px;display:flex}
+.dbb_remoteLabel{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dbb_remoteInput{box-sizing:border-box;width:100%;height:32px;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-input-bg, var(--dsw-alias-bg-base));border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:0 10px;font-size:13px;line-height:20px}
+.dbb_remoteInput:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
+.dbb_remoteDefaultField{flex-direction:column;gap:4px;display:flex}
+.dbb_remoteDefault{box-sizing:border-box;width:100%;min-height:32px;font:inherit;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-input-bg, var(--dsw-alias-bg-base));border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;padding:5px 10px;font-size:13px;line-height:20px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
+.dbb_remote .dbb_aboutActions{align-items:center}
+.dbb_remoteCode{font-variant-numeric:tabular-nums;color:var(--dsw-alias-state-business-primary);font-size:15px;font-weight:600;letter-spacing:2px;margin:2px 0 0}
+.dbb_remoteQr{flex-direction:column;align-items:flex-start;gap:6px;margin-top:6px;display:flex}
+.dbb_remoteQr img{width:168px;height:168px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:#fff;padding:6px;box-sizing:border-box}
+
+.dbb_appearance{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
+.dbb_seg{box-sizing:border-box;align-self:flex-start;gap:3px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);display:inline-flex}
+.dbb_segBtn{box-sizing:border-box;height:30px;font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border:none;border-radius:8px;align-items:center;gap:6px;padding:0 14px;font-size:13px;line-height:20px;display:inline-flex}
+.dbb_segBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dbb_segBtn:disabled{opacity:.5;cursor:default}
+.dbb_segBtn.dbb_segActive{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);color:var(--dsw-alias-state-business-primary)}
 `;
 
 const TAG_ID = 'desktop-balance.css';

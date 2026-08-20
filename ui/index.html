@@ -69,12 +69,19 @@
       <span class="percent" id="percent">0%</span>
     </div>
     <div class="status" id="status"></div>
-    <div class="error" id="error" hidden>
-      <p class="error-text" id="error-text"></p>
-      <div class="btn-row">
-        <button class="primary" id="retry">重试</button>
-        <button id="open-settings">打开设置与日志</button>
+  </div>
+
+  <div class="startup-choice" id="startup-choice" hidden role="dialog" aria-modal="true" aria-labelledby="startup-choice-title">
+    <div class="startup-choice-card">
+      <div class="startup-choice-kicker">已有服务</div>
+      <h1 id="startup-choice-title">检测到本机已有 DSH Desktop 服务</h1>
+      <p>检测到 DSH、桌面桥接和凭据服务都可以正常访问。请选择本次启动方式。</p>
+      <div class="startup-ports" id="startup-ports"></div>
+      <div class="startup-choice-actions">
+        <button id="startup-existing">接入已有实例</button>
+        <button class="primary" id="startup-independent">独立运行</button>
       </div>
+      <div class="startup-choice-note">独立运行会结束当前占用这些端口的 DSH 服务实例。</div>
     </div>
   </div>
 
@@ -91,6 +98,31 @@
     const $ = (id) => document.getElementById(id);
     let percent = 0;
     let lastStage = 'boot';
+
+    const showStartupError = (text) => {
+      let root = document.getElementById('startup-message-root');
+      if (root) root.remove();
+      root = document.createElement('div');
+      root.id = 'startup-message-root';
+      root.className = 'startup-message-root';
+      root.setAttribute('role', 'alert');
+      const content = document.createElement('p');
+      content.textContent = text;
+      const actions = document.createElement('div');
+      actions.className = 'startup-message-actions';
+      const retry = document.createElement('button');
+      retry.className = 'primary';
+      retry.type = 'button';
+      retry.textContent = '重试';
+      retry.addEventListener('click', () => location.reload());
+      const settings = document.createElement('button');
+      settings.type = 'button';
+      settings.textContent = '打开设置与日志';
+      settings.addEventListener('click', () => invoke('open_settings_window'));
+      actions.append(retry, settings);
+      root.append(content, actions);
+      document.body.appendChild(root);
+    };
 
     // ---- motion intensity ----
     const applyMotion = (m) => {
@@ -166,14 +198,33 @@
       if (!document.body.classList.contains('error-state')) triggerRipple();
     });
     listen('dsh-ready', (e) => { setProgress(100); go(String(e.payload)); });
-    listen('dsh-failed', () => {
-      document.body.classList.add('error-state');
-      $('error').hidden = false;
-      $('error-text').textContent =
-        'DeepSeek Harness 服务启动失败。\n可能原因：内置运行时缺失、端口被占用且不可用、或 dsh 配置损坏。\n请打开设置与日志查看详情。';
+    listen('dsh-startup-conflict', async () => {
+      try { showStartupChoice(await invoke('get_startup_conflict')); } catch (e) { /* poll retries */ }
     });
-    $('retry').addEventListener('click', () => location.reload());
-    $('open-settings').addEventListener('click', () => invoke('open_settings_window'));
+    listen('dsh-failed', (e) => {
+      document.body.classList.add('error-state');
+      const failure = e.payload || {};
+      showStartupError(failure.kind === 'runtime-extraction'
+        ? `运行时组件解压失败：${failure.message || '系统暂时无法写入内置运行时文件。'}`
+        : 'DeepSeek Harness 服务启动失败，请重试或打开设置与日志查看详情。');
+    });
+
+    const startupChoice = $('startup-choice');
+    const startupPorts = $('startup-ports');
+    const showStartupChoice = (conflict) => {
+      if (!conflict || !Array.isArray(conflict.ports)) return;
+      startupPorts.innerHTML = conflict.ports.filter((p) => p.occupied)
+        .map((p) => `<span>${p.name} <b>127.0.0.1:${p.port}</b></span>`).join('');
+      startupChoice.hidden = false;
+    };
+    const chooseStartup = async (mode) => {
+      $('startup-existing').disabled = true;
+      $('startup-independent').disabled = true;
+      await invoke('choose_startup_mode', { mode });
+      startupChoice.hidden = true;
+    };
+    $('startup-existing').addEventListener('click', () => chooseStartup('useExisting'));
+    $('startup-independent').addEventListener('click', () => chooseStartup('independent'));
 
     // ---- custom window controls (main window is undecorated) ----
     if (window.__TAURI__ && window.__TAURI__.window) {
@@ -203,14 +254,16 @@
       try {
         const st = await invoke('get_status');
         if (st.motionIntensity) applyMotion(st.motionIntensity);
-        if (st.ui_ready) {
+        if (st.uiReady) {
           setProgress(100);
-          go(`http://127.0.0.1:${st.dsh_port}/`);
+          go(`http://127.0.0.1:${st.dshPort}/`);
           return;
         }
         if (st.adopted) {
           $('status').textContent = '检测到已有 DeepSeek Harness 实例，正在接入…';
         }
+        const conflict = await invoke('get_startup_conflict');
+        if (conflict) showStartupChoice(conflict);
       } catch (e) { /* window may not be ready yet */ }
       setTimeout(pollStatus, 500);
     }

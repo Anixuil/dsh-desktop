@@ -71,6 +71,12 @@ const css = `
 .dbb_empty{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;text-align:center;padding:22px 8px}
 .dbb_note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;margin-top:8px}
 .dbb_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
+.dbb_folded{margin-top:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);overflow:hidden}
+.dbb_foldedSummary{box-sizing:border-box;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;padding:8px 12px;user-select:none}
+.dbb_foldedSummary:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_foldedItem{box-sizing:border-box;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--dsw-alias-border-l2);padding:7px 12px;display:flex}
+.dbb_foldedName{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dbb_foldedError{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;flex-basis:100%}
 
 .dbb_about{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
 .dbb_aboutTitle{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}
@@ -92,6 +98,29 @@ const css = `
 .dbb_aboutSecondary:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dbb_aboutRelease{align-self:flex-start;text-align:left}
 .dbb_aboutStatus{color:var(--dsw-alias-state-success-primary);margin:0;font-size:12px;line-height:18px}
+
+.dbb_remote{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
+.dbb_remoteSwitch{align-items:center;gap:8px;cursor:pointer;font-size:13px;line-height:20px;display:flex}
+.dbb_remoteSwitch input{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}
+.dbb_remoteSwitchText{color:var(--dsw-alias-label-primary)}
+.dbb_remoteField{flex-direction:column;gap:4px;display:flex}
+.dbb_remotePersistent{flex-direction:column;gap:6px;padding-top:4px;display:flex}
+.dbb_remoteLabel{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dbb_remoteInput{box-sizing:border-box;width:100%;height:32px;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-input-bg, var(--dsw-alias-bg-base));border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:0 10px;font-size:13px;line-height:20px}
+.dbb_remoteInput:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
+.dbb_remoteDefaultField{flex-direction:column;gap:4px;display:flex}
+.dbb_remoteDefault{box-sizing:border-box;width:100%;min-height:32px;font:inherit;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-input-bg, var(--dsw-alias-bg-base));border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;padding:5px 10px;font-size:13px;line-height:20px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
+.dbb_remote .dbb_aboutActions{align-items:center}
+.dbb_remoteCode{font-variant-numeric:tabular-nums;color:var(--dsw-alias-state-business-primary);font-size:15px;font-weight:600;letter-spacing:2px;margin:2px 0 0}
+.dbb_remoteQr{flex-direction:column;align-items:flex-start;gap:6px;margin-top:6px;display:flex}
+.dbb_remoteQr img{width:168px;height:168px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:#fff;padding:6px;box-sizing:border-box}
+
+.dbb_appearance{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
+.dbb_seg{box-sizing:border-box;align-self:flex-start;gap:3px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);display:inline-flex}
+.dbb_segBtn{box-sizing:border-box;height:30px;font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border:none;border-radius:8px;align-items:center;gap:6px;padding:0 14px;font-size:13px;line-height:20px;display:inline-flex}
+.dbb_segBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dbb_segBtn:disabled{opacity:.5;cursor:default}
+.dbb_segBtn.dbb_segActive{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);color:var(--dsw-alias-state-business-primary)}
 `;
 
 const TAG_ID = 'desktop-balance.css';
@@ -112,6 +141,58 @@ function ensureStyles() {
 ensureStyles();
 
 module.exports = { ensureStyles };
+
+},
+"./message.js": function (require, module, exports) {
+// Small Element-Plus-style message layer shared by desktop client surfaces.
+const ROOT_ID = 'dsh-desktop-message-root';
+const STYLE_ID = 'dsh-desktop-message-style';
+
+function ensureMessageLayer() {
+  if (typeof document === 'undefined') return null;
+  let root = document.getElementById(ROOT_ID);
+  if (root === null) {
+    root = document.createElement('div');
+    root.id = ROOT_ID;
+    root.className = 'dsh_messageRoot';
+    root.setAttribute('aria-live', 'polite');
+    root.setAttribute('aria-relevant', 'additions');
+    document.body.appendChild(root);
+  }
+  if (document.getElementById(STYLE_ID) === null) {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = '.dsh_messageRoot{position:fixed;z-index:10000;top:20px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:10px}.dsh_message{box-sizing:border-box;min-height:40px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#e4e7ed);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#303133);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px;pointer-events:auto;display:flex;align-items:flex-start;gap:8px;animation:dsh-message-in .2s ease-out}.dsh_messageError{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#f56c6c) 36%,transparent)}.dsh_messageIcon{flex:none;color:var(--dsw-alias-state-error-primary,#f56c6c);font-weight:700}.dsh_messageText{min-width:0;flex:1;overflow-wrap:anywhere}.dsh_messageClose{flex:none;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:18px;line-height:18px;padding:0;opacity:.65}.dsh_messageClose:hover{opacity:1}@keyframes dsh-message-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@media (prefers-reduced-motion:reduce){.dsh_message{animation:none}}';
+    document.head.appendChild(style);
+  }
+  return root;
+}
+
+function showMessage(text, options = {}) {
+  const root = ensureMessageLayer();
+  if (root === null || text === null || text === undefined || text === '') return;
+  const item = document.createElement('div');
+  item.className = 'dsh_message dsh_messageError';
+  item.setAttribute('role', 'alert');
+  const icon = document.createElement('span');
+  icon.className = 'dsh_messageIcon';
+  icon.textContent = '!';
+  const content = document.createElement('span');
+  content.className = 'dsh_messageText';
+  content.textContent = String(text);
+  const close = document.createElement('button');
+  close.className = 'dsh_messageClose';
+  close.type = 'button';
+  close.setAttribute('aria-label', '关闭提示');
+  close.textContent = '×';
+  const dismiss = () => item.remove();
+  close.addEventListener('click', dismiss);
+  item.append(icon, content, close);
+  root.appendChild(item);
+  window.setTimeout(dismiss, options.duration ?? 4500);
+}
+
+module.exports = { showMessage };
 
 },
 "./helpers.js": function (require, module, exports) {
@@ -140,22 +221,39 @@ function fmtDate(ms) {
 }
 
 /** Approximate cost from the DeepSeek public price list (USD / 1M tokens).
- *  Third-party models are skipped: their platforms bill independently and
+ *  The V4 series moved to peak/off-peak tiers (effective 2026-08-17, CNY per
+ *  1M tokens); entries below average the two tiers and convert at ≈7.1
+ *  CNY/USD. Models without an exact entry fall back to the default price
+ *  when they are attributed to DeepSeek (provider or model name); other
+ *  third-party models are skipped — their platforms bill independently and
  *  the panel shows the platform's own billing totals instead. */
 const PRICING = {
   "deepseek-reasoner": { miss: 0.55, hit: 0.14, out: 2.19 },
+  "deepseek-v4-pro": { miss: 0.95, hit: 0.03, out: 2.85 },
+  "deepseek-v4-flash": { miss: 0.32, hit: 0.01, out: 0.95 },
   default: { miss: 0.28, hit: 0.028, out: 0.42 },
 };
+function priceFor(row) {
+  const model = String(row?.model ?? "");
+  const exact = PRICING[model];
+  if (exact !== undefined) return exact;
+  const provider = String(row?.provider ?? "").toLowerCase();
+  if (provider.includes("deepseek") || model.toLowerCase().startsWith("deepseek")) {
+    return PRICING.default;
+  }
+  return null; // third-party platform — not DeepSeek-priced
+}
 function estimateCost(report) {
   if (!report?.byModel?.length) return 0;
   let cost = 0;
   for (const row of report.byModel) {
-    const price = PRICING[row.model] ?? null;
-    if (price === null) continue; // third-party platform — not DeepSeek-priced
-    cost += (row.tokens.input / 1e6) * price.miss
-      + (row.tokens.cacheRead / 1e6) * price.hit
-      + (row.tokens.cacheWrite / 1e6) * price.hit
-      + (row.tokens.output / 1e6) * price.out;
+    const price = priceFor(row);
+    if (price === null) continue;
+    const tokens = row?.tokens ?? {};
+    cost += (Number(tokens.input) || 0) / 1e6 * price.miss
+      + (Number(tokens.cacheRead) || 0) / 1e6 * price.hit
+      + (Number(tokens.cacheWrite) || 0) / 1e6 * price.hit
+      + (Number(tokens.output) || 0) / 1e6 * price.out;
   }
   return cost;
 }
@@ -182,9 +280,14 @@ const zh = {
   "balance.low": "余额不足",
   "balance.ok": "可用",
   "balance.usageNote": "该平台按量计费，无账户余额概念；数据来自平台账单接口",
+  "balance.remainingNote": "剩余用量数据来自平台用量接口",
   "balance.unsupported": "不支持",
   "balance.unsupportedNote": "该平台未提供可通过 API Key 查询的余额/账单接口",
+  "balance.folded": "未获取到余额/账单的平台（{count}）",
   "usage.totalUsage": "累计消费",
+  "usage.status": "账户状态",
+  "usage.active": "可用",
+  "usage.inactive": "不可用",
   "usage.softLimit": "软限额",
   "usage.hardLimit": "硬限额",
   "usage.payment": "支付方式",
@@ -198,7 +301,7 @@ const zh = {
   "usage.cacheRead": "缓存命中",
   "usage.output": "输出",
   "usage.cost": "预估成本",
-  "usage.costNote": "按 DeepSeek 官方公开价目估算（USD），仅覆盖 DeepSeek 模型；第三方平台成本以平台账单为准",
+  "usage.costNote": "按 DeepSeek 官方公开价目估算（USD，V4 峰谷取均值），仅覆盖 DeepSeek 模型；第三方平台成本以平台账单为准",
   "usage.models": "模型分布",
   "usage.days": "近 14 天",
   "usage.sessions": "最近会话",
@@ -208,6 +311,14 @@ const zh = {
   "turns": "{count} 轮",
   "session.unknown": "未知模型",
   "session.untitled": "(未命名会话)",
+  "appearance.nav": "外观与动效",
+  "appearance.title": "外观与动效",
+  "appearance.intro": "控制主界面的海洋氛围动效强度，更改立即生效并保存在本机。",
+  "appearance.motionLabel": "动效强度",
+  "appearance.motionQuiet": "安静",
+  "appearance.motionRich": "丰富",
+  "appearance.hint": "安静：隐藏主界面的波浪波纹，只保留必要的过渡与交互反馈；丰富：完整的海洋氛围动效（光斑漂移、波浪、气泡、主题过渡）。",
+  "appearance.offline": "无法连接桌面壳服务",
   "about.nav": "关于",
   "about.title": "关于",
   "about.intro": "DeepSeek Harness 的 Windows 桌面壳，由 Anixuil 开发维护。",
@@ -225,6 +336,46 @@ const zh = {
   "about.appUpdate": "应用有新版本 {version}",
   "about.dshUpdate": "dsh 内核有新版本 {version}",
   "about.offline": "无法连接桌面壳服务",
+  "remote.nav": "远程访问",
+  "remote.title": "远程访问",
+  "remote.intro": "让手机在非局域网网络下连接这台电脑，进行对话与任务执行。默认使用官方中继服务器，无需自建；如需自建，勾选「自定义中继服务器」填写自己的中继地址。",
+  "remote.enabled": "启用远程访问",
+  "remote.customRelay": "自定义中继服务器（勾选后填写自己的中继地址覆盖默认）",
+  "remote.relayUrl": "中继服务器地址（wss:// 开头）",
+  "remote.deviceId": "设备名（手机访问地址的前缀）",
+  "remote.maxConcurrent": "同时连接设备上限（已授权设备数量不限）",
+  "remote.persistentCode": "长期配对码",
+  "remote.persistentHint": "新设备可长期输入此码完成授权；保存时会自动提交上面的远程访问配置。每台手机仍会获得独立长期令牌。留空并保存可关闭长期配对码。",
+  "remote.persistentPlaceholder": "输入 6 至 64 位长期配对码",
+  "remote.persistentReplace": "输入新码以替换，留空保存可关闭",
+  "remote.persistentSave": "保存长期码",
+  "remote.persistentSaving": "正在保存…",
+  "remote.persistentEnabled": "已启用",
+  "remote.persistentSaved": "长期配对码已保存。",
+  "remote.persistentCleared": "长期配对码已关闭。",
+  "remote.persistentInvalid": "长期配对码长度需为 6 至 64 位。",
+  "remote.save": "保存并连接",
+  "remote.saving": "正在保存并连接…",
+  "remote.pair": "生成配对码",
+  "remote.pairingBusy": "正在生成…",
+  "remote.pairCode": "手机配对码：{code}（5 分钟内有效，在手机登录页输入）",
+  "remote.qrAlt": "手机配对二维码",
+  "remote.qrHint": "手机相机扫码即可打开并自动填入配对码",
+  "remote.pairFail": "生成配对码失败",
+  "remote.status": "状态",
+  "remote.entry": "手机访问地址",
+  "remote.entryNone": "（配置不完整）",
+  "remote.stateOff": "未启用",
+  "remote.stateOnline": "已连接",
+  "remote.stateConnecting": "连接中（未连上中继）",
+  "remote.stateStopped": "已启用（客户端未运行）",
+  "remote.badUrl": "中继地址需以 wss://（或 ws://）开头",
+  "remote.badDevice": "设备名只能包含小写字母、数字、-、_",
+  "remote.saved": "已保存，中继连接成功。",
+  "remote.savedPending": "已保存，等待连接。",
+  "remote.disabled": "远程访问已关闭。",
+  "remote.offline": "无法连接桌面壳服务",
+  "remote.note": "首次保存会自动向中继注册本设备（无需密钥）。之后点「生成配对码」，手机打开上方地址输入配对码即可使用。",
 };
 const en = {
   "badge": "Balance",
@@ -242,9 +393,14 @@ const en = {
   "balance.low": "Low balance",
   "balance.ok": "Available",
   "balance.usageNote": "This platform bills by usage and has no account-balance concept; data comes from its billing API",
+  "balance.remainingNote": "Remaining usage data comes from the platform usage API",
   "balance.unsupported": "Unsupported",
   "balance.unsupportedNote": "This platform exposes no key-accessible balance/billing endpoint",
+  "balance.folded": "Platforms with no balance/billing data ({count})",
   "usage.totalUsage": "Total usage",
+  "usage.status": "Account status",
+  "usage.active": "Active",
+  "usage.inactive": "Inactive",
   "usage.softLimit": "Soft limit",
   "usage.hardLimit": "Hard limit",
   "usage.payment": "Payment method",
@@ -258,7 +414,7 @@ const en = {
   "usage.cacheRead": "Cache hit",
   "usage.output": "Output",
   "usage.cost": "Estimated cost",
-  "usage.costNote": "Estimated from the public DeepSeek price list (USD), DeepSeek models only; third-party costs come from the platform's own billing",
+  "usage.costNote": "Estimated from the public DeepSeek price list (USD, V4 peak/off-peak averaged); DeepSeek models only; third-party costs come from the platform's own billing",
   "usage.models": "By model",
   "usage.days": "Last 14 days",
   "usage.sessions": "Recent sessions",
@@ -268,6 +424,14 @@ const en = {
   "turns": "{count} turns",
   "session.unknown": "Unknown model",
   "session.untitled": "(untitled session)",
+  "appearance.nav": "Appearance & Motion",
+  "appearance.title": "Appearance & Motion",
+  "appearance.intro": "Control the ocean ambient motion intensity of the main window. Changes apply instantly and are stored locally.",
+  "appearance.motionLabel": "Motion intensity",
+  "appearance.motionQuiet": "Quiet",
+  "appearance.motionRich": "Rich",
+  "appearance.hint": "Quiet: hide the main window's waves and keep only essential transitions and interaction feedback; Rich: the full ocean ambient set (drifting glows, waves, bubbles, theme transitions).",
+  "appearance.offline": "Desktop shell service unavailable",
   "about.nav": "About",
   "about.title": "About",
   "about.intro": "The Windows desktop shell for DeepSeek Harness, built and maintained by Anixuil.",
@@ -285,6 +449,46 @@ const en = {
   "about.appUpdate": "App update {version} available",
   "about.dshUpdate": "dsh core update {version} available",
   "about.offline": "Desktop shell service unavailable",
+  "remote.nav": "Remote access",
+  "remote.title": "Remote access",
+  "remote.intro": "Connect to this PC from a phone over non-LAN networks for chat and task execution. The default official relay is used out of the box; check \"Custom relay server\" to point at your own.",
+  "remote.enabled": "Enable remote access",
+  "remote.customRelay": "Custom relay server (check to enter your own relay URL, overriding the default)",
+  "remote.relayUrl": "Relay server (starts with wss://)",
+  "remote.deviceId": "Device name (prefix of the phone URL)",
+  "remote.maxConcurrent": "Maximum simultaneous devices (authorized devices are unlimited)",
+  "remote.persistentCode": "Persistent pairing code",
+  "remote.persistentHint": "New devices can use this code at any time. Each phone still receives its own long-lived token. Save an empty value to disable it.",
+  "remote.persistentPlaceholder": "Enter a 6–64 character pairing code",
+  "remote.persistentReplace": "Enter a replacement, or save empty to disable",
+  "remote.persistentSave": "Save persistent code",
+  "remote.persistentSaving": "Saving…",
+  "remote.persistentEnabled": "Enabled",
+  "remote.persistentSaved": "Persistent pairing code saved.",
+  "remote.persistentCleared": "Persistent pairing code disabled.",
+  "remote.persistentInvalid": "Persistent pairing code must be 6–64 characters.",
+  "remote.save": "Save & connect",
+  "remote.saving": "Saving and connecting…",
+  "remote.pair": "Generate pairing code",
+  "remote.pairingBusy": "Generating…",
+  "remote.pairCode": "Phone pairing code: {code} (valid 5 minutes, enter on the phone login page)",
+  "remote.qrAlt": "Phone pairing QR code",
+  "remote.qrHint": "Scan with the phone camera to open and prefill the pairing code",
+  "remote.pairFail": "Failed to generate a pairing code",
+  "remote.status": "Status",
+  "remote.entry": "Phone URL",
+  "remote.entryNone": "(incomplete configuration)",
+  "remote.stateOff": "Disabled",
+  "remote.stateOnline": "Connected",
+  "remote.stateConnecting": "Connecting (relay unreachable)",
+  "remote.stateStopped": "Enabled (client not running)",
+  "remote.badUrl": "Relay URL must start with wss:// (or ws://)",
+  "remote.badDevice": "Device name may only contain lowercase letters, digits, - and _",
+  "remote.saved": "Saved; relay connected.",
+  "remote.savedPending": "Saved; waiting to connect.",
+  "remote.disabled": "Remote access disabled.",
+  "remote.offline": "Desktop shell service unavailable",
+  "remote.note": "The first save auto-registers this device with the relay (no secrets needed). Then tap \"Generate pairing code\" and enter it on the phone login page.",
 };
 
 const NS = "desktop-balance";
@@ -322,6 +526,9 @@ function providerAmount(provider) {
     return null;
   }
   if (provider.kind === "usage") {
+    const remaining = provider.usage?.remaining;
+    const unit = provider.usage?.unit ?? "USD";
+    if (Number.isFinite(remaining)) return `${remaining.toFixed(2)} ${unit}`;
     const u = provider.usage?.total_usage_usd;
     if (Number.isFinite(u)) return `$${u.toFixed(2)}`;
     return null;
@@ -517,10 +724,12 @@ function BalancePanelView(props) {
     const info = p.kind === "balance" ? p.balance?.balance_infos?.[0] : null;
     const usageData = p.kind === "usage" ? p.usage : null;
     const unsupported = p.kind === "unsupported";
+    const hasRemaining = Number.isFinite(usageData?.remaining);
     const big = p.kind === "balance"
       ? info?.total_balance ?? "—"
-      : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
-    const cur = p.kind === "balance" ? info?.currency ?? "" : "USD";
+      : hasRemaining ? usageData.remaining.toFixed(2)
+        : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
+    const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
     return jsxs("section", { className: "dbb_card", children: [
       jsxs("div", { className: "dbb_providerHead", children: [
         jsx("span", { className: "dbb_providerName", children: p.display_name }),
@@ -536,14 +745,40 @@ function BalancePanelView(props) {
         jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
       ] }),
       p.kind === "usage" && usageData && jsxs(Fragment, { children: [
+        hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
+        }),
         jsxs("div", { className: "dbb_balanceSub", children: [
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
         ] }),
-        jsx("div", { className: "dbb_note", children: t("balance.usageNote") })
+        jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
       ] }),
       p.error && jsx("div", { className: "dbb_error", children: p.error })
+    ] }, p.id);
+  };
+
+  /** A provider card carries real data only when it actually returned a
+   *  balance or a usage total — everything else is folded out of the main list. */
+  const hasProviderData = (p) => Boolean(
+    (p && p.kind === "balance" && p.balance) || (p && p.kind === "usage" && p.usage),
+  );
+
+  /** Compact row for the folded group: name + reason (+ error text, muted). */
+  const providerCardFolded = (p) => {
+    const reason = !p.configured
+      ? t("badge.unconfigured")
+      : p.kind === "unsupported"
+        ? t("balance.unsupported")
+        : t("badge.offline");
+    const reasonClass = (!p.configured || p.kind === "unsupported")
+      ? "dbb_badge dbb_badgeWarn"
+      : "dbb_badge dbb_badgeErr";
+    return jsxs("div", { className: "dbb_foldedItem", children: [
+      jsx("span", { className: "dbb_foldedName", children: p.display_name }),
+      jsx("span", { className: reasonClass, children: reason }),
+      p.error ? jsx("div", { className: "dbb_foldedError", children: p.error }) : null,
     ] }, p.id);
   };
 
@@ -561,6 +796,8 @@ function BalancePanelView(props) {
   const topModels = (usage?.byModel ?? []).slice(0, 6);
   const maxModel = topModels.reduce((m, r) => Math.max(m, r.tokens.total), 0);
   const topSessions = (usage?.sessions ?? []).slice(0, 6);
+  const activeProviders = (providers ?? []).filter(hasProviderData);
+  const foldedProviders = (providers ?? []).filter((p) => !hasProviderData(p));
 
   return jsx("section", {
     ref: panelRef,
@@ -609,7 +846,13 @@ function BalancePanelView(props) {
             ] }),
             error && jsx("div", { className: "dbb_error", children: t("badge.offline") })
           ] })
-          : providers.map(providerCard),
+          : jsxs(Fragment, { children: [
+            activeProviders.map(providerCard),
+            foldedProviders.length > 0 && jsx("details", { className: "dbb_folded", children: [
+              jsx("summary", { className: "dbb_foldedSummary", children: t("balance.folded", { count: foldedProviders.length }) }),
+              foldedProviders.map(providerCardFolded),
+            ] }),
+          ] }),
         jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
         usageError
           ? jsx("div", { className: "dbb_error", children: t("usage.error") })
@@ -791,6 +1034,7 @@ const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
 
 const BLOG_URL = 'https://www.anixuil.top';
 const REPO_URL = 'https://github.com/Anixuil/dsh-desktop';
@@ -829,9 +1073,6 @@ function AboutSectionView(props) {
     children: [
       jsx('h2', { className: 'dbb_aboutTitle', children: t('about.title') }),
       jsx('p', { className: 'dbb_aboutIntro', children: t('about.intro') }),
-      loadError !== null
-        ? jsx('p', { className: 'dbb_error', children: `${t('about.offline')}（${loadError}）` })
-        : null,
       jsxs('div', { className: 'dbb_aboutCard', children: [
         jsxs('div', { className: 'dbb_aboutHead', children: [
           jsx('span', { className: 'dbb_aboutLogo', children: jsx(primitives.FishLogo, { size: 22 }) }),
@@ -896,14 +1137,11 @@ function AboutSectionView(props) {
               children: t('about.release'),
             })
           : null,
-        updateText !== null
+        updateText !== null && update?.error == null
           ? jsx('p', {
               className: update?.error !== undefined && update?.error !== null ? 'dbb_error' : 'dbb_aboutStatus',
               children: updateText,
             })
-          : null,
-        notice?.kind === 'err'
-          ? jsx('p', { className: 'dbb_error', children: notice.text })
           : null,
       ] }),
     ],
@@ -933,6 +1171,10 @@ function AboutSection(props) {
       });
     return () => { cancelled = true; };
   }, []);
+
+  react.useEffect(() => { if (loadError !== null) showMessage(`${t('about.offline')}（${loadError}）`); }, [loadError, t]);
+  react.useEffect(() => { if (update?.error != null) showMessage(update.error); }, [update]);
+  react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
 
   const openExternal = async (url) => {
     if (!url) return;
@@ -977,29 +1219,800 @@ function AboutSection(props) {
 module.exports = { AboutSection, AboutSectionView };
 
 },
+"./appearance-section.js": function (require, module, exports) {
+// dsh-desktop-bridge — 外观与动效 (Appearance & motion) settings section.
+//
+// Registered as a native settings page (`settings.section`, id "appearance"):
+// a two-way motion-intensity picker (安静 / 丰富) backed by the desktop
+// shell's persisted config. GETs /desktop/motion on mount and POSTs
+// /desktop/motion-save on change, so no cross-origin call from the remote dsh
+// page is ever made — the same bridge proxy contract used by remote-access.
+const react = require('react');
+const { jsx, jsxs } = require('react/jsx-runtime');
+const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
+
+/** GET/POST one /desktop/* route with the { ok, ... } shell envelope. */
+async function getJson(path, init) {
+  const resp = await fetch(path, init);
+  const payload = await resp.json().catch(() => ({}));
+  if (!resp.ok || payload?.ok !== true) {
+    throw new Error(payload?.error ?? `HTTP ${String(resp.status)}`);
+  }
+  return payload;
+}
+
+/** Pure render layer: props in, section markup out (no fetch, no effects). */
+function AppearanceSectionView(props) {
+  const { t, motion, loadError, busy, notice, onChange } = props;
+  const value = motion === 'quiet' ? 'quiet' : 'rich';
+  const segCls = (active) => 'dbb_segBtn' + (active ? ' dbb_segActive' : '');
+
+  return jsxs('section', {
+    className: 'dbb_appearance',
+    'aria-label': t('appearance.title'),
+    children: [
+      jsx('h2', { className: 'dbb_aboutTitle', children: t('appearance.title') }),
+      jsx('p', { className: 'dbb_aboutIntro', children: t('appearance.intro') }),
+      jsxs('div', { className: 'dbb_aboutCard', children: [
+        jsx('span', { className: 'dbb_remoteLabel', children: t('appearance.motionLabel') }),
+        jsxs('div', {
+          className: 'dbb_seg',
+          role: 'radiogroup',
+          'aria-label': t('appearance.motionLabel'),
+          children: [
+            jsx('button', {
+              type: 'button',
+              role: 'radio',
+              'aria-checked': value === 'quiet',
+              className: segCls(value === 'quiet'),
+              disabled: busy,
+              onClick: () => onChange('quiet'),
+              children: t('appearance.motionQuiet'),
+            }),
+            jsx('button', {
+              type: 'button',
+              role: 'radio',
+              'aria-checked': value === 'rich',
+              className: segCls(value === 'rich'),
+              disabled: busy,
+              onClick: () => onChange('rich'),
+              children: t('appearance.motionRich'),
+            }),
+          ],
+        }),
+        jsx('p', { className: 'dbb_note', children: t('appearance.hint') }),
+        notice !== null && notice?.kind !== 'err'
+          ? jsx('p', {
+              className: notice?.kind === 'err' ? 'dbb_error' : 'dbb_aboutStatus',
+              children: notice.text,
+            })
+          : null,
+      ] }),
+    ],
+  });
+}
+
+/** Stateful wrapper: loads /desktop/motion once, saves changes optimistic-side. */
+function AppearanceSection(props) {
+  const { t } = props;
+  const [motion, setMotion] = react.useState(null);
+  const [loadError, setLoadError] = react.useState(null);
+  const [busy, setBusy] = react.useState(false);
+  const [notice, setNotice] = react.useState(null);
+
+  react.useEffect(() => {
+    ensureStyles();
+    let cancelled = false;
+    getJson('/desktop/motion')
+      .then((payload) => {
+        if (cancelled) return;
+        setMotion(payload?.motion === 'quiet' ? 'quiet' : 'rich');
+        setLoadError(null);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e?.message ?? e));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  react.useEffect(() => { if (loadError !== null) showMessage(`${t('appearance.offline')}（${loadError}）`); }, [loadError, t]);
+  react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
+
+  const onChange = async (next) => {
+    if (busy) return;
+    const previous = motion;
+    setMotion(next); // optimistic — the ambient layer follows the save's event
+    setNotice(null);
+    setBusy(true);
+    try {
+      await getJson('/desktop/motion-save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ motion: next }),
+      });
+    } catch (e) {
+      setMotion(previous);
+      setNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return jsx(AppearanceSectionView, {
+    t,
+    motion,
+    loadError,
+    busy,
+    notice,
+    onChange,
+  });
+}
+
+module.exports = { AppearanceSection, AppearanceSectionView };
+
+},
+"./remote-section.js": function (require, module, exports) {
+// dsh-desktop-bridge — 远程访问 (Remote access) settings section.
+//
+// Registered as a native settings page (`settings.section`, id "remote-access",
+// first in the nav rail): configures the relay-client companion through the
+// bridge's same-origin /desktop/* proxy (shell listener → /remote-config,
+// /remote-save, /remote-pairing), so no cross-origin call from the dsh page
+// is ever made.
+//
+// Product flow: remote access works out of the box against the public default
+// relay — the user only picks a device name. Checking "自定义中继服务器"
+// reveals the relay URL field so they can override the default with their own
+// relay. The shell auto-registers the device (device secret never shown);
+// phones connect by redeeming a 6-digit pairing code minted here.
+const react = require('react');
+const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
+const { ensureStyles } = require('./styles.js');
+const { qrSvgDataUri } = require('./qr.js');
+const { showMessage } = require('./message.js');
+
+// Fallback in case an older shell omits `defaultRelayUrl` from the snapshot;
+// the shell is the source of truth and reports the real default.
+const DEFAULT_RELAY_URL = 'wss://remote.anixuil.com';
+
+/** GET/POST one /desktop/* route with the { ok, ... } shell envelope. */
+async function getJson(path, init) {
+  const resp = await fetch(path, init);
+  const payload = await resp.json().catch(() => ({}));
+  if (!resp.ok || payload?.ok !== true) {
+    throw new Error(payload?.error ?? `HTTP ${String(resp.status)}`);
+  }
+  return payload;
+}
+
+function statusBadge(cfg, t) {
+  if (cfg?.enabled !== true) {
+    return jsx('span', { className: 'dbb_badge dbb_badgeErr', children: t('remote.stateOff') });
+  }
+  if (cfg?.online === true) {
+    return jsx('span', { className: 'dbb_badge dbb_badgeOk', children: t('remote.stateOnline') });
+  }
+  if (cfg?.running === true) {
+    return jsx('span', { className: 'dbb_badge dbb_badgeWarn', children: t('remote.stateConnecting') });
+  }
+  return jsx('span', { className: 'dbb_badge dbb_badgeWarn', children: t('remote.stateStopped') });
+}
+
+/** Pure render layer: props in, section markup out (no fetch, no effects). */
+function RemoteSectionView(props) {
+  const { t, cfg, loadError, busy, notice, pairingBusy, pairingCode, pairingQr, pairingError, persistentCode, persistentBusy, persistentNotice, onPersistentCodeChange, onSavePersistentCode, onChange, onSave, onPair } = props;
+  const custom = cfg?.customRelay === true;
+  const defaultRelayUrl = cfg?.defaultRelayUrl || DEFAULT_RELAY_URL;
+  return jsxs('section', {
+    className: 'dbb_remote',
+    'aria-label': t('remote.title'),
+    children: [
+      jsx('h2', { className: 'dbb_aboutTitle', children: t('remote.title') }),
+      jsx('p', { className: 'dbb_aboutIntro', children: t('remote.intro') }),
+      jsxs('div', { className: 'dbb_aboutCard', children: [
+        jsxs('label', { className: 'dbb_remoteSwitch', children: [
+          jsx('input', {
+            type: 'checkbox',
+            checked: cfg?.enabled === true,
+            onChange: (e) => onChange({ enabled: e.target.checked }),
+          }),
+          jsx('span', { className: 'dbb_remoteSwitchText', children: t('remote.enabled') }),
+        ] }),
+        jsxs('label', { className: 'dbb_remoteSwitch dbb_remoteCustomSwitch', children: [
+          jsx('input', {
+            type: 'checkbox',
+            checked: custom,
+            onChange: (e) => onChange({ customRelay: e.target.checked }),
+          }),
+          jsx('span', { className: 'dbb_remoteSwitchText', children: t('remote.customRelay') }),
+        ] }),
+        custom
+          ? jsxs('label', { className: 'dbb_remoteField', children: [
+              jsx('span', { className: 'dbb_remoteLabel', children: t('remote.relayUrl') }),
+              jsx('input', {
+                type: 'text',
+                className: 'dbb_remoteInput',
+                placeholder: 'wss://your-relay.example.com',
+                value: cfg?.relayUrl ?? '',
+                onChange: (e) => onChange({ relayUrl: e.target.value }),
+                spellCheck: false,
+                autoComplete: 'off',
+              }),
+            ] })
+          : jsx('div', { className: 'dbb_remoteField dbb_remoteDefaultField', children: [
+              jsx('span', { className: 'dbb_remoteLabel', children: t('remote.relayUrl') }),
+              jsx('div', { className: 'dbb_remoteDefault', children: defaultRelayUrl }),
+            ] }),
+      jsxs('label', { className: 'dbb_remoteField', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('remote.deviceId') }),
+          jsx('input', {
+            type: 'text',
+            className: 'dbb_remoteInput',
+            placeholder: 'my-pc',
+            value: cfg?.deviceId ?? '',
+            onChange: (e) => onChange({ deviceId: e.target.value }),
+            spellCheck: false,
+            autoComplete: 'off',
+          }),
+        ] }),
+        jsxs('label', { className: 'dbb_remoteField', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('remote.maxConcurrent') }),
+          jsx('input', {
+            type: 'number', min: 1, max: 64, step: 1,
+            className: 'dbb_remoteInput',
+            value: cfg?.maxConcurrent ?? 3,
+            onChange: (e) => onChange({ maxConcurrent: Math.max(1, Math.min(64, Number(e.target.value) || 1)) }),
+          }),
+        ] }),
+        jsxs('div', { className: 'dbb_aboutActions', children: [
+          jsx('button', {
+            type: 'button',
+            className: 'dbb_aboutPrimary',
+            disabled: busy,
+            onClick: onSave,
+            children: busy ? t('remote.saving') : t('remote.save'),
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'dbb_aboutSecondary',
+            disabled: pairingBusy || cfg?.enabled !== true,
+            onClick: onPair,
+            children: pairingBusy ? t('remote.pairingBusy') : t('remote.pair'),
+          }),
+          statusBadge(cfg, t),
+        ] }),
+        jsxs('div', { className: 'dbb_remotePersistent', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('remote.persistentCode') }),
+          jsx('p', { className: 'dbb_note', children: t('remote.persistentHint') }),
+          jsx('input', {
+            type: 'password', className: 'dbb_remoteInput', value: persistentCode,
+            placeholder: cfg?.persistentPairingEnabled ? t('remote.persistentReplace') : t('remote.persistentPlaceholder'),
+            onChange: (e) => onPersistentCodeChange(e.target.value), autoComplete: 'new-password',
+          }),
+          jsxs('div', { className: 'dbb_aboutActions', children: [
+            jsx('button', { type: 'button', className: 'dbb_aboutSecondary', disabled: persistentBusy || busy || cfg?.enabled !== true, onClick: onSavePersistentCode, children: persistentBusy ? t('remote.persistentSaving') : t('remote.persistentSave') }),
+            cfg?.persistentPairingEnabled ? jsx('span', { className: 'dbb_badge dbb_badgeOk', children: t('remote.persistentEnabled') }) : null,
+          ] }),
+          persistentNotice?.kind !== 'err' && persistentNotice ? jsx('p', { className: 'dbb_aboutStatus', children: persistentNotice.text }) : null,
+        ] }),
+        pairingCode
+          ? jsx('p', { className: 'dbb_remoteCode', children: t('remote.pairCode', { code: pairingCode }) })
+          : null,
+        pairingQr
+          ? jsxs('div', { className: 'dbb_remoteQr', children: [
+              jsx('img', { src: pairingQr, alt: t('remote.qrAlt') }),
+              jsx('p', { className: 'dbb_note', children: t('remote.qrHint') }),
+            ] })
+          : null,
+        jsxs('div', { className: 'dbb_row', children: [
+          jsx('span', { className: 'dbb_rowLabel', children: t('remote.entry') }),
+          cfg?.entry
+            ? jsx('span', { className: 'dbb_rowValue', children: cfg.entry })
+            : jsx('span', { className: 'dbb_rowValue', children: t('remote.entryNone') }),
+        ] }),
+        notice !== null && notice?.kind !== 'err'
+          ? jsx('p', {
+              className: notice?.kind === 'err' ? 'dbb_error' : 'dbb_aboutStatus',
+              children: notice.text,
+            })
+          : null,
+        jsx('p', { className: 'dbb_note', children: t('remote.note') }),
+      ] }),
+    ],
+  });
+}
+
+/** Stateful wrapper: loads /desktop/remote-config once, drives saves and pairing. */
+function RemoteSection(props) {
+  const { t } = props;
+  const [cfg, setCfg] = react.useState(null);
+  const [loadError, setLoadError] = react.useState(null);
+  const [busy, setBusy] = react.useState(false);
+  const [notice, setNotice] = react.useState(null);
+  const [pairingBusy, setPairingBusy] = react.useState(false);
+  const [pairingCode, setPairingCode] = react.useState(null);
+  const [pairingQr, setPairingQr] = react.useState(null);
+  const [pairingError, setPairingError] = react.useState(null);
+  const [persistentCode, setPersistentCode] = react.useState('');
+  const [persistentBusy, setPersistentBusy] = react.useState(false);
+  const [persistentNotice, setPersistentNotice] = react.useState(null);
+
+  react.useEffect(() => {
+    ensureStyles();
+    let cancelled = false;
+    getJson('/desktop/remote-config')
+      .then((payload) => {
+        if (cancelled) return;
+        setCfg(payload?.config ?? null);
+        setLoadError(null);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e?.message ?? e));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  react.useEffect(() => { if (loadError !== null) showMessage(`${t('remote.offline')}（${loadError}）`); }, [loadError, t]);
+  react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
+  react.useEffect(() => { if (pairingError !== null) showMessage(pairingError); }, [pairingError]);
+  react.useEffect(() => { if (persistentNotice?.kind === 'err') showMessage(persistentNotice.text); }, [persistentNotice]);
+
+  const onChange = (patch) => {
+    setCfg((prev) => {
+      const base = prev ?? { enabled: false, relayUrl: '', secret: '', deviceId: '', customRelay: false, defaultRelayUrl: DEFAULT_RELAY_URL };
+      const defaultUrl = base.defaultRelayUrl || DEFAULT_RELAY_URL;
+      const next = { ...base, ...patch };
+      // Toggling custom relay ON: never prefill the public default into the
+      // custom URL field — the user types their own relay.
+      if (patch.customRelay === true && base.customRelay !== true && base.relayUrl === defaultUrl) {
+        next.relayUrl = '';
+      }
+      return next;
+    });
+    setNotice(null);
+  };
+
+  const saveRemoteConfig = async (sourceCfg, showNotice = true) => {
+    if (sourceCfg === null) return null;
+    const custom = sourceCfg.customRelay === true;
+    const defaultUrl = sourceCfg.defaultRelayUrl || DEFAULT_RELAY_URL;
+    // Effective relay: the user's custom URL when custom is on, otherwise the
+    // public default relay (nothing to fill in).
+    const relayUrl = custom ? String(sourceCfg.relayUrl ?? '').trim() : defaultUrl;
+    const deviceId = String(sourceCfg.deviceId ?? '').trim();
+    if (sourceCfg.enabled === true) {
+      if (custom && !/^wss?:\/\//.test(relayUrl)) { if (showNotice) setNotice({ kind: 'err', text: t('remote.badUrl') }); return null; }
+      if (!/^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/.test(deviceId)) { if (showNotice) setNotice({ kind: 'err', text: t('remote.badDevice') }); return null; }
+    }
+    setBusy(true);
+    if (showNotice) { setNotice(null); setPairingCode(null); setPairingError(null); }
+    try {
+      const payload = await getJson('/desktop/remote-save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: sourceCfg.enabled === true, relayUrl, customRelay: custom, secret: '', deviceId, maxConcurrent: Number(sourceCfg.maxConcurrent ?? 3) }),
+      });
+      const nextCfg = payload?.config ?? sourceCfg;
+      setCfg(nextCfg);
+      if (showNotice) setNotice({ kind: nextCfg.online === true ? 'ok' : '', text: sourceCfg.enabled === true ? (nextCfg.online === true ? t('remote.saved') : t('remote.savedPending')) : t('remote.disabled') });
+      return nextCfg;
+    } catch (e) {
+      if (showNotice) setNotice({ kind: 'err', text: String(e?.message ?? e) });
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSave = async () => {
+    if (busy || cfg === null) return;
+    try { await saveRemoteConfig(cfg); } catch { /* notice is rendered by helper */ }
+  };
+
+  const onPair = async () => {
+    if (pairingBusy) return;
+    setPairingBusy(true);
+    setPairingError(null);
+    setPairingCode(null);
+    setPairingQr(null);
+    try {
+      const payload = await getJson('/desktop/remote-pairing');
+      const code = payload?.pairing?.code;
+      if (typeof code === 'string') {
+        setPairingCode(code);
+        const entry = payload?.pairing?.entry;
+        try {
+          if (entry) setPairingQr(qrSvgDataUri(`${entry}?code=${code}`));
+        } catch {
+          // qr rendering is best-effort; the numeric code stays usable
+        }
+      } else {
+        setPairingError(payload?.error ?? t('remote.pairFail'));
+      }
+    } catch (e) {
+      setPairingError(String(e?.message ?? e));
+    } finally {
+      setPairingBusy(false);
+    }
+  };
+
+  const onSavePersistentCode = async () => {
+    if (persistentBusy) return;
+    if (persistentCode !== '' && (persistentCode.length < 6 || persistentCode.length > 64)) {
+      setPersistentNotice({ kind: 'err', text: t('remote.persistentInvalid') });
+      return;
+    }
+    setPersistentBusy(true);
+    setPersistentNotice(null);
+    try {
+      // The long-lived code depends on a registered device. Commit the
+      // current remote settings first so this action works on its own, even
+      // when the user has not pressed “保存并连接” yet.
+      const savedCfg = await saveRemoteConfig(cfg, false);
+      if (savedCfg === null) return;
+      const payload = await getJson('/desktop/remote-persistent-pairing', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: persistentCode }),
+      });
+      setCfg(payload?.config ?? savedCfg ?? cfg);
+      setPersistentCode('');
+      setPersistentNotice({ kind: 'ok', text: persistentCode ? t('remote.persistentSaved') : t('remote.persistentCleared') });
+    } catch (e) {
+      setPersistentNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally { setPersistentBusy(false); }
+  };
+
+  return jsx(RemoteSectionView, {
+    t,
+    cfg,
+    loadError,
+    busy,
+    notice,
+    pairingBusy,
+    pairingCode,
+    pairingQr,
+    pairingError,
+    persistentCode,
+    persistentBusy,
+    persistentNotice,
+    onPersistentCodeChange: setPersistentCode,
+    onSavePersistentCode,
+    onChange,
+    onSave,
+    onPair,
+  });
+}
+
+module.exports = { RemoteSection, RemoteSectionView };
+
+},
+"./qr.js": function (require, module, exports) {
+// dsh-desktop-bridge — minimal zero-dependency QR encoder (SVG output).
+//
+// Deliberately scoped: byte mode, ECC level M, versions 1-5, fixed mask 0.
+// That covers ~84 bytes — plenty for a pairing URL like
+// https://my-pc.remote.example.com/?code=123456. Fixed masking is visually
+// denser than an optimal mask but decodes fine on every scanner.
+//
+// Mirror: ui/qr.js ships an identical copy for the settings window (keep both
+// files in sync).
+
+// GF(256) arithmetic, generator 0x11d.
+const EXP = new Uint8Array(512)
+const LOG = new Uint8Array(256)
+{
+  let x = 1
+  for (let i = 0; i < 255; i++) {
+    EXP[i] = x
+    LOG[x] = i
+    x <<= 1
+    if (x & 0x100) x ^= 0x11d
+  }
+  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]
+}
+const gmul = (a, b) => (a === 0 || b === 0) ? 0 : EXP[LOG[a] + LOG[b]]
+
+/** RS generator polynomial coefficients for `degree`, highest-order first:
+ *  gen[0] is the leading coefficient (1), gen[degree] the constant term —
+ *  the same convention as the reference qrcode-generator implementation.
+ *  Roots are α^0 .. α^(degree-1). */
+function rsGenerator(degree) {
+  let poly = [1]
+  for (let i = 0; i < degree; i++) {
+    const factor = [1, EXP[i]] // x + α^i (highest-order first)
+    const next = new Array(poly.length + 1).fill(0)
+    for (let j = 0; j < poly.length; j++) {
+      for (let k = 0; k < 2; k++) next[j + k] ^= gmul(poly[j], factor[k])
+    }
+    poly = next
+  }
+  return poly
+}
+
+/** Compute `degree` error codewords for `data` (transmitted order: first
+ *  codeword is the highest-degree coefficient — the QR convention). Polynomial
+ *  long division over the generator, highest-order first throughout. */
+function rsEcc(data, degree) {
+  const gen = rsGenerator(degree)
+  const msg = [...data, ...new Array(degree).fill(0)]
+  for (let i = 0; i < data.length; i++) {
+    const factor = msg[i]
+    if (factor === 0) continue
+    for (let j = 0; j < gen.length; j++) msg[i + j] ^= gmul(gen[j], factor)
+  }
+  return msg.slice(data.length)
+}
+
+// ECC M block layout: [blocks, dataPerBlock, eccPerBlock] for versions 1-5.
+const VERSIONS = [
+  [1, 16, 10],
+  [1, 28, 16],
+  [1, 44, 26],
+  [2, 32, 18],
+  [2, 43, 24],
+]
+
+/** Byte-mode bit stream for `text`; pads per spec: bit-pad to the codeword
+ *  boundary, then alternate 0xEC / 0x11 pad codewords up to `totalBits`. */
+function encodeData(text, totalBits) {
+  const bytes = new TextEncoder().encode(text)
+  const bits = []
+  const push = (value, count) => {
+    for (let i = count - 1; i >= 0; i--) bits.push((value >> i) & 1)
+  }
+  push(0b0100, 4) // byte mode
+  push(bytes.length, 8)
+  for (const b of bytes) push(b, 8)
+  // terminator (up to 4 zero bits)
+  for (let i = 0; i < 4 && bits.length < totalBits; i++) bits.push(0)
+  // bit-pad to the codeword boundary
+  while (bits.length % 8 !== 0) bits.push(0)
+  // pad codewords: 0xEC / 0x11 alternating (RS covers them, decoders expect them)
+  const PADS = [0xec, 0x11]
+  let pad = 0
+  while (bits.length < totalBits) {
+    push(PADS[pad % 2], 8)
+    pad++
+  }
+  return bits
+}
+
+function interleave(blocks, dataPerBlock, eccPerBlock, dataBits) {
+  const dataBlocks = []
+  const eccBlocks = []
+  let bit = 0
+  for (let b = 0; b < blocks; b++) {
+    const block = []
+    for (let i = 0; i < dataPerBlock; i++) {
+      let byte = 0
+      for (let j = 0; j < 8; j++) {
+        byte = (byte << 1) | (dataBits[bit] ?? 0)
+        bit++
+      }
+      block.push(byte)
+    }
+    dataBlocks.push(block)
+    eccBlocks.push(rsEcc(block, eccPerBlock))
+  }
+  const out = []
+  for (let i = 0; i < dataPerBlock; i++) {
+    for (const block of dataBlocks) out.push(block[i])
+  }
+  for (let i = 0; i < eccPerBlock; i++) {
+    for (const block of eccBlocks) out.push(block[i])
+  }
+  return out
+}
+
+/** Matrix side length for a version. */
+const side = (version) => 17 + version * 4
+
+/** Whether (r,c) is a reserved functional-module cell for the version. */
+function reservedCell(r, c, n, version) {
+  if (r === 6 || c === 6) return true // timing
+  // finder patterns + separators
+  for (const [r0, c0] of [[0, 0], [0, n - 7], [n - 7, 0]]) {
+    if (r >= r0 - 1 && r <= r0 + 7 && c >= c0 - 1 && c <= c0 + 7) return true
+  }
+  // alignment patterns (skip centers overlapping finders)
+  const ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30]]
+  for (const ar of ALIGN[version - 1]) {
+    for (const ac of ALIGN[version - 1]) {
+      const onFinder = (ar <= 8 && ac <= 8) || (ar <= 8 && ac >= n - 9) || (ar >= n - 9 && ac <= 8)
+      if (onFinder) continue
+      if (r >= ar - 2 && r <= ar + 2 && c >= ac - 2 && c <= ac + 2) return true
+    }
+  }
+  // format-info cells (both copies) + dark module (n-8, 8)
+  if (r === 8 && c <= 8) return true
+  if (c === 8 && r <= 8) return true
+  if (c === 8 && r >= n - 8) return true
+  if (r === 8 && c >= n - 8) return true
+  return false
+}
+
+function buildMatrix(version, codewords) {
+  const n = side(version)
+  // 0 = free data cell, 1 = dark module, 2 = reserved light module
+  const m = Array.from({ length: n }, () => new Uint8Array(n))
+  const set = (r, c, v) => { m[r][c] = v | 0 }
+  // finder patterns + separators (reserved, light)
+  for (const [r0, c0] of [[0, 0], [0, n - 7], [n - 7, 0]]) {
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 7; c++) {
+        const dark = (r === 0 || r === 6 || c === 0 || c === 6) || (r >= 2 && r <= 4 && c >= 2 && c <= 4)
+        set(r0 + r, c0 + c, dark ? 1 : 2)
+      }
+    }
+    for (let i = -1; i <= 7; i++) {
+      // full separator ring: right column, left column, bottom row, top row
+      if (r0 + i >= 0 && r0 + i < n && c0 + 7 < n) set(r0 + i, c0 + 7, 2)
+      if (r0 + i >= 0 && r0 + i < n && c0 - 1 >= 0) set(r0 + i, c0 - 1, 2)
+      if (c0 + i >= 0 && c0 + i < n && r0 + 7 < n) set(r0 + 7, c0 + i, 2)
+      if (c0 + i >= 0 && c0 + i < n && r0 - 1 >= 0) set(r0 - 1, c0 + i, 2)
+    }
+  }
+  // timing patterns (reserved, alternating)
+  for (let i = 8; i < n - 8; i++) {
+    set(6, i, i % 2 === 0 ? 1 : 2)
+    set(i, 6, i % 2 === 0 ? 1 : 2)
+  }
+  // alignment patterns (positions table for versions 1-5; index = version-1)
+  const ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30]]
+  for (const r of ALIGN[version - 1]) {
+    for (const c of ALIGN[version - 1]) {
+      const onFinder = (r <= 8 && c <= 8) || (r <= 8 && c >= n - 9) || (r >= n - 9 && c <= 8)
+      if (onFinder) continue
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          set(r + dr, c + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1 ? 1 : 2)
+        }
+      }
+    }
+  }
+  // dark module (always dark; sits next to the bottom-left format strip)
+  set(n - 8, 8, 1)
+  // Reserve the format-info cells (marker 2) so data placement skips them.
+  const reserveFmt = (r, c) => { if (m[r][c] === 0) set(r, c, 2) }
+  for (let i = 0; i <= 5; i++) reserveFmt(8, i)
+  reserveFmt(8, 7); reserveFmt(8, 8)
+  for (let i = 0; i <= 5; i++) reserveFmt(i, 8)
+  reserveFmt(7, 8)
+  for (let i = 0; i < 8; i++) reserveFmt(n - 1 - i, 8)
+  for (let i = 0; i < 8; i++) reserveFmt(8, n - 1 - i)
+  // data placement (zigzag, fixed mask 0: dark when ((r + c) % 2 === 0)).
+  // Direction alternates every column pair, including the skipped pair that
+  // contains the timing column: (n-1,n-2) up, (n-3,n-4) down, ..., (8,7) up,
+  // (5,4) down, (3,2) up, (1,0) down.
+  let bit = 0
+  let upward = true
+  for (let c = n - 1; c >= 1; c -= 2) {
+    if (c === 6) c--
+    for (let row = 0; row < n; row++) {
+      for (let k = 0; k < 2; k++) {
+        const r = upward ? n - 1 - row : row
+        const col = c - k
+        if (m[r][col] === 0) {
+          const data = (codewords[bit >> 3] >> (7 - (bit & 7))) & 1
+          bit++
+          const masked = data ^ (((r + col) % 2 === 0) ? 1 : 0)
+          set(r, col, masked ? 1 : 0)
+        }
+      }
+    }
+    upward = !upward
+  }
+  // format info: ECC M (00) + mask 0 (000) -> BCH -> XOR 0x5412.
+  // Spec cell layout (ISO/IEC 18004 fig. 25): copy 1 around the top-left
+  // finder — bits 0-5 up the left column (rows 0-5), bits 6-8 at (7,8)/(8,8)/
+  // (8,7), bits 9-14 along the top row right-to-left. Copy 2: bits 0-7 along
+  // the bottom row right-to-left, bits 8-14 up the right column from (n-7,8).
+  const FORMAT = 0x5412
+  const fmtBits = []
+  for (let i = 0; i < 15; i++) fmtBits.push((FORMAT >> i) & 1) // fmtBits[i] = bit i
+  const putFmt = (i, r, c) => set(r, c, fmtBits[i] ? 1 : 0)
+  putFmt(0, 0, 8); putFmt(1, 1, 8); putFmt(2, 2, 8); putFmt(3, 3, 8); putFmt(4, 4, 8); putFmt(5, 5, 8)
+  putFmt(6, 7, 8); putFmt(7, 8, 8); putFmt(8, 8, 7)
+  putFmt(9, 8, 5); putFmt(10, 8, 4); putFmt(11, 8, 3); putFmt(12, 8, 2); putFmt(13, 8, 1); putFmt(14, 8, 0)
+  // second copy: bits 0-7 along the bottom row, bits 8-14 up the right column
+  for (let i = 0; i < 8; i++) putFmt(i, 8, n - 1 - i)
+  for (let i = 8; i < 15; i++) putFmt(i, n - 15 + i, 8)
+  return m
+}
+
+/**
+ * Render `text` as an SVG data URI (scale-4 dark modules, quiet zone).
+ * Throws when the payload exceeds the v5-M capacity.
+ */
+function qrSvgDataUri(text, { scale = 4, margin = 4 } = {}) {
+  const matrix = matrixFor(text)
+  const n = matrix.length
+  const size = (n + margin * 2) * scale
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges">`]
+  parts.push(`<rect width="${size}" height="${size}" fill="#fff"/>`)
+  let path = ''
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (matrix[r][c] === 1) path += `M${(c + margin) * scale} ${(r + margin) * scale}h${scale}v${scale}h${-scale}z`
+    }
+  }
+  parts.push(`<path d="${path}" fill="#000"/>`)
+  parts.push('</svg>')
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(parts.join(''))}`
+}
+
+/** Raw module matrix for `text` (test seam: decode-verification walks it). */
+function matrixFor(text) {
+  const bytes = new TextEncoder().encode(text)
+  let version = -1
+  for (let v = 0; v < VERSIONS.length; v++) {
+    const [blocks, dataPerBlock] = VERSIONS[v]
+    // byte-mode overhead: 12 bits header + 8 bits per byte + 4-bit terminator
+    if (12 + bytes.length * 8 + 4 <= blocks * dataPerBlock * 8) { version = v; break }
+  }
+  if (version === -1) throw new Error('qr payload too long for v5-M')
+  const [blocks, dataPerBlock, eccPerBlock] = VERSIONS[version]
+  const totalBits = blocks * dataPerBlock * 8
+  const bits = encodeData(text, totalBits)
+  const codewords = interleave(blocks, dataPerBlock, eccPerBlock, bits)
+  return buildMatrix(version + 1, codewords)
+}
+
+module.exports = { qrSvgDataUri, matrixFor, _internals: { encodeData, interleave, VERSIONS, reservedCell, side, rsEcc, rsGenerator, EXP, LOG, gmul } }
+
+},
 "./index.js": function (require, module, exports) {
 // dsh-desktop-bridge — web client module entry.
 //
 // Registered into the sidebar footer (list slot, order 100): the account /
-// usage badge and its panel. Also registers the 关于 (About) page into the
-// in-app settings modal (`settings.section`, id "about", order 30 — last in
-// the nav rail). Implementation lives in the modules under src/: styles
-// (load-time stylesheet), helpers (formatting + cost estimate), locales
+// usage badge and its panel. Also registers the 外观与动效 (appearance) and
+// 关于 (About) pages into the in-app settings modal (`settings.section`).
+// Implementation lives in the modules under src/: styles (load-time
+// stylesheet), helpers (formatting + cost estimate), locales
 // (desktop-balance dictionaries), balance-badge (footer trigger),
-// balance-panel (panel host + pure view), about-section (shell identity +
-// check-update page).
+// balance-panel (panel host + pure view), appearance-section (motion
+// intensity picker), about-section (shell identity + check-update page), and
+// remote-section (relay-client configuration).
 require('./styles.js');
 const { BalanceBadge } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
+const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
+const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
 
 /** Services required from the client root context. */
-const inject = ["slots", "locale"];
+const inject = ["slots", "locale", "sessions"];
 
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-desktop-bridge: dictionaries");
   const t = ctx.locale.bind(NS);
+
+  // Publish the currently focused session to the host bridge (POST
+  // /desktop/current-session) so the wave-state classifier tracks THIS
+  // conversation's activity instead of every background conversation's.
+  ctx.effect(() => {
+    const list = ctx.sessions?.list;
+    if (list === undefined || typeof list.subscribe !== "function") return;
+    const publish = () => {
+      if (typeof fetch !== "function") return;
+      let sessionId = null;
+      try {
+        sessionId = list.getSnapshot?.()?.current ?? null;
+      } catch {
+        /* sessions list not ready — stay focused on none */
+      }
+      fetch("/desktop/current-session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      }).catch(() => {});
+    };
+    const unsubscribe = list.subscribe(publish);
+    publish();
+    return unsubscribe;
+  }, "dsh-desktop-bridge: focus publisher");
+
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "desktop-balance",
@@ -1008,11 +2021,30 @@ function apply(ctx) {
     inject: () => ({
       t,
       // follow the current session's model selection so the card shows
-      // the platform actually in use (resolved lazily, both optional)
-      sessions: ctx.get?.("sessions") ?? null,
+      // the platform actually in use (modelDirectories stays lazily optional)
+      sessions: ctx.sessions ?? null,
       modelDirectories: ctx.get?.("modelDirectories") ?? null,
     })
   }, BalanceBadge));
+  // 远程访问 (Remote access) page in the in-app settings modal: relay-client
+  // configuration (enabled switch, relay url, secret, device id) plus live
+  // status and the phone entry URL.
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "remote-access",
+    order: 10,
+    label: () => t("remote.nav"),
+    inject: () => ({ t }),
+  }, RemoteSection));
+  // 外观与动效 (Appearance & motion) page in the in-app settings modal:
+  // two-way motion-intensity picker persisted by the shell.
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "appearance",
+    order: 5,
+    label: () => t("appearance.nav"),
+    inject: () => ({ t }),
+  }, AppearanceSection));
   // 关于 (About) page in the in-app settings modal: shell identity, blog /
   // repo links into the default browser, and a shell+dsh check-update action.
   ctx.slots.inject("settings.section", () => ctx.slots.register({
@@ -1028,8 +2060,8 @@ exports.apply = apply;
 exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
-exports.views = { BalancePanelView, AboutSectionView };
-
+exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, RemoteSectionView };
+exports.qr = require('./qr.js');
 }
 		};
 		var __cache = {};

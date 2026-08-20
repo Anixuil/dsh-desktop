@@ -149,8 +149,36 @@ body.dive .waves, body.dive .bg { transition: opacity .3s ease; opacity: .4; }
   border-radius: 12px; padding: 14px 16px;
 }
 .error-text { color: var(--err); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+
+.startup-message-root { position: fixed; z-index: 30; top: 48px; left: 50%; width: min(460px, calc(100vw - 32px)); padding: 12px; border: 1px solid rgba(248, 113, 113, .72); border-radius: 8px; background: rgba(8, 19, 43, .96); box-shadow: 0 12px 32px rgba(3, 7, 18, .38); color: var(--foam); transform: translateX(-50%); animation: rise-in var(--dur-med) var(--ease-out-soft); }
+.startup-message-root p { margin: 0; color: var(--foam); font-size: 13px; line-height: 20px; white-space: pre-wrap; }
+.startup-message-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.startup-message-actions button { min-height: 32px; }
 .btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
 .btn-row button { padding: 8px 18px; }
+
+/* Startup arbitration is deliberately compact: it interrupts only when an
+   already-complete local desktop graph has been verified. */
+.startup-choice {
+  position: fixed; z-index: 8; inset: 0; display: grid; place-items: center;
+  padding: 24px; background: rgba(3, 9, 24, .52); backdrop-filter: blur(8px);
+}
+.startup-choice[hidden] { display: none; }
+.startup-choice-card {
+  width: min(500px, 100%); padding: 24px; border-radius: 16px;
+  background: linear-gradient(145deg, rgba(21, 38, 72, .98), rgba(11, 24, 52, .98));
+  border: 1px solid rgba(126, 181, 255, .26);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .44);
+}
+.startup-choice-kicker { color: var(--aqua); font-size: 12px; letter-spacing: .12em; }
+.startup-choice-card h1 { margin: 8px 0; color: var(--foam); font-size: 19px; }
+.startup-choice-card p, .startup-choice-note { margin: 0; color: var(--depth); font-size: 13px; line-height: 1.65; }
+.startup-ports { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.startup-ports span { padding: 6px 9px; border-radius: 7px; background: rgba(107, 163, 239, .12); color: var(--foam); font-size: 12px; }
+.startup-ports b { color: var(--aqua-soft); font-weight: 500; }
+.startup-choice-actions { display: flex; justify-content: flex-end; gap: 10px; margin: 20px 0 10px; }
+.startup-choice-actions button { padding: 9px 15px; }
+.startup-choice-note { color: rgba(255, 195, 125, .86); }
 body.error-state .ring, body.error-state .whale { animation-play-state: paused; }
 body.error-state .whale { filter: drop-shadow(0 0 12px rgba(248, 113, 113, .5)); }
 body.error-state .error {

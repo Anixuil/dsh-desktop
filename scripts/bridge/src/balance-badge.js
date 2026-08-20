@@ -27,6 +27,9 @@ function providerAmount(provider) {
     return null;
   }
   if (provider.kind === "usage") {
+    const remaining = provider.usage?.remaining;
+    const unit = provider.usage?.unit ?? "USD";
+    if (Number.isFinite(remaining)) return `${remaining.toFixed(2)} ${unit}`;
     const u = provider.usage?.total_usage_usd;
     if (Number.isFinite(u)) return `$${u.toFixed(2)}`;
     return null;

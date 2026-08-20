@@ -10,7 +10,9 @@ export const BASE_PATH = '/desktop-sessions'
 
 /** Response codes the client keys off (strings stay stable across versions). */
 export const CODES = {
-  /** The target session is live in the host session store (open right now). */
+  /** The target session has work in flight (or could not be released from
+   *  the host store). Archived sessions that are only attached but idle are
+   *  released and deleted instead of refused. */
   LIVE: 'live',
   /** The target session does not exist anywhere we can see. */
   UNKNOWN: 'unknown',

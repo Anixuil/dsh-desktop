@@ -5,14 +5,14 @@
 //! bridge listener, the system tray, and logging.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex,
+        Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -20,6 +20,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{
     menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
@@ -32,6 +33,8 @@ use tauri_plugin_autostart::ManagerExt;
 // ---------------------------------------------------------------------------
 
 const DSH_WEB_PORT_DEFAULT: u16 = 3080;
+/// Loopback status port of the relay-client companion process.
+const RELAY_CLIENT_STATUS_PORT: u16 = 38659;
 const CREDENTIAL_NAME: &str = "DEEPSEEK_API_KEY";
 /// Default GitHub repo (`owner/repo`) for shell update checks — this very
 /// codebase. Overridable through config `update_repo` or the
@@ -42,25 +45,40 @@ const MIN_REFRESH_INTERVAL_SECS: u64 = 3;
 /// Desktop plugin packages deployed from `runtime/plugins-src` into both the
 /// dsh module tree (update restore) and the boot-time profile tree
 /// (`ensure_runtime_files`). Each name doubles as its `--patch` row id.
-const DESKTOP_PLUGINS: [&str; 2] = ["dsh-desktop-bridge", "dsh-desktop-session-manager"];
+const DESKTOP_PLUGINS: [&str; 3] = [
+    "dsh-desktop-bridge",
+    "dsh-desktop-session-manager",
+    "dsh-desktop-change-history",
+];
 /// Bundled third-party plugin (github.com/tianmingwan/dsh-vision-any). Ships in
 /// `runtime/plugins-src` and mounts through the web profile's `bundles` list —
 /// the same contract `dsh plugin --profile web add` uses — so it loads for both
 /// the desktop-hosted kernel and a CLI `dsh web` sharing the same `$DSH_HOME`.
 const VISION_PLUGIN: &str = "dsh-vision-any";
+/// Bundled community plugin market. Its production dependencies are copied
+/// into the profile module tree too, because Node resolves them from there.
+const MARKET_PLUGIN: &str = "dshmarket";
+const MARKET_PLUGIN_RUNTIME_PACKAGES: [&str; 4] = ["dshmarket", "js-yaml", "argparse", "undici"];
+/// Packages recorded here were first installed by DSH Desktop. A package
+/// already present without this record belongs to the user and is never
+/// replaced by a bundled third-party version.
+const BUNDLED_THIRD_PARTY_STATE_FILE: &str = "bundled-third-party-plugins.json";
 /// The shipped template bundles for the `web` profile (mirrors dsh's own
 /// `PROFILE_TEMPLATES.web`, used only when the desktop creates the profile).
 const WEB_TEMPLATE_BUNDLES: [&str; 2] = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
 /// Mirrors dsh-app-boot's `PROFILE_PATCH_TEMPLATE` / `PROFILE_PNPM_WORKSPACE` so
 /// a desktop-created profile behaves exactly like a `dsh plugin`-initialized one.
-const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
+const PROFILE_PATCH_TEMPLATE: &str =
+    "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
 # a top-level YAML array of loader patch entries (id-targeted config\n\
 # overrides, disables, and insert lists; `!!js` expressions allowed).\n\
 []\n";
-const PROFILE_PNPM_WORKSPACE: &str = "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
+const PROFILE_PNPM_WORKSPACE: &str =
+    "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n";
 /// Injected on every document (including the remote dsh web UI): the desktop
 /// app never shows the browser's default right-click context menu.
-const INIT_SCRIPT: &str = r#"window.addEventListener('contextmenu', (e) => e.preventDefault(), true);"#;
+const INIT_SCRIPT: &str =
+    r#"window.addEventListener('contextmenu', (e) => e.preventDefault(), true);"#;
 
 /// Initialization script that publishes the persisted motion intensity as
 /// `window.__DSH_MOTION__` ("quiet" | "rich") on every document of a window —
@@ -85,18 +103,32 @@ const SETTINGS_SHELL_BUNDLE: [&str; 6] = [
 ];
 /// Marker comment injected by the settings-nav-icon patch; its presence means
 /// the bundle is already patched (idempotence across boots and dsh updates).
-const SETTINGS_NAV_ICONS_MARKER: &str = "dsh-desktop-settings-nav-icons";
+const SETTINGS_NAV_ICONS_MARKER: &str = "dsh-desktop-settings-nav-icons-v2";
 /// The shell's fallback nav-glyph branch (gear icon) — the exact insertion
 /// point for the desktop section branches. Matched verbatim against the
 /// upstream bundle; a future dsh build that reshapes `navIcon` loses the match
 /// and the patch skips gracefully.
 const SETTINGS_NAV_ICONS_ANCHOR: &str = "\t\t\treturn (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSettingsOutline16, {\n\t\t\t\tclassName: SettingsRoot_module_css_default.navIcon,\n\t\t\t\tsize: 16\n\t\t\t});";
-/// Branches inserted before the anchor: a hand-drawn eye glyph for the
+/// Branches inserted before the anchor: a hand-drawn wave glyph for the
+/// appearance/motion section (`appearance`), a hand-drawn eye glyph for the
 /// vision-model section (`vision-any`), the list-pen glyph from
-/// dsh-client-ui-primitives for the session manager (`session-manager`), and
-/// the user glyph for the About page (`about`). Tab-indented to match the
-/// bundle's formatting (the JS parser does not care; readability does).
-const SETTINGS_NAV_ICONS_INSERT: &str = r#"			/* dsh-desktop-settings-nav-icons: dedicated glyphs for the desktop-owned sections. */
+/// dsh-client-ui-primitives for the session manager (`session-manager`), the
+/// branch glyph for change-history, and the user glyph for the About page
+/// (`about`). Tab-indented to match the bundle's formatting (the JS parser
+/// does not care; readability does).
+const SETTINGS_NAV_ICONS_INSERT: &str = r#"			/* dsh-desktop-settings-nav-icons-v2: dedicated glyphs for the desktop-owned sections. */
+			if (id === "appearance") return (0, react_jsx_runtime.jsx)("svg", {
+				width: 16,
+				height: 16,
+				className: SettingsRoot_module_css_default.navIcon,
+				viewBox: "0 0 16 16",
+				fill: "none",
+				xmlns: "http://www.w3.org/2000/svg",
+				children: [
+					(0, react_jsx_runtime.jsx)("path", { d: "M1 5c1.5-1.8 3-1.8 4.5 0s3 1.8 4.5 0 3-1.8 4.5 0", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" }),
+					(0, react_jsx_runtime.jsx)("path", { d: "M1 11c1.5-1.8 3-1.8 4.5 0s3 1.8 4.5 0 3-1.8 4.5 0", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" })
+				]
+			});
 			if (id === "vision-any") return (0, react_jsx_runtime.jsx)("svg", {
 				width: 16,
 				height: 16,
@@ -116,6 +148,10 @@ const SETTINGS_NAV_ICONS_INSERT: &str = r#"			/* dsh-desktop-settings-nav-icons:
 				size: 16
 			});
 			if (id === "about") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconUserOutline16, {
+				className: SettingsRoot_module_css_default.navIcon,
+				size: 16
+			});
+			if (id === "change-history") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconBranchOutline16, {
 				className: SettingsRoot_module_css_default.navIcon,
 				size: 16
 			});
@@ -485,8 +521,8 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
 /// - A pointer-transparent ambient layer adds living ocean motion over both
 ///   themes: two counter-drifting wave bands at the bottom, rising bubbles,
 ///   and two slowly breathing glows. Transform/opacity only; gated by the
-///   persisted motion intensity (`rich` animates, `quiet` freezes waves and
-///   glows and hides bubbles) and by prefers-reduced-motion.
+///   persisted motion intensity (`rich` animates, `quiet` hides waves and
+///   bubbles and freezes glows) and by prefers-reduced-motion.
 /// - Everything follows the app's live `data-ds-dark-theme` flips (the
 ///   THEME_TRANSITION_SCRIPT above owns the transition itself).
 ///
@@ -685,8 +721,8 @@ const OCEAN_THEME_SCRIPT: &str = r#"
     'html[data-dsh-motion="rich"] #' + AMBIENT_ID + ' .oa-bubble{animation:oa-rise var(--bd,16s) linear infinite;animation-delay:var(--bdelay,0s);}' +
     'html[data-dsh-motion="quiet"] #' + AMBIENT_ID + ' .oa-bubble{display:none;}' +
     '@keyframes oa-rise{0%{transform:translate3d(0,0,0);opacity:0;}8%{opacity:var(--bop,.5);}92%{opacity:var(--bop,.5);}100%{transform:translate3d(var(--bsx,10px),-104vh,0);opacity:0;}}' +
-    // quiet: freeze band motion but keep the state crossfades (essential feedback)
-    'html[data-dsh-motion="quiet"] #' + AMBIENT_ID + ' .oa-wv{transition-duration:.2s;}' +
+    // quiet: remove the wave bands entirely instead of leaving a frozen wave
+    'html[data-dsh-motion="quiet"] #' + AMBIENT_ID + ' .oa-waves{display:none;}' +
     // ---- strong state contrast: edge bar, veils ----
     '#' + AMBIENT_ID + ' .oa-veil{position:absolute;inset:0;opacity:0;transition:opacity 1.1s cubic-bezier(.22,1,.36,1);}' +
     '#' + AMBIENT_ID + ' .oa-veil-red{background:rgba(220,60,60,.06);}' +
@@ -984,12 +1020,17 @@ pub struct Balance {
     pub balance_infos: Vec<BalanceInfo>,
 }
 
-/// Billing data for OpenAI-compatible gateways (no "balance" concept — they
-/// bill by usage). Sourced from the OpenAI dashboard-style endpoints
-/// `GET {base}/dashboard/billing/usage` + `GET {base}/dashboard/billing/subscription`.
+/// Billing or remaining-quota data for OpenAI-compatible gateways. Some
+/// gateways expose the generic `GET {base}/v1/usage` contract, while older
+/// OpenAI-compatible gateways only expose dashboard billing endpoints.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+// NOTE: the bridge panel/badge read snake_case keys (total_usage_usd,
+// soft_limit_usd, …) — keep snake_case on the wire.
+#[serde(rename_all = "snake_case")]
 pub struct ProviderUsage {
+    pub remaining: Option<f64>,
+    pub unit: Option<String>,
+    pub is_valid: Option<bool>,
     pub total_usage_usd: Option<f64>,
     pub soft_limit_usd: Option<f64>,
     pub hard_limit_usd: Option<f64>,
@@ -1000,7 +1041,9 @@ pub struct ProviderUsage {
 /// a native balance endpoint), "usage" (bill-by-usage gateways with a billing
 /// endpoint), or "unsupported" (no key-accessible balance/billing API).
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+// NOTE: the bridge panel reads snake_case keys (display_name, …) — keep
+// snake_case on the wire.
+#[serde(rename_all = "snake_case")]
 pub struct ProviderStatus {
     pub id: String,
     pub display_name: String,
@@ -1032,6 +1075,11 @@ enum Adapter {
     /// GET {base}/dashboard/billing/usage (+ subscription) — OpenAI-style
     /// billing gateways.
     OpenAIBilling,
+    /// Volcengine (火山引擎/火山方舟) — the Ark API key used for LLM calls
+    /// cannot read billing, so balance queries go through the signed OpenAPI
+    /// `billing.QueryBalanceAcct` endpoint (needs the account AccessKey +
+    /// SecretKey, not the Ark API key).
+    Volcengine,
     /// No known key-accessible balance/billing endpoint for this protocol.
     Unsupported,
     /// Unknown protocol — probe both endpoint families at fetch time.
@@ -1067,6 +1115,32 @@ pub struct AppConfig {
     /// config.json files (without the field) loading as `Rich`.
     #[serde(default = "default_motion")]
     pub motion: MotionIntensity,
+    /// Remote access via the public relay: the relay-client companion process
+    /// connects out to `remote_relay_url` as `remote_device_id` and lets a
+    /// phone reach the local dsh web through it. All fields default off/empty
+    /// so existing config.json files load unchanged.
+    #[serde(default)]
+    pub remote_enabled: bool,
+    #[serde(default)]
+    pub remote_relay_url: Option<String>,
+    #[serde(default)]
+    pub remote_secret: Option<String>,
+    #[serde(default)]
+    pub remote_device_id: Option<String>,
+    /// Per-device secret issued by POST /register on the relay; the
+    /// relay-client authenticates with it. Auto-obtained on first save.
+    #[serde(default)]
+    pub remote_device_secret: Option<String>,
+    #[serde(default = "default_remote_max_concurrent")]
+    pub remote_max_concurrent: u16,
+    /// Whether the relay has a user-defined long-lived pairing code. The code
+    /// itself is never persisted by the desktop client.
+    #[serde(default)]
+    pub remote_persistent_pairing_enabled: bool,
+}
+
+fn default_remote_max_concurrent() -> u16 {
+    3
 }
 
 fn default_motion() -> MotionIntensity {
@@ -1085,6 +1159,13 @@ impl Default for AppConfig {
             update_repo: None,
             key_registered_at: None,
             motion: MotionIntensity::Rich,
+            remote_enabled: false,
+            remote_relay_url: None,
+            remote_secret: None,
+            remote_device_id: None,
+            remote_device_secret: None,
+            remote_max_concurrent: 3,
+            remote_persistent_pairing_enabled: false,
         }
     }
 }
@@ -1106,6 +1187,15 @@ pub struct StatusSnapshot {
     pub dsh_home: String,
     pub dsh_port: u16,
     pub motion_intensity: MotionIntensity,
+    /// Theme preference from DSH's `settings.yaml` (`light`, `dark`, or `system`).
+    pub theme_preference: String,
+    pub remote_enabled: bool,
+    pub remote_running: bool,
+    pub remote_online: bool,
+    /// Phone entry URL when configured, e.g. https://my-pc.remote.example.com/
+    pub remote_entry: Option<String>,
+    /// Whether the Bailian (阿里云百炼) key is configured.
+    pub bailian_configured: bool,
 }
 
 #[derive(Serialize)]
@@ -1120,8 +1210,43 @@ struct DshProcess {
     restarts: u32,
 }
 
+/// Companion-process bookkeeping for the relay-client (loopback status port
+/// 38659; see `RELAY_CLIENT_STATUS_PORT`).
+struct RelayProcess {
+    child: Option<Child>,
+}
+
+/// A port checked before this shell starts any of its own listeners.  Keeping
+/// the full set visible avoids treating a lone 3080 listener as a complete
+/// desktop instance while its bridge services are missing.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupPortStatus {
+    name: String,
+    port: u16,
+    occupied: bool,
+    healthy: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupConflict {
+    ports: Vec<StartupPortStatus>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StartupMode {
+    UseExisting,
+    Independent,
+}
+
 pub struct AppState {
     dsh: Mutex<DshProcess>,
+    relay: Mutex<RelayProcess>,
+    /// True when the relay-client status endpoint reports an online agent
+    /// connection (updated by the status probe).
+    remote_online: AtomicBool,
     adopted: AtomicBool,
     ui_ready: AtomicBool,
     bridge_ok: AtomicBool,
@@ -1136,8 +1261,23 @@ pub struct AppState {
     last_update_check: Mutex<Option<Instant>>,
     tray_balance_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
     tray_autostart_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    /// `Instant` of the most recent dsh child spawn (bootstrap or restart) —
+    /// drives the "ready in X.Xs after spawn" boot-timing log line.
+    spawned_at: Mutex<Option<Instant>>,
+    /// Throttle gate for the relay-client watchdog: the earliest `Instant` at
+    /// which the next automatic (re)spawn attempt may run. Stops a
+    /// persistently-failing spawn (missing entry / device secret) from
+    /// churning a log line every health-loop tick.
+    relay_respawn_at: Mutex<Option<Instant>>,
+    /// A complete prior desktop instance is allowed to be adopted only after
+    /// the user has made an explicit choice on the splash screen.
+    startup_conflict: Mutex<Option<StartupConflict>>,
+    startup_decision: Mutex<Option<StartupMode>>,
+    startup_decision_cv: Condvar,
+    startup_pending: AtomicBool,
 }
 
+#[derive(Clone)]
 struct Paths {
     config_file: PathBuf,
     logs_dir: PathBuf,
@@ -1186,7 +1326,10 @@ fn resolve_runtime_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
     let bundled = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime")
     } else {
-        app.path().resource_dir().unwrap_or_default().join("runtime")
+        app.path()
+            .resource_dir()
+            .unwrap_or_default()
+            .join("runtime")
     };
     let bundled = strip_verbatim(bundled);
     let fallback = strip_verbatim(
@@ -1210,13 +1353,67 @@ fn resolve_runtime_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
 /// The extracted runtime tree is complete enough to boot from.
 fn runtime_tree_usable(dir: &Path) -> bool {
     dir.join("node").join("node.exe").is_file()
-        && dir.join("dsh")
+        && dir
+            .join("dsh")
             .join("node_modules")
             .join("@deepseek-ai")
             .join("dsh")
             .join("lib")
             .join("bin.js")
             .is_file()
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeReadyMarker {
+    archive_size: u64,
+    archive_modified_ms: u128,
+    completed_at: String,
+}
+
+fn runtime_ready_marker_path(dir: &Path) -> PathBuf {
+    dir.join(".runtime-ready.json")
+}
+
+/// A cheap archive identity used to invalidate an extracted tree when an
+/// installer upgrade carries a different runtime. Hashing the 95 MiB archive
+/// on every normal start would reintroduce avoidable startup I/O.
+fn archive_identity(archive: &Path) -> Option<(u64, u128)> {
+    let meta = fs::metadata(archive).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((meta.len(), modified.as_millis()))
+}
+
+fn runtime_ready_for_archive(dir: &Path, archive: &Path) -> bool {
+    if !runtime_tree_usable(dir) {
+        return false;
+    }
+    let Some((archive_size, archive_modified_ms)) = archive_identity(archive) else {
+        return false;
+    };
+    fs::read_to_string(runtime_ready_marker_path(dir))
+        .ok()
+        .and_then(|s| serde_json::from_str::<RuntimeReadyMarker>(&s).ok())
+        .is_some_and(|marker| {
+            marker.archive_size == archive_size && marker.archive_modified_ms == archive_modified_ms
+        })
+}
+
+fn runtime_preparation_needed(paths: &Paths) -> bool {
+    if !runtime_tree_usable(&paths.runtime_dir) {
+        return true;
+    }
+    // `npm run dev` intentionally uses the checked-out, already-extracted
+    // runtime tree; release builds always verify the packaged archive marker.
+    !cfg!(debug_assertions)
+        && !runtime_ready_for_archive(
+            &paths.runtime_dir,
+            &paths.bundled_runtime_dir.join("runtime-archive.tar.gz"),
+        )
 }
 
 /// Monotonic probe-name counter: keeps concurrent `resolve_paths` calls in
@@ -1277,7 +1474,11 @@ fn resolve_paths(app: &AppHandle, config: &AppConfig) -> Paths {
         .dsh_home
         .as_deref()
         .map(PathBuf::from)
-        .or_else(|| std::env::var("DSH_DESKTOP_DSH_HOME").ok().map(PathBuf::from))
+        .or_else(|| {
+            std::env::var("DSH_DESKTOP_DSH_HOME")
+                .ok()
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(default_dsh_home);
     Paths {
         config_file: data_dir.join("config.json"),
@@ -1306,11 +1507,178 @@ fn dsh_port(config: &AppConfig) -> u16 {
     })
 }
 
+fn port_accepts_connections(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(450),
+    )
+    .is_ok()
+}
+
+/// A small dependency-free loopback HTTP probe. A response of any HTTP status
+/// proves that the expected local service owns the listener; endpoint-specific
+/// callers still decide which status is considered healthy.
+fn http_status_on_port(port: u16, path: &str) -> Option<u16> {
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(650),
+    )
+    .ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(850)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(650)));
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut head = [0u8; 128];
+    let read = stream.read(&mut head).ok()?;
+    let status = std::str::from_utf8(&head[..read])
+        .ok()?
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(status)
+}
+
+fn startup_port_statuses(config: &AppConfig) -> Vec<StartupPortStatus> {
+    let specs = [
+        ("DSH Web", dsh_port(config), "/", true),
+        ("桌面桥接", config.bridge_shell_port, "/motion", true),
+        ("凭据桥接", config.bridge_port, "/ping", true),
+        (
+            "远程访问状态",
+            RELAY_CLIENT_STATUS_PORT,
+            "/ping",
+            config.remote_enabled,
+        ),
+    ];
+    specs
+        .into_iter()
+        .map(|(name, port, path, required)| {
+            let occupied = port_accepts_connections(port);
+            let status = if occupied {
+                http_status_on_port(port, path)
+            } else {
+                None
+            };
+            let healthy = match name {
+                "DSH Web" => status.is_some_and(|s| (200..600).contains(&s)),
+                _ => status.is_some_and(|s| (200..300).contains(&s)),
+            };
+            // An intentionally disabled remote feature is not part of a complete
+            // desktop instance, but a listener there is still a conflict.
+            StartupPortStatus {
+                name: name.to_string(),
+                port,
+                occupied,
+                healthy: healthy || !required && !occupied,
+            }
+        })
+        .collect()
+}
+
+fn listening_pids_on_port(port: u16) -> Vec<u32> {
+    let mut cmd = Command::new("netstat");
+    cmd.args(["-ano", "-p", "tcp"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let Ok(output) = cmd.output() else {
+        return Vec::new();
+    };
+    let port_suffix = format!(":{port}");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() < 5
+                || !fields[1].ends_with(&port_suffix)
+                || !fields[3].eq_ignore_ascii_case("LISTENING")
+            {
+                return None;
+            }
+            fields[4].parse::<u32>().ok()
+        })
+        .collect()
+}
+
+fn stop_port_owners(ports: &[StartupPortStatus]) -> Result<(), String> {
+    let mut pids: Vec<u32> = ports
+        .iter()
+        .filter(|p| p.occupied)
+        .flat_map(|p| listening_pids_on_port(p.port))
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    for pid in pids {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| format!("无法结束占用端口的进程 {pid}: {e}"))?;
+        if !status.success() {
+            return Err(format!("结束占用端口的进程 {pid} 失败"));
+        }
+    }
+    for _ in 0..10 {
+        if ports.iter().all(|p| !port_accepts_connections(p.port)) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let busy = ports
+        .iter()
+        .filter(|p| port_accepts_connections(p.port))
+        .map(|p| p.port.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!("端口仍被占用: {busy}"))
+}
+
+fn wait_for_startup_decision(state: &AppState) -> StartupMode {
+    let mut decision = state.startup_decision.lock().unwrap();
+    loop {
+        if let Some(mode) = *decision {
+            return mode;
+        }
+        decision = state.startup_decision_cv.wait(decision).unwrap();
+    }
+}
+
+fn startup_instance_complete(ports: &[StartupPortStatus], remote_enabled: bool) -> bool {
+    ports.iter().enumerate().all(|(index, port)| {
+        let required = index < 3 || remote_enabled;
+        if required {
+            port.occupied && port.healthy
+        } else {
+            // A disabled feature must not leave an unrelated listener behind:
+            // that would make the graph incomplete and is reclaimed below.
+            !port.occupied
+        }
+    })
+}
+
 /// WebView2 user data dir: production = app data dir; env override for portable/sandboxed runs.
 fn webview_data_dir(app: &AppHandle) -> PathBuf {
     std::env::var("DSH_DESKTOP_WEBVIEW_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| app.path().app_data_dir().unwrap_or_default().join("webview-data"))
+        .unwrap_or_else(|_| {
+            app.path()
+                .app_data_dir()
+                .unwrap_or_default()
+                .join("webview-data")
+        })
 }
 
 fn load_config(path: &Path) -> AppConfig {
@@ -1330,23 +1698,61 @@ fn save_config(path: &Path, config: &AppConfig) {
 }
 
 /// Content for the shell's `--patch` overlay. The home-level user layer
-/// (`$DSH_HOME/cordis.patch.yml`) may already mount the desktop plugins
+/// (`$DSH_HOME/cordis.patch.yml`) may already mount some desktop plugins
 /// (standalone `dsh web` setups); duplicating their loader entry ids crashes
-/// profile boot, so the overlay only fills the gap: empty when the home layer
-/// mounts every desktop plugin, the full rows otherwise.
+/// profile boot, so the overlay emits ONLY the rows the home layer does not
+/// already mount — empty when every desktop plugin is already mounted.
 fn desktop_patch_overlay(dsh_home: &Path) -> String {
-    const EMPTY_OVERLAY: &str = "# dsh-desktop bridge rows — home layer already mounts every desktop plugin;\n\
+    const EMPTY_OVERLAY: &str =
+        "# dsh-desktop bridge rows — home layer already mounts every desktop plugin;\n\
 # keep this overlay empty so loader entry ids never duplicate.\n\
 - insert: []\n";
     let home_layer = dsh_home.join("cordis.patch.yml");
     let content = fs::read_to_string(&home_layer).unwrap_or_default();
-    let all_mounted = DESKTOP_PLUGINS
+
+    // Split the shipped patch into per-plugin rows. The shipped file is a
+    // single `- insert:` list of `- id:` blocks; comment lines and the header
+    // are ignored, and each `- id:` line starts one row block.
+    let mut rows: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in BRIDGE_PATCH_YML.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.starts_with("- insert:") || trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("- id:") {
+            if let Some(row) = current.take() {
+                rows.push(row);
+            }
+            current = Some(String::new());
+        }
+        if let Some(row) = current.as_mut() {
+            row.push_str(line);
+            row.push('\n');
+        }
+    }
+    if let Some(row) = current {
+        rows.push(row);
+    }
+
+    // Keep only the rows whose plugin id the home layer does not already mount.
+    let missing: Vec<&str> = rows
         .iter()
-        .all(|name| content.contains(&format!("id: {name}")));
-    if all_mounted {
+        .filter(|row| {
+            !DESKTOP_PLUGINS.iter().any(|name| {
+                content.contains(&format!("id: {name}")) && row.contains(&format!("id: {name}"))
+            })
+        })
+        .map(|row| row.as_str())
+        .collect();
+
+    if missing.is_empty() {
         EMPTY_OVERLAY.to_string()
     } else {
-        BRIDGE_PATCH_YML.to_string()
+        format!(
+            "# dsh-desktop bridge rows — gap-fill overlay (managed by DSH Desktop).\n- insert:\n{}",
+            missing.concat()
+        )
     }
 }
 
@@ -1371,18 +1777,15 @@ fn ensure_runtime_files(paths: &Paths) {
     // ($DSH_HOME/profiles/node_modules), not from runtime/dsh — deploy the
     // desktop plugin packages there so each `--patch` row can import it.
     // The canonical copies live in the bundled runtime's plugins-src (read
-    // from the install dir even when the extracted tree lives elsewhere);
-    // the copy is a plain overwrite (a few small files) so shell updates
-    // refresh an already-deployed package, lib/ trees included.
+    // from the install dir even when the extracted tree lives elsewhere).
+    // Desktop-owned packages are refreshed on every boot. Third-party bundles
+    // are only refreshed when this installation created their first copy;
+    // otherwise an existing same-name package is treated as user-owned.
     let plugins_src = paths.bundled_runtime_dir.join("plugins-src");
     let profile_modules = paths.dsh_home.join("profiles").join("node_modules");
-    let mut vision_deployed = false;
+    let mut web_bundles = Vec::new();
     if plugins_src.exists() {
-        for name in DESKTOP_PLUGINS
-            .iter()
-            .copied()
-            .chain(std::iter::once(VISION_PLUGIN))
-        {
+        for name in DESKTOP_PLUGINS {
             let src = plugins_src.join(name);
             if !src.exists() {
                 continue;
@@ -1390,32 +1793,136 @@ fn ensure_runtime_files(paths: &Paths) {
             let dst = profile_modules.join(name);
             let _ = fs::create_dir_all(&dst);
             let _ = copy_dir_contents(&src, &dst);
-            if name == VISION_PLUGIN {
-                vision_deployed = true;
+        }
+
+        let mut managed = read_bundled_third_party_plugins(paths);
+        if deploy_bundled_third_party_plugin(
+            paths,
+            &plugins_src,
+            &profile_modules,
+            VISION_PLUGIN,
+            &mut managed,
+        ) {
+            web_bundles.push(VISION_PLUGIN);
+        }
+        if deploy_bundled_third_party_plugin(
+            paths,
+            &plugins_src,
+            &profile_modules,
+            MARKET_PLUGIN,
+            &mut managed,
+        ) {
+            web_bundles.push(MARKET_PLUGIN);
+            if managed.contains(MARKET_PLUGIN) {
+                // Keep market-only dependencies below the plugin package. This
+                // avoids overwriting a user's top-level copies of common packages.
+                let market_modules = profile_modules.join(MARKET_PLUGIN).join("node_modules");
+                for name in MARKET_PLUGIN_RUNTIME_PACKAGES.iter().skip(1) {
+                    let src = plugins_src.join(name);
+                    if !src.exists() {
+                        continue;
+                    }
+                    let dst = market_modules.join(name);
+                    let _ = fs::create_dir_all(&dst);
+                    let _ = copy_dir_contents(&src, &dst);
+                }
             }
         }
+        write_bundled_third_party_plugins(paths, &managed);
     }
-    // Mount the bundled vision plugin only when its package actually
-    // deployed — an old runtime without it must never leave a dangling
-    // bundles entry that fails profile boot.
-    if vision_deployed {
-        ensure_web_profile_vision_bundle(paths);
+    // Mount bundle plugins only when their packages actually deployed — an
+    // old runtime without one must never leave a dangling profile entry.
+    if !web_bundles.is_empty() {
+        ensure_web_profile_bundles(paths, &web_bundles);
     }
-    // Give the desktop-owned settings sections (视觉模型 / 会话管理) their
-    // dedicated nav glyphs in the served settings-shell bundle.
+    // Deploy the relay-client companion process (not a cordis plugin): ships
+    // under the bundled runtime's relay-client/ directory, or scripts/
+    // relay-client in a dev checkout. The extracted tree must hold a copy so
+    // the shell can spawn it with the bundled node.exe.
+    let relay_dst = paths.runtime_dir.join("relay-client");
+    let relay_srcs = [
+        paths.bundled_runtime_dir.join("relay-client"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("relay-client"),
+    ];
+    if let Some(src) = relay_srcs.iter().find(|s| s.join("index.js").exists()) {
+        let _ = fs::create_dir_all(&relay_dst);
+        let _ = copy_dir_contents(src, &relay_dst);
+    }
+    // Give the desktop-owned settings sections (外观与动效 / 视觉模型 /
+    // 会话管理 / 变更历史 / 关于) their dedicated nav glyphs in the served
+    // settings-shell bundle.
     patch_settings_nav_icons(paths);
 }
 
+fn bundled_third_party_state_path(paths: &Paths) -> PathBuf {
+    paths
+        .dsh_home
+        .join("desktop")
+        .join(BUNDLED_THIRD_PARTY_STATE_FILE)
+}
+
+fn read_bundled_third_party_plugins(paths: &Paths) -> HashSet<String> {
+    fs::read_to_string(bundled_third_party_state_path(paths))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn write_bundled_third_party_plugins(paths: &Paths, plugins: &HashSet<String>) {
+    let mut names: Vec<&str> = plugins.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    let content = serde_json::to_string_pretty(&names).unwrap_or_default() + "\n";
+    write_if_different(&bundled_third_party_state_path(paths), &content);
+}
+
+/// Deploy a bundled third-party package without taking ownership of a package
+/// the user had already installed. Returns whether a usable package exists.
+fn deploy_bundled_third_party_plugin(
+    paths: &Paths,
+    plugins_src: &Path,
+    profile_modules: &Path,
+    name: &str,
+    managed: &mut HashSet<String>,
+) -> bool {
+    let src = plugins_src.join(name);
+    if !src.exists() {
+        return false;
+    }
+    let dst = profile_modules.join(name);
+    if dst.exists() && !managed.contains(name) {
+        log_line(
+            &paths.log_file,
+            &format!("reusing user-managed third-party plugin {name}; bundled copy not deployed"),
+        );
+        return true;
+    }
+    if fs::create_dir_all(&dst)
+        .and_then(|()| copy_dir_contents(&src, &dst))
+        .is_err()
+    {
+        log_line(
+            &paths.log_file,
+            &format!("failed to deploy bundled third-party plugin {name}"),
+        );
+        return false;
+    }
+    managed.insert(name.to_string());
+    true
+}
+
 /// Settings-shell nav-icon patch for the desktop-owned settings sections
-/// (视觉模型 `vision-any`, 会话管理 `session-manager`). The shell hard-codes
-/// nav glyphs per section id and falls back to the settings gear for unknown
-/// ids; this inserts dedicated branches into its served client bundle — a
-/// hand-drawn eye for the vision section and the list-pen glyph (already
-/// exported by dsh-client-ui-primitives) for the session manager.
-///
-/// Idempotent (marker-checked). When the upstream bundle no longer contains
-/// the anchor — a future dsh build reworked `navIcon` — the patch logs and
-/// skips, and the sections simply keep the gear fallback.
+/// (外观与动效 `appearance`, 视觉模型 `vision-any`, 会话管理
+/// `session-manager`, 变更历史 `change-history`, 关于 `about`). The shell
+/// hard-codes nav glyphs per section id and falls back to the settings gear
+/// for unknown ids; this inserts dedicated branches into its served client
+/// bundle. Idempotent (marker-checked). When the upstream bundle no longer
+/// contains the anchor — a future dsh build reworked `navIcon` — the patch
+/// logs and skips, and the sections simply keep the gear fallback.
 fn patch_settings_nav_icons(paths: &Paths) {
     let bundle = SETTINGS_SHELL_BUNDLE
         .iter()
@@ -1455,30 +1962,35 @@ fn patch_settings_nav_icons(paths: &Paths) {
     write_if_different(&bundle, &patched);
     log_line(
         &paths.log_file,
-        "settings shell nav icons patched (vision eye + session list)",
+        "settings shell nav icons patched (appearance wave + vision eye + session list)",
     );
 }
 
-/// Mount the bundled vision plugin into the web profile by appending its name
+/// Mount bundled web plugins into the web profile by appending their names
 /// to `dsh.profile.bundles` — the exact contract `dsh plugin --profile web add`
 /// uses, minus pnpm (the package is deployed by `ensure_runtime_files`).
-/// A fresh `$DSH_HOME` gets a template-equivalent web profile with the vision
-/// bundle pre-listed; an existing profile keeps its own bundle order and gets
+/// A fresh `$DSH_HOME` gets a template-equivalent web profile with the bundled
+/// plugins pre-listed; an existing profile keeps its own bundle order and gets
 /// the entry appended only when absent. Never clobbers anything else, and
 /// treats an unreadable/invalid manifest as a skip (log, not crash).
-fn ensure_web_profile_vision_bundle(paths: &Paths) {
+fn ensure_web_profile_bundles(paths: &Paths, bundled_plugins: &[&str]) {
     let web_dir = paths.dsh_home.join("profiles").join("web");
     let manifest_path = web_dir.join("package.json");
     let _ = fs::create_dir_all(&web_dir);
 
     if !manifest_path.exists() {
+        let bundles = WEB_TEMPLATE_BUNDLES
+            .iter()
+            .chain(bundled_plugins.iter())
+            .map(|name| serde_json::json!(name))
+            .collect::<Vec<_>>();
         let manifest = serde_json::json!({
             "name": "dsh-profile-web",
             "private": true,
             "dependencies": {},
             "dsh": {
                 "profile": {
-                    "bundles": [WEB_TEMPLATE_BUNDLES[0], WEB_TEMPLATE_BUNDLES[1], VISION_PLUGIN],
+                    "bundles": bundles,
                 },
             },
         });
@@ -1499,7 +2011,10 @@ fn ensure_web_profile_vision_bundle(paths: &Paths) {
         }
         log_line(
             &paths.log_file,
-            "web profile initialized with bundled dsh-vision-any",
+            &format!(
+                "web profile initialized with bundled {}",
+                bundled_plugins.join(", ")
+            ),
         );
         return;
     }
@@ -1509,7 +2024,7 @@ fn ensure_web_profile_vision_bundle(paths: &Paths) {
         Err(e) => {
             log_line(
                 &paths.log_file,
-                &format!("web profile manifest unreadable; vision bundle not mounted: {e}"),
+                &format!("web profile manifest unreadable; bundled plugins not mounted: {e}"),
             );
             return;
         }
@@ -1519,12 +2034,12 @@ fn ensure_web_profile_vision_bundle(paths: &Paths) {
         Err(e) => {
             log_line(
                 &paths.log_file,
-                &format!("web profile manifest invalid; vision bundle not mounted: {e}"),
+                &format!("web profile manifest invalid; bundled plugins not mounted: {e}"),
             );
             return;
         }
     };
-    if !append_vision_bundle(&mut manifest) {
+    if !append_web_profile_bundles(&mut manifest, bundled_plugins) {
         return; // already mounted, or the manifest shape is not ours to touch
     }
     match fs::write(
@@ -1533,7 +2048,10 @@ fn ensure_web_profile_vision_bundle(paths: &Paths) {
     ) {
         Ok(()) => log_line(
             &paths.log_file,
-            &format!("mounted bundled {VISION_PLUGIN} into the web profile"),
+            &format!(
+                "mounted bundled {} into the web profile",
+                bundled_plugins.join(", ")
+            ),
         ),
         Err(e) => log_line(
             &paths.log_file,
@@ -1542,11 +2060,11 @@ fn ensure_web_profile_vision_bundle(paths: &Paths) {
     }
 }
 
-/// Append `dsh-vision-any` to `dsh.profile.bundles`, creating the `dsh` /
+/// Append bundled plugins to `dsh.profile.bundles`, creating the `dsh` /
 /// `profile` / `bundles` path when absent. Returns true when the manifest was
 /// mutated (and must be written back); false when already mounted or when the
 /// existing shape is not a plain object (left untouched).
-fn append_vision_bundle(manifest: &mut serde_json::Value) -> bool {
+fn append_web_profile_bundles(manifest: &mut serde_json::Value, bundled_plugins: &[&str]) -> bool {
     let Some(root) = manifest.as_object_mut() else {
         return false;
     };
@@ -1571,14 +2089,22 @@ fn append_vision_bundle(manifest: &mut serde_json::Value) -> bool {
     else {
         return false;
     };
-    if bundles.iter().any(|v| v.as_str() == Some(VISION_PLUGIN)) {
-        return false;
+    let mut changed = false;
+    for name in bundled_plugins {
+        if !bundles.iter().any(|v| v.as_str() == Some(name)) {
+            bundles.push(serde_json::json!(name));
+            changed = true;
+        }
     }
-    bundles.push(serde_json::json!(VISION_PLUGIN));
-    true
+    changed
 }
 
-/// Recursive contents copy (files and directories; no metadata promises).
+/// Copy `src`'s contents into `dst` (files and directories; no metadata
+/// promises), skipping files whose content already matches. The desktop plugin
+/// packages are re-deployed into the profile module tree on every boot; a
+/// plain `fs::copy` would rewrite thousands of unchanged files each time,
+/// re-triggering antivirus scans and inflating the next dsh boot.
+/// Content-diffing makes the per-boot deploy a near no-op after the first run.
 fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -1588,10 +2114,45 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
             fs::create_dir_all(&to)?;
             copy_dir_contents(&from, &to)?;
         } else {
-            fs::copy(&from, &to)?;
+            copy_file_if_different(&from, &to)?;
         }
     }
     Ok(())
+}
+
+/// Copy `from` to `to` only when the destination is missing or its content
+/// differs. Returns `Ok(true)` when a copy actually happened.
+fn copy_file_if_different(from: &Path, to: &Path) -> std::io::Result<bool> {
+    let src_len = fs::metadata(from)?.len();
+    if let Ok(dst_meta) = fs::metadata(to) {
+        if dst_meta.len() == src_len && files_equal(from, to)? {
+            return Ok(false);
+        }
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(from, to)?;
+    Ok(true)
+}
+
+/// Byte-compare two files in chunks. The caller checks lengths first, so any
+/// mismatch here is a real content difference.
+fn files_equal(a: &Path, b: &Path) -> std::io::Result<bool> {
+    let mut fa = fs::File::open(a)?;
+    let mut fb = fs::File::open(b)?;
+    let mut ba = [0u8; 64 * 1024];
+    let mut bb = [0u8; 64 * 1024];
+    loop {
+        let na = fa.read(&mut ba)?;
+        let nb = fb.read(&mut bb)?;
+        if na != nb || ba[..na] != bb[..nb] {
+            return Ok(false);
+        }
+        if na == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 /// Retry-wrapped `create_dir_all`. On Windows a freshly created directory is
@@ -1622,6 +2183,33 @@ fn create_dir_all_retry(path: &Path) -> std::io::Result<()> {
     Err(last.expect("retry loop always records its last error"))
 }
 
+/// Retry individual extracted-file writes. Antivirus scanners can briefly lock
+/// a new executable such as node.exe during first-run runtime preparation.
+fn write_file_retry(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 6;
+    const BASE_DELAY: Duration = Duration::from_millis(300);
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match fs::write(path, contents) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if attempt + 1 < ATTEMPTS
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
+                    ) =>
+            {
+                last = Some(e);
+                thread::sleep(BASE_DELAY * (attempt + 1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("retry loop always records its last error"))
+}
+
 /// Extract a .tar.gz archive into `dest`. `strip_first` drops the leading
 /// path component (npm tarballs root at `package/`); entries with a leading
 /// `./` are normalized first. `on_entry` is invoked after every extracted
@@ -1634,7 +2222,11 @@ fn extract_tarball(
 ) -> Result<(), String> {
     create_dir_all_retry(dest).map_err(|e| format!("创建目录失败: {e}"))?;
     let file = fs::File::open(tgz).map_err(|e| format!("打开归档失败: {e}"))?;
-    let gz = GzDecoder::new(file);
+    // A large read buffer lets the gzip decoder pull multi-MB chunks instead
+    // of many small reads — extraction of a ~100MB archive spends most of its
+    // time in the decompressor, and bigger reads make it substantially faster
+    // on Windows (fewer syscalls, friendlier to antivirus interposition).
+    let gz = GzDecoder::new(BufReader::with_capacity(4 * 1024 * 1024, file));
     let mut archive = tar::Archive::new(gz);
     let mut count = 0usize;
     for entry in archive.entries().map_err(|e| format!("解包失败: {e}"))? {
@@ -1664,9 +2256,20 @@ fn extract_tarball(
             create_dir_all_retry(parent)
                 .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
         }
-        entry
-            .unpack(&target)
-            .map_err(|e| format!("解包 {:?} 失败: {e}", target))?;
+        if entry.header().entry_type().is_file() {
+            // Keep one entry in memory so a transient file lock can be retried
+            // without restarting the whole archive stream.
+            let mut contents = Vec::new();
+            entry
+                .read_to_end(&mut contents)
+                .map_err(|e| format!("读取归档 {:?} 失败: {e}", target))?;
+            write_file_retry(&target, &contents)
+                .map_err(|e| format!("解包 {:?} 失败: {e}", target))?;
+        } else {
+            entry
+                .unpack(&target)
+                .map_err(|e| format!("解包 {:?} 失败: {e}", target))?;
+        }
         count += 1;
         on_entry(count);
     }
@@ -1676,12 +2279,12 @@ fn extract_tarball(
 /// First-run bootstrap: unpack `runtime/runtime-archive.tar.gz` into the
 /// runtime dir when the extracted tree is missing (fresh install).
 fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String> {
-    if paths.node_exe.exists() && paths.dsh_bin.exists() {
+    let archive = paths.bundled_runtime_dir.join("runtime-archive.tar.gz");
+    if !runtime_preparation_needed(paths) {
         return Ok(());
     }
     // The archive ships in the install dir (readable even when that dir is
     // not writable); the target is the resolved runtime_dir.
-    let archive = paths.bundled_runtime_dir.join("runtime-archive.tar.gz");
     if !archive.exists() {
         return Err(format!("运行时组件缺失: {}", archive.display()));
     }
@@ -1701,7 +2304,10 @@ fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String>
             let _ = fs::copy(&shipped, &target);
         }
     }
-    log_line(&paths.log_file, "extracting bundled runtime archive (first run) ...");
+    log_line(
+        &paths.log_file,
+        "extracting bundled runtime archive (first run) ...",
+    );
     // The archive is streamed (no upfront total), so report a smoothed
     // entry-count progress: reaches ~95% around 24k files and caps at 99%
     // until extraction completes.
@@ -1723,10 +2329,29 @@ fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String>
             }),
         );
     };
-    extract_tarball(&archive, &paths.runtime_dir, false, &mut on_entry)?;
-    if !paths.node_exe.exists() || !paths.dsh_bin.exists() {
+    // Never expose a partly expanded node_modules tree. A cancelled prepare
+    // run leaves only its staging directory behind; normal startup can safely
+    // retry instead of trying to boot from mixed old/new files.
+    let staging = paths.runtime_dir.with_file_name(format!(
+        "runtime-preparing-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    extract_tarball(&archive, &staging, false, &mut on_entry)?;
+    if !runtime_tree_usable(&staging) {
         return Err("运行时解压不完整".to_string());
     }
+    create_dir_all_retry(&paths.runtime_dir).map_err(|e| format!("创建运行时目录失败: {e}"))?;
+    for name in ["node", "dsh"] {
+        let target = paths.runtime_dir.join(name);
+        if target.exists() {
+            fs::remove_dir_all(&target)
+                .map_err(|e| format!("清理不完整运行时 {} 失败: {e}", target.display()))?;
+        }
+        fs::rename(staging.join(name), &target)
+            .map_err(|e| format!("切换运行时 {} 失败: {e}", target.display()))?;
+    }
+    let _ = fs::remove_dir_all(&staging);
     // keep version.json in sync with the extracted tree
     let manifest = paths
         .runtime_dir
@@ -1751,6 +2376,22 @@ fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String>
             }
         }
     }
+    let (archive_size, archive_modified_ms) =
+        archive_identity(&archive).ok_or_else(|| "读取运行时归档信息失败".to_string())?;
+    let marker = RuntimeReadyMarker {
+        archive_size,
+        archive_modified_ms,
+        completed_at: chrono::Local::now().to_rfc3339(),
+    };
+    let marker_tmp = paths.runtime_dir.join(".runtime-ready.tmp");
+    fs::write(
+        &marker_tmp,
+        serde_json::to_vec_pretty(&marker).unwrap_or_default(),
+    )
+    .map_err(|e| format!("写入运行时完成标记失败: {e}"))?;
+    let marker_path = runtime_ready_marker_path(&paths.runtime_dir);
+    let _ = fs::remove_file(&marker_path);
+    fs::rename(marker_tmp, marker_path).map_err(|e| format!("提交运行时完成标记失败: {e}"))?;
     log_line(&paths.log_file, "runtime extraction complete");
     Ok(())
 }
@@ -1801,6 +2442,205 @@ fn yaml_scalar(v: &str) -> String {
     } else {
         format!("'{}'", v.replace('\'', "''"))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bailian (阿里云百炼) one-click setup
+// ---------------------------------------------------------------------------
+
+/// The pi-ai catalog provider that describes Alibaba Cloud's token-plan
+/// endpoint (same base URL the user would type for 百炼's compatible mode).
+/// Its models ship with reasoning metadata, so the model picker offers
+/// thinking levels without any hand-written `reasoningEfforts`.
+const BAILIAN_PROVIDER_ID: &str = "qwen-token-plan-cn";
+const BAILIAN_KEY_ENV: &str = "QWEN_TOKEN_PLAN_CN_API_KEY";
+/// The catalog provider's endpoint. Written into the route profile so the
+/// desktop's multi-provider panel can discover it (it reads `baseURL` from
+/// settings.yaml); DSH itself would take the same URL from the catalog.
+const BAILIAN_BASE_URL: &str = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+/// Token-plan hosts the built-in catalog providers describe. A hand-declared
+/// route pointing at one of these endpoints duplicates the catalog provider —
+/// same models, minus the reasoning metadata — so the one-click setup folds
+/// such routes into the catalog route instead of leaving a twin behind.
+const BAILIAN_TOKEN_PLAN_HOSTS: [&str; 2] = [
+    "token-plan.cn-beijing.maas.aliyuncs.com",
+    "token-plan.ap-southeast-1.maas.aliyuncs.com",
+];
+/// Catalog route ids that legitimately point at a token-plan host — they are
+/// catalog providers themselves and must never be folded.
+const BAILIAN_CATALOG_ROUTE_IDS: [&str; 2] = ["qwen-token-plan-cn", "qwen-token-plan"];
+
+/// What `ensure_bailian_provider` did to the settings document.
+struct BailianEnsureOutcome {
+    /// The catalog route already existed before the write.
+    existed: bool,
+    /// Duplicate hand-declared routes folded into the catalog route.
+    removed: Vec<String>,
+    /// Model ids carried over from the folded routes.
+    merged_models: Vec<String>,
+}
+
+/// Ensure `llm-pi-ai.providers.<BAILIAN_PROVIDER_ID>` exists in settings.yaml
+/// with the minimal catalog-driving profile (display name + key reference).
+/// Everything else — models, wire protocol, base URL, thinking levels — comes
+/// from the installed pi-ai catalog. Hand-declared routes pointing at the same
+/// token-plan endpoint are folded in: their model entries are merged onto the
+/// catalog route (catalog-known ids keep the catalog's reasoning metadata;
+/// unknown ids keep the route defaults) and the twin route is removed.
+fn ensure_bailian_provider(settings_path: &Path) -> Result<BailianEnsureOutcome, String> {
+    let raw = fs::read_to_string(settings_path).unwrap_or_default();
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap_or(serde_yaml::Value::Null);
+    if !doc.is_mapping() {
+        doc = serde_yaml::Value::Mapping(Default::default());
+    }
+    let root = doc
+        .as_mapping_mut()
+        .ok_or_else(|| "settings.yaml 顶层不是映射".to_string())?;
+
+    // walk/create llm-pi-ai → providers
+    let section = root
+        .entry(serde_yaml::Value::String("llm-pi-ai".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let section = section
+        .as_mapping_mut()
+        .ok_or_else(|| "settings.yaml 的 llm-pi-ai 不是映射".to_string())?;
+    let providers = section
+        .entry(serde_yaml::Value::String("providers".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let providers = providers
+        .as_mapping_mut()
+        .ok_or_else(|| "settings.yaml 的 llm-pi-ai.providers 不是映射".to_string())?;
+
+    // 1. identify duplicate hand-declared routes (token-plan host, not a
+    //    catalog route id) and collect their model entries for the merge
+    let mut folded: Vec<(String, Vec<serde_yaml::Value>)> = Vec::new();
+    let mut all_ids: Vec<String> = Vec::new();
+    let duplicate_ids: Vec<String> = providers
+        .iter()
+        .filter_map(|(id_value, cfg_value)| {
+            let id = id_value.as_str()?;
+            if BAILIAN_CATALOG_ROUTE_IDS.contains(&id) {
+                return None;
+            }
+            let host = cfg_value
+                .as_mapping()?
+                .get(serde_yaml::Value::String("baseURL".into()))?
+                .as_str()
+                .and_then(host_of)?;
+            if !BAILIAN_TOKEN_PLAN_HOSTS.contains(&host.to_ascii_lowercase().as_str()) {
+                return None;
+            }
+            let entries = cfg_value
+                .as_mapping()
+                .and_then(|cfg| cfg.get(serde_yaml::Value::String("models".into())))
+                .and_then(|v| v.as_sequence())
+                .cloned()
+                .unwrap_or_default();
+            let mut ids = Vec::new();
+            for entry in &entries {
+                if let Some(mid) = entry
+                    .as_mapping()
+                    .and_then(|m| m.get(serde_yaml::Value::String("id".into())))
+                    .and_then(|v| v.as_str())
+                {
+                    ids.push(mid.to_string());
+                }
+            }
+            folded.push((id.to_string(), entries));
+            all_ids.extend(ids);
+            Some(id.to_string())
+        })
+        .collect();
+
+    // 2. ensure the catalog route exists (create the minimal profile when not)
+    let entry_key = serde_yaml::Value::String(BAILIAN_PROVIDER_ID.into());
+    let existed = providers.contains_key(&entry_key);
+    if !existed {
+        let mut entry = serde_yaml::Mapping::new();
+        entry.insert(
+            serde_yaml::Value::String("displayName".into()),
+            serde_yaml::Value::String("阿里云百炼".into()),
+        );
+        entry.insert(
+            serde_yaml::Value::String("apiKeyEnv".into()),
+            serde_yaml::Value::String(BAILIAN_KEY_ENV.into()),
+        );
+        entry.insert(
+            serde_yaml::Value::String("baseURL".into()),
+            serde_yaml::Value::String(BAILIAN_BASE_URL.into()),
+        );
+        providers.insert(entry_key.clone(), serde_yaml::Value::Mapping(entry));
+    } else {
+        // an existing catalog route may omit baseURL (pure catalog profile);
+        // fill it so the desktop's provider panel can discover the platform
+        if let Some(entry) = providers
+            .get_mut(&entry_key)
+            .and_then(|v| v.as_mapping_mut())
+        {
+            entry
+                .entry(serde_yaml::Value::String("baseURL".into()))
+                .or_insert_with(|| serde_yaml::Value::String(BAILIAN_BASE_URL.into()));
+        }
+    }
+
+    // 3. merge the folded routes' models onto the catalog route (existing
+    //    entries win on id collisions; order is preserved)
+    let mut merged_models = Vec::new();
+    if !folded.is_empty() {
+        let entry = providers
+            .get_mut(&entry_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "settings.yaml 的 qwen-token-plan-cn 条目不是映射".to_string())?;
+        let models = entry
+            .entry(serde_yaml::Value::String("models".into()))
+            .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+        let models = models
+            .as_sequence_mut()
+            .ok_or_else(|| "settings.yaml 的 qwen-token-plan-cn.models 不是列表".to_string())?;
+        let mut known: Vec<String> = models
+            .iter()
+            .filter_map(|m| {
+                m.as_mapping()
+                    .and_then(|mm| mm.get(serde_yaml::Value::String("id".into())))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .collect();
+        for (_, entries) in folded {
+            for entry in entries {
+                let mid = entry
+                    .as_mapping()
+                    .and_then(|mm| mm.get(serde_yaml::Value::String("id".into())))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                match mid {
+                    Some(id) if !known.contains(&id) => {
+                        known.push(id.clone());
+                        merged_models.push(id);
+                        models.push(entry);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 4. drop the folded twin routes
+    providers.retain(|id_value, _| {
+        let id = id_value.as_str().unwrap_or_default();
+        !duplicate_ids.iter().any(|d| d == id)
+    });
+
+    if let Some(parent) = settings_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let out = serde_yaml::to_string(&doc).map_err(|e| format!("序列化 settings.yaml 失败: {e}"))?;
+    fs::write(settings_path, out).map_err(|e| format!("写入 settings.yaml 失败: {e}"))?;
+    Ok(BailianEnsureOutcome {
+        existed,
+        removed: duplicate_ids,
+        merged_models,
+    })
 }
 
 /// Read the current key: the credentials file is the freshest source of truth,
@@ -1856,7 +2696,9 @@ fn read_credential(paths: &Paths, name: &str) -> Option<String> {
 fn llm_providers(paths: &Paths) -> Vec<LlmProvider> {
     let settings_path = paths.dsh_home.join("settings.yaml");
     let raw = fs::read_to_string(&settings_path).unwrap_or_default();
-    let env_base = std::env::var("DEEPSEEK_BASE_URL").ok().filter(|v| !v.is_empty());
+    let env_base = std::env::var("DEEPSEEK_BASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty());
     llm_providers_from_yaml(&raw, env_base.as_deref())
 }
 
@@ -1887,8 +2729,12 @@ fn llm_providers_from_yaml(raw: &str, env_base: Option<&str>) -> Vec<LlmProvider
         .and_then(|v| v.as_mapping())
     {
         for (id_value, cfg_value) in providers {
-            let Some(id) = id_value.as_str() else { continue };
-            let Some(cfg) = cfg_value.as_mapping() else { continue };
+            let Some(id) = id_value.as_str() else {
+                continue;
+            };
+            let Some(cfg) = cfg_value.as_mapping() else {
+                continue;
+            };
             let Some(base_url) = cfg
                 .get("baseURL")
                 .and_then(|v| v.as_str())
@@ -1903,10 +2749,7 @@ fn llm_providers_from_yaml(raw: &str, env_base: Option<&str>) -> Vec<LlmProvider
             else {
                 continue;
             };
-            let api = cfg
-                .get("api")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+            let api = cfg.get("api").and_then(|v| v.as_str()).unwrap_or_default();
             let display_name = cfg
                 .get("displayName")
                 .and_then(|v| v.as_str())
@@ -1933,11 +2776,20 @@ fn adapter_for(api: &str, base_url: &str) -> Adapter {
     if api.contains("deepseek") || host.contains("deepseek") {
         return Adapter::DeepSeek;
     }
-    if api.contains("openai") || host.contains("openai") {
-        return Adapter::OpenAIBilling;
+    // Volcengine (火山方舟/豆包) speaks the openai wire protocol, but its Ark
+    // API key cannot query billing — balance lives behind the signed OpenAPI
+    // (open.volcengineapi.com). Route its hosts before the generic openai
+    // fallback so they never hit the (absent) dashboard billing endpoints.
+    if host.contains("volces") || host.contains("volcengine") {
+        return Adapter::Volcengine;
     }
-    // protocols without any key-accessible balance/billing endpoint
-    for marker in [
+    // Hosts without any key-accessible balance/billing endpoint must be
+    // recognized before the wire-protocol hint: Alibaba Cloud's compatible
+    // mode speaks the openai protocol yet serves no billing endpoints, and
+    // the same applies to other hosted platforms whose protocol name alone
+    // would otherwise route them into a probe that 404s every refresh.
+    const UNSUPPORTED_MARKERS: [&str; 10] = [
+        "aliyuncs",
         "anthropic",
         "google",
         "gemini",
@@ -1947,10 +2799,15 @@ fn adapter_for(api: &str, base_url: &str) -> Adapter {
         "azure",
         "xai",
         "grok",
-    ] {
-        if api.contains(marker) || host.contains(marker) {
-            return Adapter::Unsupported;
-        }
+    ];
+    if UNSUPPORTED_MARKERS.iter().any(|m| host.contains(m)) {
+        return Adapter::Unsupported;
+    }
+    if api.contains("openai") || host.contains("openai") {
+        return Adapter::OpenAIBilling;
+    }
+    if UNSUPPORTED_MARKERS.iter().any(|m| api.contains(m)) {
+        return Adapter::Unsupported;
     }
     Adapter::Probe
 }
@@ -2057,7 +2914,10 @@ fn spawn_dsh(paths: &Paths, config: &AppConfig) -> Result<Child, String> {
         ),
     );
     if !paths.node_exe.exists() {
-        return Err(format!("找不到内置 Node 运行时: {}", paths.node_exe.display()));
+        return Err(format!(
+            "找不到内置 Node 运行时: {}",
+            paths.node_exe.display()
+        ));
     }
     if !paths.dsh_bin.exists() {
         return Err(format!("找不到内置 dsh: {}", paths.dsh_bin.display()));
@@ -2071,6 +2931,10 @@ fn spawn_dsh(paths: &Paths, config: &AppConfig) -> Result<Child, String> {
         .arg("web")
         .arg("--patch")
         .arg(&paths.patch_file)
+        // The desktop shell loads the web UI in its own Tauri WebView. The
+        // upstream web profile defaults to opening the system browser, which
+        // would otherwise launch a second window on every desktop startup.
+        .arg("--no-open")
         .arg("--port")
         .arg(dsh_port(config).to_string());
     // always pass the resolved home explicitly (default = ~/.dsh, shares CLI sessions)
@@ -2104,6 +2968,323 @@ fn pipe_to_log<R: Read + Send + 'static>(reader: R, log_path: &Path) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// relay-client companion process
+// ---------------------------------------------------------------------------
+
+/// Entry script of the bundled relay-client (deployed into the runtime tree by
+/// `ensure_runtime_files`).
+fn relay_client_entry(paths: &Paths) -> PathBuf {
+    paths.runtime_dir.join("relay-client").join("index.js")
+}
+
+/// The public default relay operated by the author. Used out of the box so the
+/// user never has to fill in a relay address; overridden only when they check
+/// "自定义中继服务器" in the remote-access settings and save their own URL.
+const DEFAULT_RELAY_URL: &str = "wss://remote.anixuil.com";
+
+/// The relay URL actually in use: the user's custom URL when one is stored,
+/// otherwise the public default relay.
+fn effective_relay_url(config: &AppConfig) -> Option<String> {
+    match config.remote_relay_url.as_deref() {
+        Some(url) if !url.trim().is_empty() => Some(url.trim().to_string()),
+        _ => Some(DEFAULT_RELAY_URL.to_string()),
+    }
+}
+
+/// Whether the user has configured a custom relay URL (vs. using the default).
+fn custom_relay_set(config: &AppConfig) -> bool {
+    config
+        .remote_relay_url
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+}
+
+/// The phone entry URL when remote access is fully configured.
+fn remote_entry_url(config: &AppConfig) -> Option<String> {
+    let url = effective_relay_url(config)?;
+    let device = config.remote_device_id.as_deref()?;
+    if device.is_empty() {
+        return None;
+    }
+    let host = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+        .unwrap_or(url.as_str())
+        .split(['/', ':', '?'])
+        .next()
+        .unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("https://{device}.{host}/"))
+}
+
+/// Start (or restart) the relay-client with the current remote config.
+/// The relay's HTTP API base for a wss:// relay url (wss -> https).
+fn relay_http_url(config: &AppConfig) -> Option<String> {
+    let url = effective_relay_url(config)?;
+    let https = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+        .unwrap_or(url.as_str());
+    let base = https.split(['/', '?']).next().unwrap_or("").trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("https://{base}"))
+}
+
+/// Ensure this device is registered with the relay, returning the device
+/// secret to authenticate with. Registers on first call and reuses the
+/// persisted secret afterwards. `remote_secret` (legacy admin key) takes
+/// precedence when set, keeping prototype deployments working.
+async fn ensure_device_registered(
+    app: &AppHandle,
+    config: &AppConfig,
+    paths: &Paths,
+) -> Result<Option<String>, String> {
+    if config
+        .remote_secret
+        .as_deref()
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(config.remote_secret.clone());
+    }
+    if let Some(secret) = config.remote_device_secret.as_deref() {
+        if !secret.is_empty() {
+            return Ok(Some(secret.to_string()));
+        }
+    }
+    let Some(http_url) = relay_http_url(config) else {
+        return Ok(None);
+    };
+    let device_id = config.remote_device_id.as_deref().unwrap_or("my-pc");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{http_url}/register"))
+        .json(&serde_json::json!({ "deviceId": device_id }))
+        .send()
+        .await
+        .map_err(|e| format!("无法连接中继服务器: {e}"))?;
+    if resp.status() == 409 {
+        return Err(format!(
+            "设备名 {device_id} 正被另一台在线客户端使用，请稍后重试或确认旧客户端已退出（设置 → 远程访问）"
+        ));
+    }
+    if !resp.status().is_success() {
+        return Err(format!("设备注册失败：中继返回 HTTP {}", resp.status()));
+    }
+    let payload = resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("设备注册响应无法解析: {e}"))?;
+    let secret = payload
+        .get("deviceSecret")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "设备注册响应缺少 deviceSecret".to_string())?
+        .to_string();
+    {
+        let mut config2 = state_config(app);
+        config2.remote_device_secret = Some(secret.clone());
+        save_config(&paths.config_file, &config2);
+        state_set_config(app, config2);
+    }
+    log_line(
+        &paths.log_file,
+        &format!("relay device registered: {device_id}"),
+    );
+    Ok(Some(secret))
+}
+
+/// Synchronize the optional user-defined long-lived pairing code with the
+/// relay. The relay persists only a hash; the desktop snapshot never returns
+/// the plaintext code.
+async fn sync_persistent_pairing_code(config: &AppConfig, code: &str) -> Result<(), String> {
+    let Some(http_url) = relay_http_url(config) else {
+        return Err("中继地址无效".to_string());
+    };
+    let device_id = config.remote_device_id.as_deref().unwrap_or("my-pc");
+    let secret = config
+        .remote_device_secret
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(config.remote_secret.as_deref())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "设备未注册".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{http_url}/persistent-pairing"))
+        .bearer_auth(secret)
+        .json(&serde_json::json!({ "deviceId": device_id, "code": code }))
+        .send()
+        .await
+        .map_err(|e| format!("无法连接中继服务器: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp
+            .text()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|body| {
+                body.get("error")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            });
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(
+                "当前中继服务器版本不支持长期配对码（HTTP 404）。请将中继升级到包含 /persistent-pairing 接口的最新版本后重试。"
+                    .to_string(),
+            );
+        }
+        let suffix = detail
+            .map(|message| format!("：{message}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "保存长期配对码失败：中继返回 HTTP {status}{suffix}"
+        ));
+    }
+    Ok(())
+}
+
+fn state_config(app: &AppHandle) -> AppConfig {
+    app.state::<AppState>().config.lock().unwrap().clone()
+}
+
+fn state_set_config(app: &AppHandle, config: AppConfig) {
+    *app.state::<AppState>().config.lock().unwrap() = config;
+}
+
+/// No-op with a log line when remote access is disabled or under-configured.
+fn spawn_relay_client(app: &AppHandle, paths: &Paths, config: &AppConfig) {
+    let state = app.state::<AppState>();
+    // Stop any previous instance first (config change / boot refresh).
+    if let Some(mut child) = state.relay.lock().unwrap().child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    state.remote_online.store(false, Ordering::SeqCst);
+    if !config.remote_enabled {
+        log_line(
+            &paths.log_file,
+            "remote access disabled — relay-client not started",
+        );
+        return;
+    }
+    let Some(relay_url) = effective_relay_url(config) else {
+        log_line(
+            &paths.log_file,
+            "remote access enabled but relay url missing — relay-client not started",
+        );
+        return;
+    };
+    // Product flow authenticates with the device secret; the legacy admin key
+    // is accepted as a fallback for prototype deployments.
+    let secret = config
+        .remote_device_secret
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(config.remote_secret.as_deref())
+        .filter(|s| !s.is_empty());
+    let Some(secret) = secret else {
+        log_line(&paths.log_file, "remote access enabled but no device secret — save the remote config first (auto-registration)");
+        return;
+    };
+    let device_id = config.remote_device_id.as_deref().unwrap_or("my-pc");
+    if device_id.is_empty() {
+        log_line(
+            &paths.log_file,
+            "remote access enabled but device id empty — relay-client not started",
+        );
+        return;
+    }
+    let entry = relay_client_entry(paths);
+    if !entry.exists() {
+        log_line(
+            &paths.log_file,
+            &format!("relay-client entry missing: {}", entry.display()),
+        );
+        return;
+    }
+    let mut cmd = Command::new(&paths.node_exe);
+    cmd.arg(&entry)
+        .env("RELAY_URL", &relay_url)
+        .env("RELAY_SECRET", secret)
+        .env("DEVICE_ID", device_id)
+        .env("LOCAL_PORT", dsh_port(config).to_string())
+        .env(
+            "RELAY_MAX_CONCURRENT_VIEWERS",
+            config.remote_max_concurrent.max(1).min(64).to_string(),
+        )
+        .env("STATUS_PORT", RELAY_CLIENT_STATUS_PORT.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let log = paths.log_file.clone();
+            if let Some(stdout) = child.stdout.take() {
+                let log2 = log.clone();
+                thread::spawn(move || pipe_to_log(stdout, &log2));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                thread::spawn(move || pipe_to_log(stderr, &log));
+            }
+            log_line(
+                &paths.log_file,
+                &format!("relay-client spawned (device {device_id} -> {relay_url})"),
+            );
+            state.relay.lock().unwrap().child = Some(child);
+        }
+        Err(e) => log_line(&paths.log_file, &format!("relay-client spawn failed: {e}")),
+    }
+}
+
+/// Probe the relay-client status endpoint; returns (running, online).
+async fn probe_relay_status() -> (bool, bool) {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return (false, false),
+    };
+    let url = format!("http://127.0.0.1:{RELAY_CLIENT_STATUS_PORT}/ping");
+    let res = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(_) => return (false, false),
+    };
+    if !res.status().is_success() {
+        return (true, false);
+    }
+    let online = res
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v.get("online").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    (true, online)
+}
+
+/// Boot-time hook: start the relay-client when remote access is enabled.
+fn ensure_relay_client(app: &AppHandle, paths: &Paths, config: &AppConfig) {
+    if config.remote_enabled {
+        spawn_relay_client(app, paths, config);
+    }
+}
+
 async fn health_check_loop(app: AppHandle) {
     let state = app.state::<AppState>();
     let mut attempts = 0u32;
@@ -2122,15 +3303,16 @@ async fn health_check_loop(app: AppHandle) {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     loop {
-        // first-run runtime extraction is still in progress — wait, don't
-        // count attempts against the boot timeout.
-        if !state.runtime_ready.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        if state.startup_pending.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
-
         // 1. probe health first: adoption decisions must not restart a child
-        //    into a port that another instance already serves.
+        //    into a port that another instance already serves. Probing no
+        //    longer waits for first-run extraction (runtime_ready): when an
+        //    instance already serves the port (e.g. a CLI `dsh web` sharing
+        //    the same home), the UI becomes ready while extraction continues
+        //    in the background.
         let healthy = client
             .get(&url)
             .send()
@@ -2140,6 +3322,19 @@ async fn health_check_loop(app: AppHandle) {
 
         if healthy {
             if !state.ui_ready.swap(true, Ordering::SeqCst) {
+                // Boot-timing diagnostic: log how long after spawn the port
+                // answered (None = adopted an already-running instance).
+                let elapsed = state
+                    .spawned_at
+                    .lock()
+                    .unwrap()
+                    .map(|t| format!(" ({:.1}s after spawn)", t.elapsed().as_secs_f64()))
+                    .unwrap_or_default();
+                let paths = {
+                    let config = state.config.lock().unwrap().clone();
+                    resolve_paths(&app, &config)
+                };
+                log_line(&paths.log_file, &format!("dsh web ready{elapsed}"));
                 let _ = app.emit_to(
                     "main",
                     "dsh-progress",
@@ -2182,6 +3377,12 @@ async fn health_check_loop(app: AppHandle) {
                     "dsh port already served by another instance — adopted (balance refresh degrades to polling)",
                 );
             }
+        } else if !state.runtime_ready.load(Ordering::SeqCst) {
+            // First-run extraction is still in progress and nothing serves the
+            // port yet — keep probing without burning the boot timeout on the
+            // extraction phase.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
         } else if !state.ui_ready.load(Ordering::SeqCst) {
             if attempts < 90 {
                 attempts += 1;
@@ -2208,9 +3409,12 @@ async fn health_check_loop(app: AppHandle) {
             }
         }
 
-        // 2. restart policy: if our child exited, either adopt the server that
-        //    is already answering (port busy) or restart — never churn three
-        //    restarts into an occupied port.
+        // 2. restart/recovery policy: if our child exited, either adopt the
+        //    server that is already answering (port busy) or restart — never
+        //    churn three restarts into an occupied port. When no child exists
+        //    at all and the port is dead (spawn failed at bootstrap, or an
+        //    adopted instance went away), respawn from here so the desktop
+        //    always recovers its service.
         {
             let mut dsh = state.dsh.lock().unwrap();
             let paths = {
@@ -2235,7 +3439,11 @@ async fn health_check_loop(app: AppHandle) {
                             );
                             let config = state.config.lock().unwrap().clone();
                             match spawn_dsh(&paths, &config) {
-                                Ok(c) => dsh.child = Some(c),
+                                Ok(c) => {
+                                    state.adopted.store(false, Ordering::SeqCst);
+                                    *state.spawned_at.lock().unwrap() = Some(Instant::now());
+                                    dsh.child = Some(c);
+                                }
                                 Err(e) => {
                                     log_line(&paths.log_file, &format!("restart failed: {e}"))
                                 }
@@ -2246,6 +3454,57 @@ async fn health_check_loop(app: AppHandle) {
                     }
                     Ok(None) => {}
                     Err(_) => {}
+                }
+            } else if !healthy && dsh.restarts < 3 {
+                dsh.restarts += 1;
+                log_line(
+                    &paths.log_file,
+                    &format!("respawn dsh (attempt {})", dsh.restarts),
+                );
+                let config = state.config.lock().unwrap().clone();
+                match spawn_dsh(&paths, &config) {
+                    Ok(c) => {
+                        state.adopted.store(false, Ordering::SeqCst);
+                        *state.spawned_at.lock().unwrap() = Some(Instant::now());
+                        dsh.child = Some(c);
+                    }
+                    Err(e) => log_line(&paths.log_file, &format!("respawn failed: {e}")),
+                }
+            }
+        }
+
+        // 3. relay-client recovery: the companion is monitored like the dsh
+        //    child. When it exits, clear the stale handle so get_remote_config
+        //    reports an accurate "客户端未运行" (a dead process otherwise leaves
+        //    `child.is_some()` true forever and the status never recovers until
+        //    the user re-saves settings). When remote access is still enabled,
+        //    respawn it (throttled) instead of leaving the device offline.
+        {
+            let config = state.config.lock().unwrap().clone();
+            let paths = resolve_paths(&app, &config);
+            let need_child = {
+                let mut relay = state.relay.lock().unwrap();
+                if let Some(child) = relay.child.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            log_line(&paths.log_file, &format!("relay-client exited: {status:?}"));
+                            relay.child = None;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {}
+                    }
+                }
+                relay.child.is_none()
+            };
+            if need_child && config.remote_enabled {
+                let respawn_due = match *state.relay_respawn_at.lock().unwrap() {
+                    Some(at) => at <= Instant::now(),
+                    None => true,
+                };
+                if respawn_due {
+                    *state.relay_respawn_at.lock().unwrap() =
+                        Some(Instant::now() + Duration::from_secs(10));
+                    spawn_relay_client(&app, &paths, &config);
                 }
             }
         }
@@ -2302,6 +3561,76 @@ struct BillingSubscriptionResp {
     hard_limit_usd: Option<f64>,
 }
 
+/// Query the generic usage contract used by many OpenAI-compatible gateways:
+/// `GET {base}/v1/usage` with bearer authentication. Providers commonly keep
+/// `/v1` in their configured base URL, so normalize the final path to avoid
+/// issuing `/v1/v1/usage`.
+async fn fetch_generic_usage(base: &str, key: &str) -> Result<ProviderUsage, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
+    let base = base.trim_end_matches('/');
+    let usage_url = if base.ends_with("/v1") {
+        format!("{base}/usage")
+    } else {
+        format!("{base}/v1/usage")
+    };
+    let response = client
+        .get(&usage_url)
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    let status = response.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err("API Key 无效（鉴权失败），请检查 Key".to_string());
+    }
+    if status != 200 {
+        return Err(format!("通用用量接口返回状态码 {status}"));
+    }
+    let value = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("解析通用用量响应失败: {e}"))?;
+    parse_generic_usage(&value)
+}
+
+/// Apply the generic usage extractor contract to a decoded API response.
+fn parse_generic_usage(value: &serde_json::Value) -> Result<ProviderUsage, String> {
+    let number_at = |path: &str| {
+        value.pointer(path).and_then(|v| match v {
+            serde_json::Value::Number(n) => n.as_f64(),
+            serde_json::Value::String(s) => s.parse::<f64>().ok(),
+            _ => None,
+        })
+    };
+    let string_at = |path: &str| {
+        value
+            .pointer(path)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    Ok(ProviderUsage {
+        remaining: number_at("/remaining")
+            .or_else(|| number_at("/quota/remaining"))
+            .or_else(|| number_at("/balance")),
+        unit: string_at("/unit")
+            .or_else(|| string_at("/quota/unit"))
+            .or_else(|| Some("USD".to_string())),
+        is_valid: value
+            .get("is_active")
+            .and_then(|v| v.as_bool())
+            .or_else(|| value.get("isValid").and_then(|v| v.as_bool()))
+            .or(Some(true)),
+        total_usage_usd: None,
+        soft_limit_usd: None,
+        hard_limit_usd: None,
+        has_payment_method: None,
+    })
+}
+
 /// Query an OpenAI-compatible gateway's dashboard billing endpoints. The
 /// subscription call is best-effort: a gateway may serve usage without it.
 async fn fetch_openai_usage(base: &str, key: &str) -> Result<ProviderUsage, String> {
@@ -2337,6 +3666,9 @@ async fn fetch_openai_usage(base: &str, key: &str) -> Result<ProviderUsage, Stri
         Err(_) => None,
     };
     Ok(ProviderUsage {
+        remaining: None,
+        unit: None,
+        is_valid: Some(true),
         total_usage_usd: usage.total_usage,
         soft_limit_usd: sub.as_ref().and_then(|s| s.soft_limit_usd),
         hard_limit_usd: sub.as_ref().and_then(|s| s.hard_limit_usd),
@@ -2344,12 +3676,203 @@ async fn fetch_openai_usage(base: &str, key: &str) -> Result<ProviderUsage, Stri
     })
 }
 
+// ---------------------------------------------------------------------------
+// Volcengine (火山引擎) account balance via the signed OpenAPI
+// ---------------------------------------------------------------------------
+
+/// Volcengine isn't billed through the Ark API key: the account balance comes
+/// from the 费用中心 (Billing Center) OpenAPI `billing.QueryBalanceAcct`, which
+/// authenticates with the account AccessKey/SecretKey + HMAC-SHA256 signing.
+/// The credentials are account-level (shared by all volcengine providers), so
+/// a single pair is read per refresh, not per provider.
+#[derive(Clone, Default)]
+struct VolcCredentials {
+    access_key: Option<String>,
+    secret_key: Option<String>,
+}
+
+/// Read the volcengine account AccessKey/SecretKey. Accepts both the `VOLC_*`
+/// and the longer `VOLCENGINE_*` spellings (env var or `.credentials.yaml`).
+fn volc_credentials(paths: &Paths) -> VolcCredentials {
+    let access_key = read_credential(paths, "VOLC_ACCESS_KEY")
+        .or_else(|| read_credential(paths, "VOLCENGINE_ACCESS_KEY"));
+    let secret_key = read_credential(paths, "VOLC_SECRET_KEY")
+        .or_else(|| read_credential(paths, "VOLCENGINE_SECRET_KEY"));
+    VolcCredentials {
+        access_key,
+        secret_key,
+    }
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
+}
+
+/// HMAC-SHA256 (RFC 2104), inlined instead of pulling the `hmac` crate so the
+/// Volcengine signer adds no new crate downloads beyond the already-vendored
+/// `sha2`/`hex`.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let d = Sha256::digest(key);
+        k[..d.len()].copy_from_slice(&d);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let d1 = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(d1);
+    outer.finalize().to_vec()
+}
+
 const UNSUPPORTED_NOTE: &str = "该平台未提供可通过 API Key 查询的余额/账单接口";
+
+/// Extract a possibly-string / possibly-number balance field from the OpenAPI
+/// `Result` object, tolerant to the casing the SDK returns.
+fn volc_field(result: &serde_json::Value, names: &[&str]) -> Option<String> {
+    for name in names {
+        if let Some(value) = result.get(name) {
+            return match value {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// Map a `billing.QueryBalanceAcct` response into the DeepSeek-schema
+/// `Balance` the panel/badge already render. Missing amounts fall back to
+/// "0.00"; OpenAPI errors are surfaced separately in `fetch_volcengine_balance`.
+fn parse_volc_balance(text: &str) -> Result<Balance, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("解析火山引擎余额响应失败: {e}"))?;
+    let result = v.get("Result").or_else(|| v.get("result"));
+    let Some(result) = result else {
+        if let Some(msg) = v
+            .pointer("/ResponseMetadata/Error/Message")
+            .and_then(|m| m.as_str())
+        {
+            return Err(format!("火山引擎余额查询失败: {msg}"));
+        }
+        return Err("火山引擎余额接口未返回 Result".to_string());
+    };
+    let available = volc_field(
+        result,
+        &["AvailableBalance", "availableBalance", "available_balance"],
+    )
+    .unwrap_or_else(|| "0.00".to_string());
+    let cash = volc_field(result, &["CashBalance", "cashBalance", "cash_balance"])
+        .unwrap_or_else(|| available.clone());
+    Ok(Balance {
+        is_available: true,
+        balance_infos: vec![BalanceInfo {
+            currency: "CNY".to_string(),
+            total_balance: available,
+            granted_balance: "0.00".to_string(),
+            topped_up_balance: cash,
+        }],
+    })
+}
+
+/// Query the Volcengine account balance via the signed OpenAPI. The region is
+/// `cn-north-1` unless `VOLC_REGION` overrides it.
+async fn fetch_volcengine_balance(volc: &VolcCredentials) -> Result<Balance, String> {
+    let (Some(access_key), Some(secret_key)) = (&volc.access_key, &volc.secret_key) else {
+        return Err(format!(
+            "{UNSUPPORTED_NOTE}（火山引擎余额查询需配置 VOLC_ACCESS_KEY / VOLC_SECRET_KEY，即账户 AccessKey/SecretKey，而非 Ark API Key）"
+        ));
+    };
+
+    let region = std::env::var("VOLC_REGION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "cn-north-1".to_string());
+    let service = "billing";
+    let host = "open.volcengineapi.com";
+    let action = "QueryBalanceAcct";
+    let version = "2022-01-01";
+    let body = "{}";
+
+    let now = chrono::Utc::now();
+    let date_short = now.format("%Y%m%d").to_string();
+    let date_long = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let payload_hash = sha256_hex(body.as_bytes());
+
+    // Canonical request (the query parameters are part of the signed scope).
+    let canonical_query = format!("Action={action}&Version={version}");
+    let signed_headers = "content-type;host;x-content-sha256;x-date";
+    let canonical_headers = format!(
+        "content-type:application/json\nhost:{host}\nx-content-sha256:{payload_hash}\nx-date:{date_long}\n"
+    );
+    let canonical_request = format!(
+        "POST\n/\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    );
+
+    let scope = format!("{date_short}/{region}/{service}/request");
+    let string_to_sign = format!(
+        "HMAC-SHA256\n{date_long}\n{scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+
+    let k_date = hmac_sha256(secret_key.as_bytes(), date_short.as_bytes());
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    let k_signing = hmac_sha256(&k_service, b"request");
+    let signature = hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+    let authorization = format!(
+        "HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
+    let resp = client
+        .post(format!("https://{host}/?{canonical_query}"))
+        .header("Host", host)
+        .header("Content-Type", "application/json")
+        .header("X-Date", &date_long)
+        .header("X-Content-Sha256", &payload_hash)
+        .header("Authorization", &authorization)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    if status != 200 {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(msg) = v
+                .pointer("/ResponseMetadata/Error/Message")
+                .and_then(|m| m.as_str())
+            {
+                return Err(format!("火山引擎余额接口返回状态码 {status}: {msg}"));
+            }
+        }
+        return Err(format!("火山引擎余额接口返回状态码 {status}"));
+    }
+    parse_volc_balance(&text)
+}
 
 fn adapter_key(adapter: Adapter) -> &'static str {
     match adapter {
         Adapter::DeepSeek => "deepseek",
         Adapter::OpenAIBilling => "openai",
+        Adapter::Volcengine => "volcengine",
         Adapter::Unsupported | Adapter::Probe => "unsupported",
     }
 }
@@ -2358,36 +3881,56 @@ fn adapter_from_cache(cached: Option<&str>) -> Option<Adapter> {
     match cached {
         Some("deepseek") => Some(Adapter::DeepSeek),
         Some("openai") => Some(Adapter::OpenAIBilling),
+        Some("volcengine") => Some(Adapter::Volcengine),
         Some(_) => Some(Adapter::Unsupported),
         None => None,
     }
 }
 
-/// Run one adapter against a provider. `Probe` tries the OpenAI-style billing
-/// endpoints first (the common gateway case), then the DeepSeek-style balance
-/// endpoint, and reports the platform as unsupported when neither answers.
+async fn attempt_openai_usage(
+    base: &str,
+    key: &str,
+) -> Result<(String, Option<Balance>, Option<ProviderUsage>), String> {
+    match fetch_generic_usage(base, key).await {
+        Ok(u) => Ok(("openai".to_string(), None, Some(u))),
+        Err(generic_err) => fetch_openai_usage(base, key)
+            .await
+            .map(|u| ("openai".to_string(), None, Some(u)))
+            .map_err(|billing_err| {
+                format!("通用用量接口失败: {generic_err}；账单接口失败: {billing_err}")
+            }),
+    }
+}
+
+/// Run one adapter against a provider. OpenAI-compatible gateways first try
+/// the generic `/v1/usage` contract, then the legacy dashboard endpoints.
+/// `Probe` subsequently tries the DeepSeek-style balance endpoint.
 async fn attempt_adapter(
     adapter: Adapter,
     base: &str,
     key: &str,
+    volc: &VolcCredentials,
 ) -> Result<(String, Option<Balance>, Option<ProviderUsage>), String> {
     match adapter {
         Adapter::DeepSeek => fetch_deepseek_balance(base, key)
             .await
             .map(|b| ("deepseek".to_string(), Some(b), None)),
-        Adapter::OpenAIBilling => fetch_openai_usage(base, key)
+        Adapter::OpenAIBilling => attempt_openai_usage(base, key).await,
+        Adapter::Volcengine => fetch_volcengine_balance(volc)
             .await
-            .map(|u| ("openai".to_string(), None, Some(u))),
+            .map(|b| ("volcengine".to_string(), Some(b), None)),
         Adapter::Unsupported => Err(UNSUPPORTED_NOTE.to_string()),
-        Adapter::Probe => match fetch_openai_usage(base, key).await {
-            Ok(u) => Ok(("openai".to_string(), None, Some(u))),
-            Err(openai_err) => match fetch_deepseek_balance(base, key).await {
-                Ok(b) => Ok(("deepseek".to_string(), Some(b), None)),
-                Err(deepseek_err) => Err(format!(
-                    "{UNSUPPORTED_NOTE}（openai 风格失败: {openai_err}；deepseek 风格失败: {deepseek_err}）"
-                )),
-            },
-        },
+        Adapter::Probe => {
+            match attempt_openai_usage(base, key).await {
+                Ok(result) => Ok(result),
+                Err(openai_err) => match fetch_deepseek_balance(base, key).await {
+                    Ok(b) => Ok(("deepseek".to_string(), Some(b), None)),
+                    Err(deepseek_err) => Err(format!(
+                        "{UNSUPPORTED_NOTE}（openai 风格失败: {openai_err}；deepseek 风格失败: {deepseek_err}）"
+                    )),
+                },
+            }
+        }
     }
 }
 
@@ -2395,8 +3938,12 @@ async fn fetch_one_provider(
     provider: LlmProvider,
     key: Option<String>,
     cached: Option<String>,
+    volc: VolcCredentials,
 ) -> (String, ProviderStatus) {
-    let base_kind = if provider.api.to_ascii_lowercase().contains("deepseek") {
+    let explicit = adapter_for(&provider.api, &provider.base_url);
+    let base_kind = if matches!(explicit, Adapter::Volcengine)
+        || provider.api.to_ascii_lowercase().contains("deepseek")
+    {
         "balance"
     } else {
         "usage"
@@ -2414,14 +3961,13 @@ async fn fetch_one_provider(
         return (String::new(), unconfigured);
     };
 
-    let explicit = adapter_for(&provider.api, &provider.base_url);
     let from_cache = adapter_from_cache(cached.as_deref());
     let mut resolved = from_cache.unwrap_or(explicit);
-    let mut attempt = attempt_adapter(resolved, &provider.base_url, &key).await;
+    let mut attempt = attempt_adapter(resolved, &provider.base_url, &key, &volc).await;
     // a cached route that stopped answering: retry once with the fresh match
     if attempt.is_err() && from_cache.is_some() && explicit != resolved {
         resolved = explicit;
-        attempt = attempt_adapter(resolved, &provider.base_url, &key).await;
+        attempt = attempt_adapter(resolved, &provider.base_url, &key, &volc).await;
     }
 
     let (key2, balance, usage, error) = match attempt {
@@ -2462,6 +4008,9 @@ async fn fetch_provider_statuses(
     adapters: &Mutex<HashMap<String, String>>,
 ) -> Vec<ProviderStatus> {
     let providers = llm_providers(paths);
+    // Account-level volcengine OpenAPI credentials (AK/SK), read once and
+    // shared across every volcengine provider that gets routed to its adapter.
+    let volc = volc_credentials(paths);
     let mut handles = Vec::with_capacity(providers.len());
     for provider in providers {
         let key = if provider.id == "deepseek-official" {
@@ -2471,7 +4020,10 @@ async fn fetch_provider_statuses(
         };
         let cached = adapters.lock().unwrap().get(&provider.id).cloned();
         handles.push(tauri::async_runtime::spawn(fetch_one_provider(
-            provider, key, cached,
+            provider,
+            key,
+            cached,
+            volc.clone(),
         )));
     }
 
@@ -2604,13 +4156,19 @@ async fn periodic_loop(app: AppHandle) {
                                 "update check: dsh {}{}, shell {}{}",
                                 status.dsh_current.clone().unwrap_or_else(|| "?".into()),
                                 if status.dsh_update_available {
-                                    format!(" -> {} (available)", status.dsh_latest.clone().unwrap_or_default())
+                                    format!(
+                                        " -> {} (available)",
+                                        status.dsh_latest.clone().unwrap_or_default()
+                                    )
                                 } else {
                                     " (current)".into()
                                 },
                                 status.app_current,
                                 if status.app_update_available {
-                                    format!(" -> {} (available)", status.app_latest.clone().unwrap_or_default())
+                                    format!(
+                                        " -> {} (available)",
+                                        status.app_latest.clone().unwrap_or_default()
+                                    )
                                 } else {
                                     " (current)".into()
                                 },
@@ -2632,12 +4190,19 @@ async fn periodic_loop(app: AppHandle) {
 // bridge listener (shell side): dsh's bridge plugin POSTs /turn-end here
 // ---------------------------------------------------------------------------
 
-fn json_response(status: u16, body: serde_json::Value) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+fn json_response(
+    status: u16,
+    body: serde_json::Value,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     tiny_http::Response::from_data(bytes)
         .with_status_code(status)
         .with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
+            tiny_http::Header::from_bytes(
+                &b"Content-Type"[..],
+                &b"application/json; charset=utf-8"[..],
+            )
+            .unwrap(),
         )
 }
 
@@ -2659,7 +4224,10 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
             let config = app.state::<AppState>().config.lock().unwrap().clone();
             resolve_paths(&app, &config)
         };
-        log_line(&paths.log_file, &format!("bridge listener on 127.0.0.1:{port}"));
+        log_line(
+            &paths.log_file,
+            &format!("bridge listener on 127.0.0.1:{port}"),
+        );
         // handle each request on its own thread: /refresh can block up to the
         // balance-fetch timeout and must never queue /balance or /turn-end
         // behind it (the in-app widget's /desktop proxy has a 3s deadline).
@@ -2680,7 +4248,8 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                 let path = url.split('?').next().unwrap_or("").to_string();
                 match (method.as_str(), path.as_str()) {
                     ("POST", "/turn-end") => {
-                        let _ = req.respond(tiny_http::Response::from_string("ok").with_status_code(200));
+                        let _ = req
+                            .respond(tiny_http::Response::from_string("ok").with_status_code(200));
                         let app3 = app2.clone();
                         tauri::async_runtime::spawn(async move {
                             let state2 = app3.state::<AppState>();
@@ -2693,7 +4262,8 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         // (the injected ambient layer listens and crossfades)
                         let mut body = String::new();
                         let _ = req.as_reader().read_to_string(&mut body);
-                        let _ = req.respond(tiny_http::Response::from_string("ok").with_status_code(200));
+                        let _ = req
+                            .respond(tiny_http::Response::from_string("ok").with_status_code(200));
                         let payload: serde_json::Value =
                             serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
                         let state = payload
@@ -2706,8 +4276,15 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             .and_then(|s| s.as_str())
                             .unwrap_or("")
                             .to_string();
-                        const WAVE_STATES: [&str; 7] =
-                            ["calm", "thinking", "streaming", "tooling", "waiting", "error", "settle"];
+                        const WAVE_STATES: [&str; 7] = [
+                            "calm",
+                            "thinking",
+                            "streaming",
+                            "tooling",
+                            "waiting",
+                            "error",
+                            "settle",
+                        ];
                         if WAVE_STATES.contains(&state.as_str()) {
                             let _ = app2.emit(
                                 "dsh-wave-state",
@@ -2717,6 +4294,268 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                                 &log_file2,
                                 &format!("wave state: {state} <- {detail}").trim_end(),
                             );
+                        }
+                    }
+                    ("GET", "/motion") => {
+                        // Current motion intensity for the in-app 外观与动效
+                        // settings section (proxied through the bridge's /desktop/*).
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({ "ok": true, "motion": config.motion }),
+                        ));
+                    }
+                    ("POST", "/motion-save") => {
+                        // Persist the motion intensity chosen in the in-app
+                        // 外观与动效 section and broadcast `motion-updated` so
+                        // every window applies it live.
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let motion = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("motion").and_then(|m| m.as_str()).map(String::from)
+                            })
+                            .unwrap_or_default();
+                        let parsed = match motion.as_str() {
+                            "quiet" => MotionIntensity::Quiet,
+                            "rich" => MotionIntensity::Rich,
+                            _ => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": "无效的动效强度" }),
+                                ));
+                                return;
+                            }
+                        };
+                        apply_motion(&app2, parsed);
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({ "ok": true, "motion": parsed }),
+                        ));
+                    }
+                    ("GET", "/remote-config") => {
+                        // Remote-access snapshot for the in-app settings
+                        // section (proxied through the bridge's /desktop/*).
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let (running, online) =
+                            tauri::async_runtime::block_on(probe_relay_status());
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "config": remote_snapshot(&config, running, online),
+                            }),
+                        ));
+                    }
+                    ("POST", "/remote-save") => {
+                        // Persist remote-access settings and restart the
+                        // relay-client companion with them (auto-registering
+                        // the device when no legacy admin secret is set).
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                        let state2 = app2.state::<AppState>();
+                        let paths2 = {
+                            let config = state2.config.lock().unwrap().clone();
+                            resolve_paths(&app2, &config)
+                        };
+                        {
+                            let mut config = state2.config.lock().unwrap();
+                            // A custom URL is only stored when the user opted
+                            // into a custom relay; otherwise the field is
+                            // cleared and the public default relay is used.
+                            let custom_relay = payload
+                                .get("customRelay")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let new_url = if custom_relay {
+                                payload
+                                    .get("relayUrl")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                            } else {
+                                None
+                            };
+                            let new_id = payload
+                                .get("deviceId")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().to_lowercase())
+                                .filter(|s| !s.is_empty());
+                            // Only a changed effective relay URL/device ID
+                            // invalidates a previously issued device secret;
+                            // saving the same settings keeps it. The relay
+                            // also reclaims offline stale registrations.
+                            let old_effective = effective_relay_url(&config);
+                            let old_id = config.remote_device_id.clone();
+                            config.remote_enabled = payload
+                                .get("enabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            config.remote_relay_url = new_url;
+                            config.remote_secret = payload
+                                .get("secret")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty());
+                            config.remote_device_id = new_id;
+                            if let Some(limit) =
+                                payload.get("maxConcurrent").and_then(|v| v.as_u64())
+                            {
+                                config.remote_max_concurrent = limit.clamp(1, 64) as u16;
+                            }
+                            if old_effective != effective_relay_url(&config)
+                                || old_id != config.remote_device_id
+                            {
+                                config.remote_device_secret = None;
+                            }
+                            save_config(&paths2.config_file, &config);
+                        }
+                        let config = state2.config.lock().unwrap().clone();
+                        let register_error = if config.remote_enabled {
+                            tauri::async_runtime::block_on(ensure_device_registered(
+                                &app2, &config, &paths2,
+                            ))
+                            .err()
+                        } else {
+                            None
+                        };
+                        if let Some(e) = register_error {
+                            let _ = req.respond(json_response(
+                                200,
+                                serde_json::json!({
+                                    "ok": false,
+                                    "error": e,
+                                    "config": remote_snapshot(&config, false, false),
+                                }),
+                            ));
+                            return;
+                        }
+                        let config = state2.config.lock().unwrap().clone();
+                        spawn_relay_client(&app2, &paths2, &config);
+                        std::thread::sleep(Duration::from_millis(300));
+                        let (running, online) =
+                            tauri::async_runtime::block_on(probe_relay_status());
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "config": remote_snapshot(&config, running, online),
+                            }),
+                        ));
+                    }
+                    ("GET", "/remote-pairing") => {
+                        // Pairing code for the in-app settings section: the
+                        // phone redeems it on the relay login page.
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        let result = tauri::async_runtime::block_on(async {
+                            if !config.remote_enabled {
+                                return Err("远程访问未启用".to_string());
+                            }
+                            let secret = ensure_device_registered(&app2, &config, &paths2)
+                                .await?
+                                .ok_or_else(|| "设备未注册".to_string())?;
+                            // Keep the device online: minting a code for an
+                            // offline relay-client would strand the phone.
+                            let fresh = state2.config.lock().unwrap().clone();
+                            spawn_relay_client(&app2, &paths2, &fresh);
+                            let http_url =
+                                relay_http_url(&fresh).ok_or_else(|| "中继地址无效".to_string())?;
+                            let device_id = fresh.remote_device_id.as_deref().unwrap_or("my-pc");
+                            let client = reqwest::Client::builder()
+                                .timeout(Duration::from_secs(8))
+                                .build()
+                                .map_err(|e| e.to_string())?;
+                            let resp = client
+                                .post(format!("{http_url}/pairing"))
+                                .bearer_auth(&secret)
+                                .json(&serde_json::json!({ "deviceId": device_id }))
+                                .send()
+                                .await
+                                .map_err(|e| format!("无法连接中继服务器: {e}"))?;
+                            if !resp.status().is_success() {
+                                return Err(format!(
+                                    "生成配对码失败：中继返回 HTTP {}",
+                                    resp.status()
+                                ));
+                            }
+                            let mut payload = resp
+                                .json::<serde_json::Value>()
+                                .await
+                                .map_err(|e| format!("配对码响应无法解析: {e}"))?;
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.insert(
+                                    "entry".to_string(),
+                                    serde_json::json!(remote_entry_url(&config)),
+                                );
+                            }
+                            Ok(payload)
+                        });
+                        match result {
+                            Ok(payload) => {
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({ "ok": true, "pairing": payload }),
+                                ));
+                            }
+                            Err(e) => {
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({ "ok": false, "error": e }),
+                                ));
+                            }
+                        }
+                    }
+                    ("POST", "/remote-persistent-pairing") => {
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let code = serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("code")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.trim().to_string())
+                            })
+                            .unwrap_or_default();
+                        if !code.is_empty() && (code.len() < 6 || code.len() > 64) {
+                            let _ = req.respond(json_response(400, serde_json::json!({ "ok": false, "error": "长期配对码长度需为 6 至 64 位" })));
+                            return;
+                        }
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        let result = tauri::async_runtime::block_on(async {
+                            if !config.remote_enabled {
+                                return Err("远程访问未启用".to_string());
+                            }
+                            ensure_device_registered(&app2, &config, &paths2).await?;
+                            let fresh = state2.config.lock().unwrap().clone();
+                            sync_persistent_pairing_code(&fresh, &code).await
+                        });
+                        match result {
+                            Ok(()) => {
+                                let mut config = state2.config.lock().unwrap();
+                                config.remote_persistent_pairing_enabled = !code.is_empty();
+                                save_config(&paths2.config_file, &config);
+                                let snapshot = remote_snapshot(&config, false, false);
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({ "ok": true, "config": snapshot }),
+                                ));
+                            }
+                            Err(error) => {
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({ "ok": false, "error": error }),
+                                ));
+                            }
                         }
                     }
                     ("GET", "/balance") => {
@@ -2760,7 +4599,8 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                                     let config = state2.config.lock().unwrap().clone();
                                     let paths2 = resolve_paths(&app2, &config);
                                     let configured = effective_key(&paths2, &config).is_some();
-                                    let low = balance_is_low(&balance, config.balance_low_threshold);
+                                    let low =
+                                        balance_is_low(&balance, config.balance_low_threshold);
                                     let _ = req.respond(json_response(
                                         200,
                                         serde_json::json!({
@@ -2791,12 +4631,13 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         let state2 = app2.state::<AppState>();
                         let config = state2.config.lock().unwrap().clone();
                         let paths2 = resolve_paths(&app2, &config);
-                        let dsh_version = fs::read_to_string(paths2.runtime_dir.join("version.json"))
-                            .ok()
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                            .and_then(|v| {
-                                v.get("dsh").and_then(|v| v.as_str()).map(String::from)
-                            });
+                        let dsh_version =
+                            fs::read_to_string(paths2.runtime_dir.join("version.json"))
+                                .ok()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                                .and_then(|v| {
+                                    v.get("dsh").and_then(|v| v.as_str()).map(String::from)
+                                });
                         let _ = req.respond(json_response(
                             200,
                             serde_json::json!({
@@ -2821,17 +4662,15 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                                 .timeout(Duration::from_secs(15))
                                 .build()
                             {
-                                Ok(client) => {
-                                    fetch_update_status(&client, &paths2, &config).await
-                                }
+                                Ok(client) => fetch_update_status(&client, &paths2, &config).await,
                                 Err(e) => Err(format!("HTTP 客户端失败: {e}")),
                             };
                             let _ = tx.send(result);
                         });
                         match rx.recv_timeout(Duration::from_secs(20)) {
                             Ok(Ok(status)) => {
-                                let mut payload = serde_json::to_value(&status)
-                                    .unwrap_or(serde_json::json!({}));
+                                let mut payload =
+                                    serde_json::to_value(&status).unwrap_or(serde_json::json!({}));
                                 payload["ok"] = serde_json::json!(true);
                                 let _ = req.respond(json_response(200, payload));
                             }
@@ -2854,16 +4693,12 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         let _ = req.as_reader().read_to_end(&mut body);
                         let url = serde_json::from_slice::<serde_json::Value>(&body)
                             .ok()
-                            .and_then(|v| {
-                                v.get("url").and_then(|u| u.as_str()).map(String::from)
-                            })
+                            .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(String::from))
                             .unwrap_or_default();
                         match open_external_impl(&url) {
                             Ok(()) => {
-                                let _ = req.respond(json_response(
-                                    200,
-                                    serde_json::json!({ "ok": true }),
-                                ));
+                                let _ = req
+                                    .respond(json_response(200, serde_json::json!({ "ok": true })));
                             }
                             Err(e) => {
                                 let _ = req.respond(json_response(
@@ -2889,13 +4724,28 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
 // tauri commands
 // ---------------------------------------------------------------------------
 
+fn dsh_theme_preference(paths: &Paths) -> String {
+    fs::read_to_string(paths.dsh_home.join("settings.yaml"))
+        .ok()
+        .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok())
+        .and_then(|doc| {
+            doc.get("ui-theme")
+                .and_then(|theme| theme.get("preference"))
+                .and_then(|preference| preference.as_str())
+                .map(str::to_string)
+        })
+        .filter(|preference| matches!(preference.as_str(), "light" | "dark" | "system"))
+        .unwrap_or_else(|| "system".to_string())
+}
+
 #[tauri::command]
-fn get_status(app: AppHandle, state: State<'_, AppState>) -> StatusSnapshot {
+async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
     let config = state.config.lock().unwrap().clone();
     let paths = resolve_paths(&app, &config);
     let key_configured = effective_key(&paths, &config).is_some();
     let balance = state.balance.lock().unwrap().clone();
     let low = balance_is_low(&balance, config.balance_low_threshold);
+    let theme_preference = dsh_theme_preference(&paths);
 
     let dsh_version = fs::read_to_string(
         paths
@@ -2915,7 +4765,12 @@ fn get_status(app: AppHandle, state: State<'_, AppState>) -> StatusSnapshot {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("node").and_then(|v| v.as_str()).map(String::from));
 
-    StatusSnapshot {
+    let remote_running = state.relay.lock().unwrap().child.is_some();
+    let (probe_running, probe_online) = probe_relay_status().await;
+    let remote_running = remote_running && probe_running;
+    state.remote_online.store(probe_online, Ordering::SeqCst);
+
+    Ok(StatusSnapshot {
         dsh_running: state.dsh.lock().unwrap().child.is_some()
             || state.adopted.load(Ordering::SeqCst),
         ui_ready: state.ui_ready.load(Ordering::SeqCst),
@@ -2931,28 +4786,244 @@ fn get_status(app: AppHandle, state: State<'_, AppState>) -> StatusSnapshot {
         dsh_home: paths.dsh_home.display().to_string(),
         dsh_port: dsh_port(&config),
         motion_intensity: config.motion,
+        theme_preference,
+        remote_enabled: config.remote_enabled,
+        remote_running,
+        remote_online: probe_online,
+        remote_entry: if config.remote_enabled {
+            remote_entry_url(&config)
+        } else {
+            None
+        },
+        bailian_configured: read_credential(&paths, BAILIAN_KEY_ENV).is_some(),
+    })
+}
+
+#[tauri::command]
+fn get_startup_conflict(state: State<'_, AppState>) -> Option<StartupConflict> {
+    state.startup_conflict.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn choose_startup_mode(state: State<'_, AppState>, mode: StartupMode) -> Result<(), String> {
+    if state.startup_conflict.lock().unwrap().take().is_none() {
+        return Err("当前没有等待处理的已有实例".to_string());
     }
+    let mut decision = state.startup_decision.lock().unwrap();
+    if decision.is_some() {
+        return Err("启动方式已经确定".to_string());
+    }
+    *decision = Some(mode);
+    state.startup_decision_cv.notify_all();
+    Ok(())
 }
 
 /// Persist the UI motion intensity and broadcast `motion-updated` so every
 /// window (splash, settings, and the injected dsh page scripts) applies it
-/// live without a reload.
-#[tauri::command]
-fn set_motion_intensity(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    motion: MotionIntensity,
-) -> Result<MotionIntensity, String> {
+/// live without a reload. Shared by the settings window's Tauri command and
+/// the bridge listener's /motion-save route.
+fn apply_motion(app: &AppHandle, motion: MotionIntensity) -> MotionIntensity {
+    let state = app.state::<AppState>();
     let mut config = state.config.lock().unwrap().clone();
-    let paths = resolve_paths(&app, &config);
+    let paths = resolve_paths(app, &config);
     config.motion = motion;
     save_config(&paths.config_file, &config);
     *state.config.lock().unwrap() = config;
-    let _ = app.emit(
-        "motion-updated",
-        serde_json::json!({ "motion": motion }),
-    );
-    Ok(motion)
+    let _ = app.emit("motion-updated", serde_json::json!({ "motion": motion }));
+    motion
+}
+
+#[tauri::command]
+fn set_motion_intensity(
+    app: AppHandle,
+    motion: MotionIntensity,
+) -> Result<MotionIntensity, String> {
+    Ok(apply_motion(&app, motion))
+}
+
+/// Remote-access configuration snapshot for the settings window.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConfigSnapshot {
+    pub enabled: bool,
+    /// Effective relay URL in use: the user's custom URL when `custom_relay`
+    /// is true, otherwise the public default relay.
+    pub relay_url: String,
+    /// True when the user configured their own relay URL (custom relay).
+    pub custom_relay: bool,
+    /// The public default relay URL, used whenever `custom_relay` is false.
+    pub default_relay_url: String,
+    pub secret: String,
+    pub device_id: String,
+    pub running: bool,
+    pub online: bool,
+    pub max_concurrent: u16,
+    pub persistent_pairing_enabled: bool,
+    pub entry: Option<String>,
+}
+
+fn remote_snapshot(config: &AppConfig, running: bool, online: bool) -> RemoteConfigSnapshot {
+    RemoteConfigSnapshot {
+        enabled: config.remote_enabled,
+        relay_url: effective_relay_url(config).unwrap_or_default(),
+        custom_relay: custom_relay_set(config),
+        default_relay_url: DEFAULT_RELAY_URL.to_string(),
+        secret: config.remote_secret.clone().unwrap_or_default(),
+        device_id: config.remote_device_id.clone().unwrap_or_default(),
+        running,
+        online,
+        max_concurrent: config.remote_max_concurrent.clamp(1, 64),
+        persistent_pairing_enabled: config.remote_persistent_pairing_enabled,
+        entry: if config.remote_enabled {
+            remote_entry_url(config)
+        } else {
+            None
+        },
+    }
+}
+
+#[tauri::command]
+async fn get_remote_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RemoteConfigSnapshot, String> {
+    let _ = &app;
+    let config = state.config.lock().unwrap().clone();
+    let relay_running = state.relay.lock().unwrap().child.is_some();
+    let (probe_running, online) = probe_relay_status().await;
+    // Only trust the status probe when this session actually spawned the
+    // relay-client; an orphaned process from a previous instance may still
+    // serve the port but its config is stale.
+    let running = relay_running && probe_running;
+    Ok(remote_snapshot(&config, running, online))
+}
+
+/// Persist the remote-access settings and restart the relay-client with them.
+/// Product flow: `secret` is optional — leave it empty and the device
+/// auto-registers with the relay to obtain its own device secret. `custom_relay`
+/// selects between the user's own relay URL and the public default relay.
+#[tauri::command]
+async fn save_remote_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+    custom_relay: bool,
+    relay_url: String,
+    secret: String,
+    device_id: String,
+    max_concurrent: Option<u16>,
+) -> Result<RemoteConfigSnapshot, String> {
+    let paths = {
+        let config = state.config.lock().unwrap().clone();
+        resolve_paths(&app, &config)
+    };
+    {
+        let mut config = state.config.lock().unwrap();
+        // A custom URL is only stored when the user opted into a custom relay;
+        // otherwise the field is cleared and the public default is used.
+        let new_url = if custom_relay {
+            Some(relay_url.trim().to_string()).filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+        let new_id = Some(device_id.trim().to_lowercase()).filter(|s| !s.is_empty());
+        // Only a changed effective relay URL or device ID invalidates a
+        // previously issued device secret (which forces re-registration).
+        // Saving the same settings keeps the existing secret; the relay
+        // reclaims a stale registration only when no agent is online.
+        let old_effective = effective_relay_url(&config);
+        let old_id = config.remote_device_id.clone();
+        config.remote_enabled = enabled;
+        config.remote_relay_url = new_url;
+        config.remote_secret = Some(secret.trim().to_string()).filter(|s| !s.is_empty());
+        config.remote_device_id = new_id;
+        if let Some(limit) = max_concurrent {
+            config.remote_max_concurrent = limit.clamp(1, 64);
+        }
+        if old_effective != effective_relay_url(&config) || old_id != config.remote_device_id {
+            config.remote_device_secret = None;
+        }
+        save_config(&paths.config_file, &config);
+        *state.config.lock().unwrap() = config.clone();
+    }
+    if enabled {
+        let config = state.config.lock().unwrap().clone();
+        match ensure_device_registered(&app, &config, &paths).await {
+            Ok(_) => {}
+            Err(e) => {
+                // Keep the settings persisted but surface the registration
+                // failure to the UI instead of silently ignoring it.
+                return Err(e);
+            }
+        }
+    }
+    let config = state.config.lock().unwrap().clone();
+    spawn_relay_client(&app, &paths, &config);
+    // The companion process needs a beat to bind its status port; probe once
+    // immediately and once after a short wait so the UI shows the real state.
+    let (mut running, mut online) = probe_relay_status().await;
+    if !running {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let (r2, o2) = probe_relay_status().await;
+        running = r2;
+        online = o2;
+    }
+    Ok(remote_snapshot(&config, running, online))
+}
+
+/// Issue a pairing code for this device: the phone redeems it on the login
+/// page and receives a long-lived token — no shared secrets anywhere.
+#[tauri::command]
+async fn get_remote_pairing(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let config = state.config.lock().unwrap().clone();
+    if !config.remote_enabled {
+        return Err("远程访问未启用".to_string());
+    }
+    let paths = resolve_paths(&app, &config);
+    let secret = ensure_device_registered(&app, &config, &paths)
+        .await?
+        .ok_or_else(|| "设备未注册：请先在远程访问设置中保存配置".to_string())?;
+    // A pairing code only matters when the device is actually online: make
+    // sure the relay-client companion is running before minting a code.
+    let fresh = state.config.lock().unwrap().clone();
+    spawn_relay_client(&app, &paths, &fresh);
+    let http_url = relay_http_url(&fresh).ok_or_else(|| "中继地址无效".to_string())?;
+    let device_id = fresh.remote_device_id.as_deref().unwrap_or("my-pc");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{http_url}/pairing"))
+        .bearer_auth(&secret)
+        .json(&serde_json::json!({ "deviceId": device_id }))
+        .send()
+        .await
+        .map_err(|e| format!("无法连接中继服务器: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let detail = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(format!("生成配对码失败: {detail}"));
+    }
+    let mut payload = resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("配对码响应无法解析: {e}"))?;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "entry".to_string(),
+            serde_json::json!(remote_entry_url(&config)),
+        );
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -3030,6 +5101,65 @@ async fn set_api_key(
     })
 }
 
+/// One-click Bailian (阿里云百炼) setup: store the key under the pi-ai
+/// catalog's credential name and ensure the `qwen-token-plan-cn` provider
+/// route exists in settings.yaml. The catalog supplies models with reasoning
+/// metadata, so thinking levels work in the model picker out of the box.
+/// Clearing (empty key) removes only the credential, not the route.
+#[derive(Serialize)]
+pub struct ConfigureBailianResult {
+    pub configured: bool,
+    /// The catalog provider route already existed in settings.yaml (only
+    /// meaningful when `configured` is true).
+    pub provider_existed: bool,
+    /// Hand-declared routes folded into the catalog provider (same token-plan
+    /// endpoint, no reasoning metadata).
+    pub removed_providers: Vec<String>,
+    /// Model ids carried over from the folded routes onto the catalog route.
+    pub merged_models: Vec<String>,
+}
+
+#[tauri::command]
+async fn configure_bailian(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<ConfigureBailianResult, String> {
+    let key = key.trim().to_string();
+    let config = state.config.lock().unwrap().clone();
+    let paths = resolve_paths(&app, &config);
+
+    let cred_file = paths.dsh_home.join(".credentials.yaml");
+    write_credential_entry(
+        &cred_file,
+        BAILIAN_KEY_ENV,
+        if key.is_empty() { None } else { Some(&key) },
+    )?;
+
+    if key.is_empty() {
+        let statuses = fetch_provider_statuses(&paths, &config, &state.adapters).await;
+        *state.providers.lock().unwrap() = Some(statuses);
+        return Ok(ConfigureBailianResult {
+            configured: false,
+            provider_existed: false,
+            removed_providers: Vec::new(),
+            merged_models: Vec::new(),
+        });
+    }
+
+    let outcome = ensure_bailian_provider(&paths.dsh_home.join("settings.yaml"))?;
+
+    // refresh the multi-provider snapshot so the panel shows the new platform
+    let statuses = fetch_provider_statuses(&paths, &config, &state.adapters).await;
+    *state.providers.lock().unwrap() = Some(statuses);
+    Ok(ConfigureBailianResult {
+        configured: true,
+        provider_existed: outcome.existed,
+        removed_providers: outcome.removed,
+        merged_models: outcome.merged_models,
+    })
+}
+
 #[tauri::command]
 async fn refresh_balance_cmd(
     app: AppHandle,
@@ -3085,14 +5215,24 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         let _ = w.set_focus();
         return Ok(());
     }
-    let motion = app.state::<AppState>().config.lock().unwrap().motion;
+    let config = app.state::<AppState>().config.lock().unwrap().clone();
+    let motion = config.motion;
+    let paths = resolve_paths(&app, &config);
+    let theme_script = format!(
+        "window.__DSH_THEME__ = {};",
+        serde_json::to_string(&dsh_theme_preference(&paths))
+            .unwrap_or_else(|_| "\"system\"".to_string())
+    );
     let w = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DSH Desktop 设置")
-        .inner_size(560.0, 780.0)
-        .min_inner_size(480.0, 560.0)
+        .inner_size(900.0, 700.0)
+        .min_inner_size(680.0, 560.0)
+        .decorations(false)
+        .shadow(true)
         .data_directory(webview_data_dir(&app))
         .initialization_script(INIT_SCRIPT)
         .initialization_script(motion_init_script(motion))
+        .initialization_script(theme_script)
         .build()
         .map_err(|e| e.to_string())?;
     let _ = w.set_focus();
@@ -3178,10 +5318,7 @@ async fn fetch_update_status(
                     if let Some(assets) = v.get("assets").and_then(|a| a.as_array()) {
                         app_asset = assets
                             .iter()
-                            .filter_map(|a| {
-                                a.get("browser_download_url")
-                                    .and_then(|u| u.as_str())
-                            })
+                            .filter_map(|a| a.get("browser_download_url").and_then(|u| u.as_str()))
                             .find(|u| u.ends_with(".exe") || u.ends_with(".msi"))
                             .map(String::from);
                     }
@@ -3251,6 +5388,7 @@ fn clear_pending_update(runtime: &Path) {
 fn apply_dsh_tarball_bytes(
     runtime: &Path,
     plugins_src_dir: &Path,
+    node_exe: Option<&Path>,
     bytes: &[u8],
     log: &Path,
 ) -> Result<String, String> {
@@ -3263,9 +5401,112 @@ fn apply_dsh_tarball_bytes(
     fs::write(&tgz_path, bytes).map_err(|e| format!("写入失败: {e}"))?;
 
     // extract (npm tarball root is `package/`, stripped)
-    let dsh_new = stage.join("dsh-new");
+    let package_new = stage.join("package-new");
     let mut no_progress = |_count: usize| {};
-    extract_tarball(&tgz_path, &dsh_new, true, &mut no_progress)?;
+    extract_tarball(&tgz_path, &package_new, true, &mut no_progress)?;
+
+    // An npm tarball contains the package itself at `package/`, while a
+    // runnable desktop runtime needs npm's installed layout below
+    // `node_modules/@deepseek-ai/dsh` plus its transitive dependencies.
+    // Installing the already-downloaded tarball avoids a second download of
+    // dsh and lets npm resolve any dependencies added by a new release.
+    let package_manifest = package_new.join("package.json");
+    let new_version = fs::read_to_string(&package_manifest)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(|v| v.get("name").and_then(|name| name.as_str()) == Some("@deepseek-ai/dsh"))
+        .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(String::from))
+        .ok_or("更新包校验失败：不是有效的 @deepseek-ai/dsh npm 包")?;
+
+    let dsh_new = stage.join("dsh-new");
+    if let Some(node_exe) = node_exe {
+        let npm_cli = node_exe
+            .parent()
+            .map(|dir| dir.join("node_modules/npm/bin/npm-cli.js"))
+            .ok_or("找不到内置 npm")?;
+        if !npm_cli.is_file() {
+            return Err(format!("找不到内置 npm: {}", npm_cli.display()));
+        }
+        // npm is a second Windows process.  Without CREATE_NO_WINDOW it can
+        // attach to the desktop console and leave a seemingly frozen terminal
+        // in front of the settings window while the synchronous install runs.
+        // Keep npm quiet and deterministic; its complete output is still
+        // copied into the desktop log for diagnosis.
+        let mut npm_cmd = Command::new(node_exe);
+        npm_cmd
+            .arg(&npm_cli)
+            .arg("install")
+            .arg("--prefix")
+            .arg(&dsh_new)
+            .arg("--ignore-scripts")
+            .arg("--no-audit")
+            .arg("--no-fund")
+            .arg("--no-progress")
+            .arg("--no-package-lock")
+            .arg("--prefer-offline")
+            .arg("--fetch-retries=1")
+            .arg("--fetch-timeout=30000")
+            .arg("--fetch-retry-maxtimeout=30000")
+            .arg("--loglevel=error")
+            .arg(&tgz_path)
+            .env("npm_config_loglevel", "warn")
+            .env("npm_config_progress", "false")
+            .env("npm_config_update_notifier", "false")
+            // Do not pipe npm output without concurrently draining it: a
+            // verbose npm failure can fill the OS pipe and deadlock the child.
+            // npm keeps its detailed report in its cache logs; we record the
+            // exit status here and return it to the settings UI.
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            npm_cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut npm_child = npm_cmd
+            .spawn()
+            .map_err(|e| format!("安装 dsh 更新包失败: {e}"))?;
+        // `Command::output()` has no deadline.  A stalled registry socket or
+        // npm resolver could therefore leave the Tauri invoke pending forever.
+        // Poll the child and kill it after five minutes so the caller receives
+        // an actionable error and the old runtime remains untouched.
+        let npm_deadline = Instant::now() + Duration::from_secs(300);
+        let npm_status = loop {
+            match npm_child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < npm_deadline => {
+                    thread::sleep(Duration::from_millis(250));
+                }
+                Ok(None) => {
+                    let _ = npm_child.kill();
+                    let _ = npm_child.wait();
+                    return Err(
+                        "安装 dsh 更新包超时（5 分钟），已取消本次更新；请检查网络或 npm 源后重试"
+                            .to_string(),
+                    );
+                }
+                Err(e) => {
+                    let _ = npm_child.kill();
+                    let _ = npm_child.wait();
+                    return Err(format!("读取 npm 安装状态失败: {e}"));
+                }
+            }
+        };
+        log_line(log, &format!("npm install finished: {npm_status}"));
+        if !npm_status.success() {
+            return Err(format!(
+                "安装 dsh 更新包失败（退出码 {:?}）。请检查网络或 npm 源后重试",
+                npm_status.code()
+            ));
+        }
+    } else {
+        // Unit tests exercise the archive layout without a bundled Node/npm.
+        let target = dsh_new.join("node_modules/@deepseek-ai/dsh");
+        fs::create_dir_all(&target).map_err(|e| format!("创建安装目录失败: {e}"))?;
+        copy_dir_contents(&package_new, &target)
+            .map_err(|e| format!("部署 dsh 更新包失败: {e}"))?;
+    }
 
     // restore the desktop plugin packages (and the bundled vision plugin)
     // into the new tree — the canonical copies live in the bundled runtime
@@ -3276,6 +5517,7 @@ fn apply_dsh_tarball_bytes(
             .iter()
             .copied()
             .chain(std::iter::once(VISION_PLUGIN))
+            .chain(MARKET_PLUGIN_RUNTIME_PACKAGES.iter().copied())
         {
             let src = plugins_src.join(name);
             if !src.exists() {
@@ -3295,22 +5537,26 @@ fn apply_dsh_tarball_bytes(
             if !from.exists() {
                 continue;
             }
-            fs::copy(&from, bdst.join(f))
-                .map_err(|e| format!("恢复桥接插件失败: {e}"))?;
+            fs::copy(&from, bdst.join(f)).map_err(|e| format!("恢复桥接插件失败: {e}"))?;
         }
     }
 
-    // verify the new tree carries a readable dsh version
+    // Verify npm produced the runtime layout the launcher uses.
     let manifest_path = dsh_new
         .join("node_modules")
         .join("@deepseek-ai")
         .join("dsh")
         .join("package.json");
-    let new_version = fs::read_to_string(&manifest_path)
+    let installed_version = fs::read_to_string(&manifest_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(String::from))
         .ok_or("更新包校验失败：缺少 @deepseek-ai/dsh")?;
+    if installed_version != new_version {
+        return Err(format!(
+            "更新包校验失败：安装版本 {installed_version} 与下载版本 {new_version} 不一致"
+        ));
+    }
 
     // swap with backup; the backup is KEPT until the new runtime proves it
     // can boot — verify_update_rollback deletes it on success and restores it
@@ -3347,8 +5593,11 @@ fn apply_dsh_tarball_bytes(
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
-    vjson["dsh"] = serde_json::Value::String(new_version.clone());
-    let _ = fs::write(&version_file, serde_json::to_string_pretty(&vjson).unwrap_or_default());
+    vjson["dsh"] = serde_json::Value::String(installed_version.clone());
+    let _ = fs::write(
+        &version_file,
+        serde_json::to_string_pretty(&vjson).unwrap_or_default(),
+    );
 
     // record the pending-verification backup
     write_pending_update(
@@ -3362,10 +5611,10 @@ fn apply_dsh_tarball_bytes(
     log_line(
         log,
         &format!(
-            "dsh swapped to {new_version} (previous {previous_version} kept for verification)"
+            "dsh swapped to {installed_version} (previous {previous_version} kept for verification)"
         ),
     );
-    Ok(format!("dsh 已更新到 {new_version}（正在验证…）"))
+    Ok(format!("dsh 已更新到 {installed_version}（正在验证…）"))
 }
 
 /// Verifies a freshly applied dsh update: polls health for up to 60s.
@@ -3478,7 +5727,10 @@ async fn verify_update_rollback(app: AppHandle) {
             if let Ok(s) = fs::read_to_string(&version_file) {
                 if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&s) {
                     v["dsh"] = serde_json::Value::String(info.previous_version.clone());
-                    let _ = fs::write(&version_file, serde_json::to_string_pretty(&v).unwrap_or_default());
+                    let _ = fs::write(
+                        &version_file,
+                        serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    );
                 }
             }
             clear_pending_update(&paths.runtime_dir);
@@ -3490,7 +5742,10 @@ async fn verify_update_rollback(app: AppHandle) {
             }
             log_line(
                 &paths.log_file,
-                &format!("rollback complete — dsh restarted on {}", info.previous_version),
+                &format!(
+                    "rollback complete — dsh restarted on {}",
+                    info.previous_version
+                ),
             );
             let _ = app.emit(
                 "update-rollback",
@@ -3543,6 +5798,10 @@ async fn apply_dsh_update(
     };
 
     log_line(&log, &format!("applying dsh update: {tarball}"));
+    let _ = app.emit(
+        "update-progress",
+        serde_json::json!({ "stage": "download", "detail": "正在下载 dsh 更新包…" }),
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
@@ -3556,8 +5815,22 @@ async fn apply_dsh_update(
         .bytes()
         .await
         .map_err(|e| e.to_string())?;
+    log_line(
+        &log,
+        &format!("downloaded dsh update archive ({} bytes)", bytes.len()),
+    );
+    let _ = app.emit(
+        "update-progress",
+        serde_json::json!({ "stage": "install", "detail": "正在安装更新依赖，网络异常时会在约 30 秒内失败…" }),
+    );
 
-    let result = apply_dsh_tarball_bytes(&runtime, &paths.bundled_runtime_dir, &bytes, &log)?;
+    let result = apply_dsh_tarball_bytes(
+        &runtime,
+        &paths.bundled_runtime_dir,
+        Some(&paths.node_exe),
+        &bytes,
+        &log,
+    )?;
     // redeploy bridge/patch into DSH_HOME so the next boot picks everything up
     ensure_runtime_files(&paths);
 
@@ -3580,6 +5853,10 @@ async fn apply_dsh_update(
         }
     }
     log_line(&log, "dsh child restarted on the updated runtime");
+    let _ = app.emit(
+        "update-progress",
+        serde_json::json!({ "stage": "verify", "detail": "更新已安装，正在验证服务…" }),
+    );
 
     // verify the new runtime can actually serve; roll back automatically if not
     let app2 = app.clone();
@@ -3587,7 +5864,9 @@ async fn apply_dsh_update(
         verify_update_rollback(app2).await;
     });
 
-    Ok(format!("{result} 已重启内置服务；新内核将在 60 秒内完成健康验证，失败会自动回滚。"))
+    Ok(format!(
+        "{result} 已重启内置服务；新内核将在 60 秒内完成健康验证，失败会自动回滚。"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -3621,7 +5900,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItemBuilder::with_id("open", "打开主窗口").build(app)?;
-    let settings = MenuItemBuilder::with_id("settings", "设置 / API Key").build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "设置").build(app)?;
     let refresh = MenuItemBuilder::with_id("refresh-balance", "刷新余额").build(app)?;
     let balance_item = MenuItemBuilder::with_id("balance", "余额：未获取")
         .enabled(false)
@@ -3733,6 +6012,8 @@ pub fn run() {
                 child: None,
                 restarts: 0,
             }),
+            relay: Mutex::new(RelayProcess { child: None }),
+            remote_online: AtomicBool::new(false),
             adopted: AtomicBool::new(false),
             ui_ready: AtomicBool::new(false),
             bridge_ok: AtomicBool::new(false),
@@ -3745,10 +6026,19 @@ pub fn run() {
             last_update_check: Mutex::new(None),
             tray_balance_item: Mutex::new(None),
             tray_autostart_item: Mutex::new(None),
+            spawned_at: Mutex::new(None),
+            relay_respawn_at: Mutex::new(None),
+            startup_conflict: Mutex::new(None),
+            startup_decision: Mutex::new(None),
+            startup_decision_cv: Condvar::new(),
+            startup_pending: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
+            get_startup_conflict,
+            choose_startup_mode,
             set_api_key,
+            configure_bailian,
             refresh_balance_cmd,
             open_logs,
             open_dsh_home,
@@ -3758,7 +6048,10 @@ pub fn run() {
             apply_dsh_update,
             get_autostart,
             set_autostart,
-            set_motion_intensity
+            set_motion_intensity,
+            get_remote_config,
+            save_remote_config,
+            get_remote_pairing
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -3783,6 +6076,23 @@ pub fn run() {
 
             let paths = resolve_paths(&handle, &config);
             log_line(&paths.log_file, "DSH Desktop starting");
+
+            // Inspect every desktop-owned listener before binding anything.
+            // A fully working earlier desktop instance needs an explicit user
+            // choice; a partial/orphaned set is reclaimed automatically so it
+            // cannot block this shell's complete service graph.
+            let startup_ports = startup_port_statuses(&config);
+            let occupied: Vec<_> = startup_ports.iter().filter(|p| p.occupied).cloned().collect();
+            if !occupied.is_empty() {
+                if startup_instance_complete(&startup_ports, config.remote_enabled) {
+                    log_line(&paths.log_file, "complete desktop service instance detected; waiting for startup mode selection");
+                    *app.state::<AppState>().startup_conflict.lock().unwrap() = Some(StartupConflict { ports: startup_ports.clone() });
+                    app.state::<AppState>().startup_pending.store(true, Ordering::SeqCst);
+                } else {
+                    log_line(&paths.log_file, "incomplete desktop port occupancy detected; stopping owners before full startup");
+                    stop_port_owners(&occupied)?;
+                }
+            }
 
             // Refresh the autostart entry so installs that enabled it before
             // this version pick up the `--hidden` argument (the plugin only
@@ -3874,8 +6184,92 @@ pub fn run() {
             let app2 = handle.clone();
             tauri::async_runtime::spawn(async move {
                 let state = app2.state::<AppState>();
+                if state.startup_pending.load(Ordering::SeqCst) {
+                    let _ = app2.emit_to("main", "dsh-startup-conflict", ());
+                    let app_wait = app2.clone();
+                    let mode = tauri::async_runtime::spawn_blocking(move || {
+                        wait_for_startup_decision(&app_wait.state::<AppState>())
+                    })
+                        .await
+                        .unwrap_or(StartupMode::Independent);
+                    let config2 = state.config.lock().unwrap().clone();
+                    let ports = startup_port_statuses(&config2);
+                    let occupied: Vec<_> = ports.into_iter().filter(|p| p.occupied).collect();
+                    match mode {
+                        StartupMode::UseExisting => {
+                            state.adopted.store(true, Ordering::SeqCst);
+                            state.runtime_ready.store(true, Ordering::SeqCst);
+                            state.startup_pending.store(false, Ordering::SeqCst);
+                            let paths = resolve_paths(&app2, &config2);
+                            log_line(&paths.log_file, "startup mode selected: use existing complete desktop instance");
+                            return;
+                        }
+                        StartupMode::Independent => {
+                            let paths = resolve_paths(&app2, &config2);
+                            log_line(&paths.log_file, "startup mode selected: independent; stopping complete existing desktop instance");
+                            if let Err(e) = tauri::async_runtime::spawn_blocking(move || stop_port_owners(&occupied)).await
+                                .unwrap_or_else(|e| Err(format!("结束已有实例任务失败: {e}"))) {
+                                log_line(&paths.log_file, &format!("startup port cleanup failed: {e}"));
+                                let _ = app2.emit_to("main", "dsh-failed", serde_json::json!({ "kind": "startup-conflict", "message": e }));
+                                state.startup_pending.store(false, Ordering::SeqCst);
+                                return;
+                            }
+                        }
+                    }
+                    state.startup_pending.store(false, Ordering::SeqCst);
+                }
                 let paths = resolve_paths(&app2, &boot_cfg);
-                if !paths.node_exe.exists() || !paths.dsh_bin.exists() {
+                let url = dsh_web_url(dsh_port(&boot_cfg));
+
+                // Pre-probe the port before doing anything expensive. When an
+                // instance already serves it (a CLI `dsh web` sharing the same
+                // home, a double launch), adopt it instead of booting a doomed
+                // child that loads the whole plugin tree and then dies on
+                // EADDRINUSE — a 3–60 s waste that also competes with the
+                // loading UI for I/O. Readiness is owned by the health loop,
+                // which probes from its very first tick, so a healthy port
+                // also stops delaying the UI on first-run extraction.
+                let probe_client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .ok();
+                let probe = || async {
+                    match &probe_client {
+                        Some(client) => client
+                            .get(&url)
+                            .send()
+                            .await
+                            .map(|r| r.status().is_success() || r.status().is_server_error())
+                            .unwrap_or(false),
+                        None => false,
+                    }
+                };
+                if probe().await {
+                    state.adopted.store(true, Ordering::SeqCst);
+                    log_line(
+                        &paths.log_file,
+                        "dsh port already served by another instance — skipping child spawn (adopted)",
+                    );
+                    // An external/previous DSH is already healthy, so do not
+                    // make the visible launch compete with it for tens of
+                    // thousands of file writes. Keep runtime preparation as a
+                    // background recovery task instead.
+                    if runtime_preparation_needed(&paths) {
+                        let app3 = app2.clone();
+                        let paths3 = paths.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(e) = extract_runtime_archive(&app3, &paths3) {
+                                log_line(&paths3.log_file, &format!(
+                                    "background runtime preparation failed: {e}"
+                                ));
+                            }
+                        });
+                    }
+                    state.runtime_ready.store(true, Ordering::SeqCst);
+                    return;
+                }
+
+                if runtime_preparation_needed(&paths) {
                     let _ = app2.emit_to(
                         "main",
                         "dsh-progress",
@@ -3890,12 +6284,35 @@ pub fn run() {
                         "dsh-status",
                         "首次运行：正在解压运行时组件，请稍候…".to_string(),
                     );
-                    match extract_runtime_archive(&app2, &paths) {
-                        Ok(()) => {}
+                    let extraction_start = Instant::now();
+                    // Gzip extraction is CPU-bound: run it on the blocking pool
+                    // so it cannot stall the tokio workers serving the UI.
+                    let app3 = app2.clone();
+                    let paths3 = paths.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        extract_runtime_archive(&app3, &paths3)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("解压任务失败: {e}")));
+                    match result {
+                        Ok(()) => log_line(
+                            &paths.log_file,
+                            &format!(
+                                "runtime extraction complete in {:.1}s",
+                                extraction_start.elapsed().as_secs_f64()
+                            ),
+                        ),
                         Err(e) => {
                             log_line(&paths.log_file, &format!("runtime extraction failed: {e}"));
-                            state.runtime_ready.store(true, Ordering::SeqCst);
-                            let _ = app2.emit_to("main", "dsh-failed", ());
+                            // Keep runtime_ready false: the health loop must
+                            // not respawn dsh when runtime extraction failed,
+                            // because node/dsh are incomplete and those
+                            // retries only obscure the real failure.
+                            let _ = app2.emit_to(
+                                "main",
+                                "dsh-failed",
+                                serde_json::json!({ "kind": "runtime-extraction", "message": e }),
+                            );
                             return;
                         }
                     }
@@ -3909,8 +6326,31 @@ pub fn run() {
                         }),
                     );
                 }
-                state.runtime_ready.store(true, Ordering::SeqCst);
                 ensure_runtime_files(&paths);
+
+                // The bridge belongs to the service graph and must be bound
+                // only after an occupied/partial prior graph has been
+                // reclaimed. Relay waits until the runtime is usable too.
+                start_bridge_listener(app2.clone(), boot_cfg.bridge_shell_port);
+
+                // Re-probe right before the spawn decision: an instance may
+                // have come up while extraction ran (the health loop adopts it
+                // and readies the UI meanwhile), and spawning now would only
+                // waste a full plugin-tree boot on a doomed EADDRINUSE child.
+                if probe().await {
+                    state.adopted.store(true, Ordering::SeqCst);
+                    log_line(
+                        &paths.log_file,
+                        "dsh port served by another instance — skipping child spawn (adopted during boot)",
+                    );
+                    state.runtime_ready.store(true, Ordering::SeqCst);
+                    let app3 = app2.clone();
+                    tauri::async_runtime::spawn(async move {
+                        verify_update_rollback(app3).await;
+                    });
+                    return;
+                }
+
                 let _ = app2.emit_to(
                     "main",
                     "dsh-progress",
@@ -3922,12 +6362,21 @@ pub fn run() {
                 );
                 let mut dsh = state.dsh.lock().unwrap();
                 match spawn_dsh(&paths, &boot_cfg) {
-                    Ok(child) => dsh.child = Some(child),
+                    Ok(child) => {
+                        *state.spawned_at.lock().unwrap() = Some(Instant::now());
+                        dsh.child = Some(child);
+                    }
                     Err(e) => {
                         log_line(&paths.log_file, &format!("spawn failed: {e}"));
                         let _ = app2.emit_to("main", "dsh-status", format!("启动失败：{e}"));
+                        // the health loop's respawn path retries (restart budget)
                     }
                 }
+                ensure_relay_client(&app2, &paths, &boot_cfg);
+                // Signal the health loop only after extraction (if any) and the
+                // initial spawn attempt are both done: its respawn path must
+                // never double-spawn against this bootstrap task.
+                state.runtime_ready.store(true, Ordering::SeqCst);
                 // a previous update may still be pending verification — resume
                 // it (no-op when there is no pending backup)
                 let app3 = app2.clone();
@@ -3939,7 +6388,6 @@ pub fn run() {
             // background loops
             tauri::async_runtime::spawn(health_check_loop(handle.clone()));
             tauri::async_runtime::spawn(periodic_loop(handle.clone()));
-            start_bridge_listener(handle.clone(), config.bridge_shell_port);
 
             setup_tray(&handle)?;
 
@@ -3973,6 +6421,13 @@ pub fn run() {
             if let Some(child) = dsh.child.as_mut() {
                 let _ = child.kill();
                 dsh.child = None;
+            }
+            // Kill the relay-client companion too — otherwise it survives
+            // as an orphan on port 38659 and blocks the next instance.
+            let mut relay = state.relay.lock().unwrap();
+            if let Some(mut child) = relay.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
     });
@@ -4017,7 +6472,7 @@ mod tests {
         .unwrap();
         fs::write(dsh.join("lib/bin.js"), "// old runtime marker").unwrap();
         let plugins = dir.join("plugins-src");
-        for name in ["dsh-desktop-bridge", "dsh-desktop-session-manager"] {
+        for name in DESKTOP_PLUGINS {
             let pkg = plugins.join(name);
             fs::create_dir_all(pkg.join("lib")).unwrap();
             fs::write(pkg.join("package.json"), format!(r#"{{"name":"{name}"}}"#)).unwrap();
@@ -4041,12 +6496,12 @@ mod tests {
 
         let tarball = make_tarball(&[
             (
-                "package/node_modules/@deepseek-ai/dsh/package.json",
-                r#"{"version":"0.9.9"}"#,
+                "package/package.json",
+                r#"{"name":"@deepseek-ai/dsh","version":"0.9.9"}"#,
             ),
             ("package/lib/bin.js", "// new runtime"),
         ]);
-        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, None, &tarball, &root.join("test.log"));
         assert!(result.is_ok(), "update failed: {result:?}");
 
         // new tree in place
@@ -4055,12 +6510,20 @@ mod tests {
                 .unwrap();
         assert!(manifest.contains("0.9.9"));
         // every desktop plugin restored into the new tree, lib/ files included
-        assert!(root.join("dsh/node_modules/dsh-desktop-bridge/index.js").exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-bridge/index.js")
+            .exists());
         assert!(root
             .join("dsh/node_modules/dsh-desktop-session-manager/index.js")
             .exists());
         assert!(root
             .join("dsh/node_modules/dsh-desktop-session-manager/lib/mod.js")
+            .exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-change-history/index.js")
+            .exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-change-history/lib/mod.js")
             .exists());
         // version.json bumped
         let vjson = fs::read_to_string(root.join("version.json")).unwrap();
@@ -4073,15 +6536,17 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.starts_with("dsh-old"))
             .collect();
-        assert_eq!(backups.len(), 1, "backup must be kept for verification: {backups:?}");
+        assert_eq!(
+            backups.len(),
+            1,
+            "backup must be kept for verification: {backups:?}"
+        );
         // pending-verification record written
         let info = read_pending_update(&root).expect("pending update record");
         assert_eq!(info.previous_version, "0.1.0-rc.5");
         assert!(PathBuf::from(&info.backup).exists());
         // backup contains the OLD runtime
-        assert!(PathBuf::from(&info.backup)
-            .join("lib/bin.js")
-            .exists());
+        assert!(PathBuf::from(&info.backup).join("lib/bin.js").exists());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4098,18 +6563,26 @@ mod tests {
         fs::remove_dir_all(root.join("plugins-src")).unwrap();
         let bridge = root.join("bridge-src");
         fs::create_dir_all(&bridge).unwrap();
-        fs::write(bridge.join("package.json"), r#"{"name":"dsh-desktop-bridge"}"#).unwrap();
+        fs::write(
+            bridge.join("package.json"),
+            r#"{"name":"dsh-desktop-bridge"}"#,
+        )
+        .unwrap();
         fs::write(bridge.join("index.js"), "// bridge marker").unwrap();
         fs::write(bridge.join("client.js"), "// bridge client marker").unwrap();
 
         let tarball = make_tarball(&[(
-            "package/node_modules/@deepseek-ai/dsh/package.json",
-            r#"{"version":"0.9.9"}"#,
+            "package/package.json",
+            r#"{"name":"@deepseek-ai/dsh","version":"0.9.9"}"#,
         )]);
-        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, None, &tarball, &root.join("test.log"));
         assert!(result.is_ok(), "update failed: {result:?}");
-        assert!(root.join("dsh/node_modules/dsh-desktop-bridge/index.js").exists());
-        assert!(root.join("dsh/node_modules/dsh-desktop-bridge/client.js").exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-bridge/index.js")
+            .exists());
+        assert!(root
+            .join("dsh/node_modules/dsh-desktop-bridge/client.js")
+            .exists());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4184,7 +6657,36 @@ mod tests {
         let mut on_entry = |_count: usize| {};
         extract_tarball(&archive, &dest, false, &mut on_entry).unwrap();
         assert!(dest.join("node").is_dir());
-        assert_eq!(fs::read_to_string(dest.join("node/node.exe")).unwrap(), "x\n");
+        assert_eq!(
+            fs::read_to_string(dest.join("node/node.exe")).unwrap(),
+            "x\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_file_if_different_skips_identical_content() {
+        let root = std::env::temp_dir().join(format!("dsh-copy-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let src = root.join("src.txt");
+        let dst = root.join("dst.txt");
+
+        // missing destination -> copied
+        fs::write(&src, "same").unwrap();
+        assert!(copy_file_if_different(&src, &dst).unwrap());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "same");
+
+        // identical content -> skipped, destination untouched
+        let before = fs::metadata(&dst).unwrap().modified().unwrap();
+        assert!(!copy_file_if_different(&src, &dst).unwrap());
+        assert_eq!(fs::metadata(&dst).unwrap().modified().unwrap(), before);
+
+        // changed content -> copied again
+        fs::write(&src, "changed").unwrap();
+        assert!(copy_file_if_different(&src, &dst).unwrap());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "changed");
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -4198,28 +6700,46 @@ mod tests {
         // no home layer -> full rows
         let full = desktop_patch_overlay(&root);
         for name in DESKTOP_PLUGINS {
-            assert!(full.contains(&format!("id: {name}")), "full overlay missing {name}");
+            assert!(
+                full.contains(&format!("id: {name}")),
+                "full overlay missing {name}"
+            );
         }
 
-        // home layer mounts both -> empty insert (no duplicate loader ids)
+        // home layer mounts every desktop plugin -> empty insert (no duplicate loader ids)
+        let all_ids = DESKTOP_PLUGINS
+            .iter()
+            .map(|name| format!("    - id: {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         fs::write(
             root.join("cordis.patch.yml"),
-            format!("- insert:\n    - id: {}\n    - id: {}\n", DESKTOP_PLUGINS[0], DESKTOP_PLUGINS[1]),
+            format!("- insert:\n{all_ids}\n"),
         )
         .unwrap();
         let empty = desktop_patch_overlay(&root);
-        assert!(empty.contains("- insert: []"), "expected empty insert, got: {empty}");
+        assert!(
+            empty.contains("- insert: []"),
+            "expected empty insert, got: {empty}"
+        );
         assert!(!empty.contains(&format!("id: {}", DESKTOP_PLUGINS[0])));
 
-        // home layer mounts only the bridge -> overlay fills the gap with full rows
+        // home layer mounts only the bridge -> overlay fills ONLY the missing gap
         fs::write(
             root.join("cordis.patch.yml"),
             format!("- insert:\n    - id: {}\n", DESKTOP_PLUGINS[0]),
         )
         .unwrap();
         let gap = desktop_patch_overlay(&root);
-        for name in DESKTOP_PLUGINS {
-            assert!(gap.contains(&format!("id: {name}")), "gap overlay missing {name}");
+        assert!(
+            !gap.contains(&format!("id: {}", DESKTOP_PLUGINS[0])),
+            "gap overlay must not duplicate the mounted bridge, got: {gap}"
+        );
+        for name in &DESKTOP_PLUGINS[1..] {
+            assert!(
+                gap.contains(&format!("id: {name}")),
+                "gap overlay missing {name}"
+            );
         }
 
         let _ = fs::remove_dir_all(&root);
@@ -4239,7 +6759,10 @@ mod tests {
 
         // identical -> skipped (mtime untouched)
         write_if_different(&target, "first\n");
-        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), first_modified);
+        assert_eq!(
+            fs::metadata(&target).unwrap().modified().unwrap(),
+            first_modified
+        );
 
         // different -> overwritten
         write_if_different(&target, "second\n");
@@ -4257,8 +6780,7 @@ mod tests {
             runtime_dir: root.join("runtime"),
             bundled_runtime_dir: root.join("runtime"),
             node_exe: root.join("runtime/node/node.exe"),
-            dsh_bin: root
-                .join("runtime/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+            dsh_bin: root.join("runtime/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"),
             dsh_home: root.join(".dsh"),
         }
     }
@@ -4281,6 +6803,87 @@ mod tests {
             .join("client.js")
     }
 
+    fn write_plugin_package(root: &Path, name: &str, marker: &str) {
+        let package = root.join(name);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            format!(r#"{{"name":"{name}","marker":"{marker}"}}"#),
+        )
+        .unwrap();
+        fs::write(package.join("index.js"), marker).unwrap();
+    }
+
+    #[test]
+    fn bundled_third_party_plugins_preserve_existing_user_packages() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-third-party-plugin-test-{}-user",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let bundled = paths.bundled_runtime_dir.join("plugins-src");
+        write_plugin_package(&bundled, VISION_PLUGIN, "bundled-vision");
+        write_plugin_package(&bundled, MARKET_PLUGIN, "bundled-market");
+        write_plugin_package(&bundled, "undici", "bundled-undici");
+
+        let user_modules = paths.dsh_home.join("profiles/node_modules");
+        write_plugin_package(&user_modules, VISION_PLUGIN, "user-vision");
+        write_plugin_package(&user_modules, MARKET_PLUGIN, "user-market");
+        write_plugin_package(&user_modules, "undici", "user-undici");
+
+        ensure_runtime_files(&paths);
+
+        assert_eq!(
+            fs::read_to_string(user_modules.join(VISION_PLUGIN).join("index.js")).unwrap(),
+            "user-vision"
+        );
+        assert_eq!(
+            fs::read_to_string(user_modules.join(MARKET_PLUGIN).join("index.js")).unwrap(),
+            "user-market"
+        );
+        assert_eq!(
+            fs::read_to_string(user_modules.join("undici/index.js")).unwrap(),
+            "user-undici"
+        );
+        assert!(!user_modules
+            .join(MARKET_PLUGIN)
+            .join("node_modules/undici")
+            .exists());
+        assert!(read_bundled_third_party_plugins(&paths).is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_third_party_plugins_refresh_only_desktop_owned_packages() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-third-party-plugin-test-{}-owned",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let bundled = paths.bundled_runtime_dir.join("plugins-src");
+        write_plugin_package(&bundled, VISION_PLUGIN, "bundled-v1");
+
+        ensure_runtime_files(&paths);
+        let deployed = paths
+            .dsh_home
+            .join("profiles/node_modules")
+            .join(VISION_PLUGIN)
+            .join("index.js");
+        assert_eq!(fs::read_to_string(&deployed).unwrap(), "bundled-v1");
+        assert!(read_bundled_third_party_plugins(&paths).contains(VISION_PLUGIN));
+
+        fs::write(bundled.join(VISION_PLUGIN).join("index.js"), "bundled-v2").unwrap();
+        ensure_runtime_files(&paths);
+        assert_eq!(fs::read_to_string(&deployed).unwrap(), "bundled-v2");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn settings_nav_icons_patch_applies_once_and_degrades() {
         let root = std::env::temp_dir().join(format!("dsh-navicons-test-{}", std::process::id()));
@@ -4295,11 +6898,14 @@ mod tests {
         patch_settings_nav_icons(&paths);
         let patched = fs::read_to_string(&bundle).unwrap();
         assert!(patched.contains(SETTINGS_NAV_ICONS_MARKER));
+        assert!(patched.contains(r#"id === "appearance""#));
         assert!(patched.contains(r#"id === "vision-any""#));
         assert!(patched.contains(r#"id === "session-manager""#));
         assert!(patched.contains(r#"id === "about""#));
+        assert!(patched.contains(r#"id === "change-history""#));
         assert!(patched.contains("IconListPenOutline16"));
         assert!(patched.contains("IconUserOutline16"));
+        assert!(patched.contains("IconBranchOutline16"));
         assert!(patched.contains(r#"viewBox: "0 0 16 16""#));
 
         // idempotent: second run leaves the file byte-identical
@@ -4322,12 +6928,13 @@ mod tests {
 
     #[test]
     fn vision_bundle_initializes_fresh_web_profile() {
-        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-fresh", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-vision-test-{}-fresh", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let paths = test_paths(&root);
 
-        ensure_web_profile_vision_bundle(&paths);
+        ensure_web_profile_bundles(&paths, &[VISION_PLUGIN, MARKET_PLUGIN]);
 
         let manifest: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(paths.dsh_home.join("profiles/web/package.json")).unwrap(),
@@ -4344,18 +6951,26 @@ mod tests {
             vec![
                 "@deepseek-ai/dsh-base",
                 "@deepseek-ai/dsh-web-app",
-                VISION_PLUGIN
+                VISION_PLUGIN,
+                MARKET_PLUGIN
             ]
         );
         // `dsh plugin` compatible profile scaffolding
-        assert!(paths.dsh_home.join("profiles/web/pnpm-workspace.yaml").exists());
-        assert!(paths.dsh_home.join("profiles/web/cordis.patch.yml").exists());
+        assert!(paths
+            .dsh_home
+            .join("profiles/web/pnpm-workspace.yaml")
+            .exists());
+        assert!(paths
+            .dsh_home
+            .join("profiles/web/cordis.patch.yml")
+            .exists());
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn vision_bundle_appends_to_existing_profile_once() {
-        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-append", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-vision-test-{}-append", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let paths = test_paths(&root);
@@ -4373,7 +6988,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_web_profile_vision_bundle(&paths);
+        ensure_web_profile_bundles(&paths, &[VISION_PLUGIN, MARKET_PLUGIN]);
         let manifest: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         let names: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
@@ -4388,7 +7003,8 @@ mod tests {
                 "@deepseek-ai/dsh-base",
                 "@deepseek-ai/dsh-web-app",
                 "some-plugin",
-                VISION_PLUGIN
+                VISION_PLUGIN,
+                MARKET_PLUGIN
             ]
         );
         // user's other manifest fields untouched
@@ -4396,14 +7012,15 @@ mod tests {
 
         // second run is a no-op: bytes identical, no duplicate entry
         let after_first = fs::read_to_string(&manifest_path).unwrap();
-        ensure_web_profile_vision_bundle(&paths);
+        ensure_web_profile_bundles(&paths, &[VISION_PLUGIN, MARKET_PLUGIN]);
         assert_eq!(fs::read_to_string(&manifest_path).unwrap(), after_first);
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn vision_bundle_creates_missing_dsh_path() {
-        let root = std::env::temp_dir().join(format!("dsh-vision-test-{}-nodsh", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("dsh-vision-test-{}-nodsh", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let paths = test_paths(&root);
@@ -4416,7 +7033,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_web_profile_vision_bundle(&paths);
+        ensure_web_profile_bundles(&paths, &[VISION_PLUGIN, MARKET_PLUGIN]);
         let manifest: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         let names: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
@@ -4425,7 +7042,7 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
-        assert_eq!(names, vec![VISION_PLUGIN]);
+        assert_eq!(names, vec![VISION_PLUGIN, MARKET_PLUGIN]);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4440,13 +7057,14 @@ mod tests {
         let manifest_path = web.join("package.json");
         fs::write(&manifest_path, "not json {{{").unwrap();
 
-        ensure_web_profile_vision_bundle(&paths); // must not panic
+        ensure_web_profile_bundles(&paths, &[VISION_PLUGIN, MARKET_PLUGIN]); // must not panic
         assert_eq!(fs::read_to_string(&manifest_path).unwrap(), "not json {{{");
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn update_state_survives_and_clears() {        let root = std::env::temp_dir().join(format!("dsh-upd-test-{}-d", std::process::id()));
+    fn update_state_survives_and_clears() {
+        let root = std::env::temp_dir().join(format!("dsh-upd-test-{}-d", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         make_runtime(&root, "0.1.0-rc.5");
@@ -4473,7 +7091,13 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         make_runtime(&root, "0.1.0-rc.5");
 
-        let result = apply_dsh_tarball_bytes(&root, &root, b"not a tarball at all", &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(
+            &root,
+            &root,
+            None,
+            b"not a tarball at all",
+            &root.join("test.log"),
+        );
         assert!(result.is_err());
 
         // old tree untouched
@@ -4493,9 +7117,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         make_runtime(&root, "0.1.0-rc.5");
 
-        // valid tar, but no @deepseek-ai/dsh/package.json → verification fails pre-swap
+        // valid tar, but no package manifest → verification fails before swap
         let tarball = make_tarball(&[("package/lib/bin.js", "// no manifest")]);
-        let result = apply_dsh_tarball_bytes(&root, &root, &tarball, &root.join("test.log"));
+        let result = apply_dsh_tarball_bytes(&root, &root, None, &tarball, &root.join("test.log"));
         assert!(result.is_err());
 
         assert_eq!(
@@ -4530,21 +7154,34 @@ agent-default-model:
         let providers = llm_providers_from_yaml(raw, None);
         // built-in DeepSeek + every pi-ai provider (any wire API)
         assert_eq!(providers.len(), 3);
-        let ds = providers.iter().find(|p| p.id == "deepseek-official").expect("built-in");
+        let ds = providers
+            .iter()
+            .find(|p| p.id == "deepseek-official")
+            .expect("built-in");
         assert_eq!(ds.base_url, "https://api.deepseek.com");
         assert_eq!(ds.key_env, "DEEPSEEK_API_KEY");
         assert_eq!(ds.api, "deepseek");
-        let pi = providers.iter().find(|p| p.id == "anixuilgpt").expect("pi provider");
+        let pi = providers
+            .iter()
+            .find(|p| p.id == "anixuilgpt")
+            .expect("pi provider");
         assert_eq!(pi.display_name, "CODEX");
         assert_eq!(pi.base_url, "https://apinebula.ai/v1");
         assert_eq!(pi.api, "openai-responses");
-        let relay = providers.iter().find(|p| p.id == "anthropic-relay").expect("relay");
+        let relay = providers
+            .iter()
+            .find(|p| p.id == "anthropic-relay")
+            .expect("relay");
         assert_eq!(relay.api, "anthropic-messages");
 
         // env override + malformed documents
         let with_env = llm_providers_from_yaml(raw, Some("https://ds.example.com/v1"));
         assert_eq!(
-            with_env.iter().find(|p| p.id == "deepseek-official").unwrap().base_url,
+            with_env
+                .iter()
+                .find(|p| p.id == "deepseek-official")
+                .unwrap()
+                .base_url,
             "https://ds.example.com/v1"
         );
         assert_eq!(llm_providers_from_yaml("not: [valid", None).len(), 1);
@@ -4552,15 +7189,128 @@ agent-default-model:
 
     #[test]
     fn adapter_matching_routes_by_api_and_host() {
-        assert_eq!(adapter_for("deepseek", "https://api.deepseek.com"), Adapter::DeepSeek);
-        assert_eq!(adapter_for("", "https://gateway.deepseek.io/v1"), Adapter::DeepSeek);
-        assert_eq!(adapter_for("openai-responses", "https://apinebula.ai/v1"), Adapter::OpenAIBilling);
-        assert_eq!(adapter_for("openai-chat", "https://x.example/v1"), Adapter::OpenAIBilling);
-        assert_eq!(adapter_for("", "https://api.openai-proxy.example/v1"), Adapter::OpenAIBilling);
-        assert_eq!(adapter_for("anthropic-messages", "https://relay.example/v1"), Adapter::Unsupported);
-        assert_eq!(adapter_for("google-genai", "https://x.example/v1"), Adapter::Unsupported);
+        assert_eq!(
+            adapter_for("deepseek", "https://api.deepseek.com"),
+            Adapter::DeepSeek
+        );
+        assert_eq!(
+            adapter_for("", "https://gateway.deepseek.io/v1"),
+            Adapter::DeepSeek
+        );
+        assert_eq!(
+            adapter_for("openai-responses", "https://apinebula.ai/v1"),
+            Adapter::OpenAIBilling
+        );
+        assert_eq!(
+            adapter_for("openai-chat", "https://x.example/v1"),
+            Adapter::OpenAIBilling
+        );
+        assert_eq!(
+            adapter_for("", "https://api.openai-proxy.example/v1"),
+            Adapter::OpenAIBilling
+        );
+        assert_eq!(
+            adapter_for("anthropic-messages", "https://relay.example/v1"),
+            Adapter::Unsupported
+        );
+        assert_eq!(
+            adapter_for("google-genai", "https://x.example/v1"),
+            Adapter::Unsupported
+        );
         // unknown combos probe at fetch time
-        assert_eq!(adapter_for("", "https://mystery.example/v1"), Adapter::Probe);
+        assert_eq!(
+            adapter_for("", "https://mystery.example/v1"),
+            Adapter::Probe
+        );
+    }
+
+    #[test]
+    fn generic_usage_extractor_accepts_common_response_shapes() {
+        let top_level = serde_json::json!({
+            "is_active": false,
+            "remaining": "12.50",
+            "unit": "CNY"
+        });
+        let usage = parse_generic_usage(&top_level).unwrap();
+        assert_eq!(usage.remaining, Some(12.5));
+        assert_eq!(usage.unit.as_deref(), Some("CNY"));
+        assert_eq!(usage.is_valid, Some(false));
+
+        let quota = serde_json::json!({
+            "isValid": true,
+            "quota": { "remaining": 8, "unit": "TOKENS" }
+        });
+        let usage = parse_generic_usage(&quota).unwrap();
+        assert_eq!(usage.remaining, Some(8.0));
+        assert_eq!(usage.unit.as_deref(), Some("TOKENS"));
+        assert_eq!(usage.is_valid, Some(true));
+
+        let balance = serde_json::json!({ "balance": 3.25 });
+        let usage = parse_generic_usage(&balance).unwrap();
+        assert_eq!(usage.remaining, Some(3.25));
+        assert_eq!(usage.unit.as_deref(), Some("USD"));
+        assert_eq!(usage.is_valid, Some(true));
+    }
+
+    #[test]
+    fn volcengine_hosts_route_to_volcengine_adapter() {
+        // Ark (火山方舟) hosts speak the openai wire protocol but their Ark API
+        // key can't read billing — they must route to the signed OpenAPI
+        // adapter, not the (absent) dashboard billing endpoints.
+        for base in [
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "https://ark.volcengine.com/api/v3",
+            "https://open.volcengineapi.com",
+        ] {
+            assert_eq!(adapter_for("openai", base), Adapter::Volcengine);
+            assert_eq!(adapter_for("", base), Adapter::Volcengine);
+        }
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc4231_vector() {
+        // RFC 4231 test case 1: key = 0x0b × 20, data = "Hi There".
+        let key = [0x0bu8; 20];
+        let digest = hmac_sha256(&key, b"Hi There");
+        assert_eq!(
+            hex::encode(&digest),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
+
+    #[test]
+    fn volc_balance_parses_query_balance_acct_response() {
+        // Shape returned by the 费用中心 OpenAPI billing.QueryBalanceAcct
+        // (PascalCase `Result` fields, amounts as strings).
+        let raw = r#"{
+            "ResponseMetadata": {
+                "RequestId": "0213XXXXX",
+                "Action": "QueryBalanceAcct",
+                "Version": "2022-01-01",
+                "Service": "billing",
+                "Region": "cn-north-1"
+            },
+            "Result": {
+                "AccountID": "2100XXXX",
+                "ArrearsBalance": "0",
+                "AvailableBalance": "123.45",
+                "CashBalance": "123.45",
+                "CreditLimit": "0",
+                "FreezeAmount": "0"
+            }
+        }"#;
+        let bal = parse_volc_balance(raw).expect("volc balance response must parse");
+        assert!(bal.is_available);
+        let info = bal.balance_infos.first().expect("one balance info");
+        assert_eq!(info.currency, "CNY");
+        assert_eq!(info.total_balance, "123.45");
+        assert_eq!(info.topped_up_balance, "123.45");
+        assert_eq!(info.granted_balance, "0.00");
+
+        // numeric amounts are coerced too (the SDK sometimes emits numbers)
+        let numeric = r#"{"Result":{"AvailableBalance":250,"CashBalance":250}}"#;
+        let bal2 = parse_volc_balance(numeric).expect("numeric balance must parse");
+        assert_eq!(bal2.balance_infos[0].total_balance, "250");
     }
 
     #[test]
@@ -4595,6 +7345,260 @@ agent-default-model:
         assert_eq!(
             out["balance_infos"][0]["granted_balance"],
             serde_json::json!("0.00")
+        );
+    }
+
+    #[test]
+    fn bailian_hosts_route_to_unsupported_adapter() {
+        // Alibaba Cloud hosts expose no key-accessible balance/billing API —
+        // the panel should show the friendly "unsupported" note, not a 404.
+        for base in [
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        ] {
+            assert_eq!(adapter_for("openai", base), Adapter::Unsupported);
+            assert_eq!(adapter_for("openai-responses", base), Adapter::Unsupported);
+        }
+    }
+
+    #[test]
+    fn ensure_bailian_provider_writes_once_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("dsh-bailian-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let settings = root.join("settings.yaml");
+        fs::write(&settings, "ui-theme:\n  preference: light\n").unwrap();
+
+        // first call creates the route
+        let outcome = ensure_bailian_provider(&settings).unwrap();
+        assert!(!outcome.existed);
+        assert!(outcome.removed.is_empty());
+        assert!(outcome.merged_models.is_empty());
+        let raw = fs::read_to_string(&settings).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let entry = &doc["llm-pi-ai"]["providers"]["qwen-token-plan-cn"];
+        assert_eq!(
+            entry["apiKeyEnv"],
+            serde_yaml::Value::String("QWEN_TOKEN_PLAN_CN_API_KEY".into())
+        );
+        assert_eq!(
+            entry["displayName"],
+            serde_yaml::Value::String("阿里云百炼".into())
+        );
+        // the desktop's provider panel discovers routes through baseURL
+        assert_eq!(
+            entry["baseURL"],
+            serde_yaml::Value::String(
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".into()
+            )
+        );
+        // unrelated sections survive the round-trip
+        assert_eq!(
+            doc["ui-theme"]["preference"],
+            serde_yaml::Value::String("light".into())
+        );
+
+        // second call reports existing and does not duplicate the entry
+        let outcome = ensure_bailian_provider(&settings).unwrap();
+        assert!(outcome.existed);
+        assert!(outcome.removed.is_empty());
+        let raw = fs::read_to_string(&settings).unwrap();
+        assert_eq!(raw.matches("qwen-token-plan-cn").count(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_bailian_provider_folds_token_plan_duplicates() {
+        let root = std::env::temp_dir().join(format!("dsh-bailian-fold-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let settings = root.join("settings.yaml");
+        // a hand-declared duplicate of the token-plan endpoint plus an
+        // unrelated provider that must survive untouched
+        fs::write(
+            &settings,
+            "llm-pi-ai:\n  providers:\n    aliyunbailian:\n      displayName: 阿里云百炼\n      apiKeyEnv: ALIYUNBAILIAN_API_KEY\n      api: openai-responses\n      baseURL: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1\n      models:\n        - id: qwen3.7-max\n        - id: wan2.7-image\n    othergateway:\n      displayName: Other\n      apiKeyEnv: OTHER_API_KEY\n      api: openai\n      baseURL: https://other.example.com/v1\n      models:\n        - id: gpt-1\n",
+        )
+        .unwrap();
+
+        let outcome = ensure_bailian_provider(&settings).unwrap();
+        assert!(!outcome.existed);
+        assert_eq!(outcome.removed, vec!["aliyunbailian".to_string()]);
+        // models from the folded route land on the catalog route
+        assert_eq!(
+            outcome.merged_models,
+            vec!["qwen3.7-max".to_string(), "wan2.7-image".to_string()]
+        );
+
+        let raw = fs::read_to_string(&settings).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let providers = &doc["llm-pi-ai"]["providers"];
+        assert!(providers.get("qwen-token-plan-cn").is_some());
+        assert!(providers.get("aliyunbailian").is_none());
+        assert!(providers.get("othergateway").is_some());
+        let models = providers["qwen-token-plan-cn"]["models"]
+            .as_sequence()
+            .unwrap();
+        let ids: Vec<&str> = models
+            .iter()
+            .filter_map(|m| m.as_mapping()?.get("id")?.as_str())
+            .collect();
+        assert_eq!(ids, vec!["qwen3.7-max", "wan2.7-image"]);
+
+        // a second run must be a no-op (idempotent merge)
+        let outcome = ensure_bailian_provider(&settings).unwrap();
+        assert!(outcome.existed);
+        assert!(outcome.removed.is_empty());
+        assert!(outcome.merged_models.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_bailian_provider_never_folds_catalog_routes() {
+        let root = std::env::temp_dir().join(format!("dsh-bailian-cat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let settings = root.join("settings.yaml");
+        // the international catalog route shares the token-plan host family —
+        // it is a catalog provider and must survive the fold untouched
+        fs::write(
+            &settings,
+            "llm-pi-ai:\n  providers:\n    qwen-token-plan:\n      displayName: Qwen Token Plan\n      apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY\n",
+        )
+        .unwrap();
+
+        let outcome = ensure_bailian_provider(&settings).unwrap();
+        assert!(outcome.removed.is_empty());
+        assert!(outcome.merged_models.is_empty());
+
+        let raw = fs::read_to_string(&settings).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let providers = &doc["llm-pi-ai"]["providers"];
+        assert!(providers.get("qwen-token-plan-cn").is_some());
+        assert!(providers.get("qwen-token-plan").is_some());
+        // the international route keeps its own profile untouched
+        assert_eq!(
+            providers["qwen-token-plan"]["apiKeyEnv"],
+            serde_yaml::Value::String("QWEN_TOKEN_PLAN_API_KEY".into())
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ipc_wire_names_match_the_js_consumers() {
+        // The bridge panel and the settings window read specific key spellings;
+        // serde rename attributes must keep producing them.
+        let status = serde_json::to_value(&ProviderStatus {
+            id: "qwen-token-plan-cn".to_string(),
+            display_name: "阿里云百炼".to_string(),
+            kind: "unsupported".to_string(),
+            configured: true,
+            balance: None,
+            usage: None,
+            error: None,
+        })
+        .unwrap();
+        // the panel reads display_name / kind / configured
+        assert_eq!(status["display_name"], "阿里云百炼");
+        assert_eq!(status["kind"], "unsupported");
+        assert_eq!(status["configured"], true);
+
+        let usage = serde_json::to_value(&ProviderUsage {
+            remaining: None,
+            unit: None,
+            is_valid: Some(true),
+            total_usage_usd: Some(1.0),
+            soft_limit_usd: Some(2.0),
+            hard_limit_usd: None,
+            has_payment_method: Some(true),
+        })
+        .unwrap();
+        // the panel reads total_usage_usd / soft_limit_usd / has_payment_method
+        assert_eq!(usage["total_usage_usd"], 1.0);
+        assert_eq!(usage["soft_limit_usd"], 2.0);
+        assert_eq!(usage["has_payment_method"], true);
+    }
+
+    #[test]
+    fn relay_url_falls_back_to_the_public_default() {
+        // Fresh config: no custom relay stored -> the public default is used.
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            effective_relay_url(&cfg).as_deref(),
+            Some(DEFAULT_RELAY_URL)
+        );
+        assert!(!custom_relay_set(&cfg));
+
+        // A stored custom URL wins and is flagged as custom.
+        cfg.remote_relay_url = Some("wss://relay.example.com".to_string());
+        assert_eq!(
+            effective_relay_url(&cfg).as_deref(),
+            Some("wss://relay.example.com")
+        );
+        assert!(custom_relay_set(&cfg));
+
+        // Entry / HTTP base derive from the effective (custom) URL.
+        cfg.remote_device_id = Some("my-pc".to_string());
+        assert_eq!(
+            remote_entry_url(&cfg).as_deref(),
+            Some("https://my-pc.relay.example.com/")
+        );
+        assert_eq!(
+            relay_http_url(&cfg).as_deref(),
+            Some("https://relay.example.com")
+        );
+
+        // Clearing the custom URL reverts everything to the public default.
+        cfg.remote_relay_url = None;
+        assert!(!custom_relay_set(&cfg));
+        assert_eq!(
+            effective_relay_url(&cfg).as_deref(),
+            Some(DEFAULT_RELAY_URL)
+        );
+        assert_eq!(
+            remote_entry_url(&cfg).as_deref(),
+            Some("https://my-pc.remote.anixuil.com/")
+        );
+        assert_eq!(
+            relay_http_url(&cfg).as_deref(),
+            Some("https://remote.anixuil.com")
+        );
+    }
+
+    #[test]
+    fn remote_snapshot_exposes_custom_and_default_relay() {
+        let cfg = AppConfig {
+            remote_enabled: true,
+            remote_relay_url: Some("wss://relay.example.com".to_string()),
+            remote_device_id: Some("my-pc".to_string()),
+            ..AppConfig::default()
+        };
+        let snap = remote_snapshot(&cfg, true, true);
+        let value = serde_json::to_value(&snap).unwrap();
+        // the UI reads camelCase spellings
+        assert_eq!(value["relayUrl"], "wss://relay.example.com");
+        assert_eq!(value["customRelay"], true);
+        assert_eq!(value["defaultRelayUrl"], DEFAULT_RELAY_URL);
+        assert_eq!(
+            snap.entry.as_deref(),
+            Some("https://my-pc.relay.example.com/")
+        );
+
+        // Without a custom URL the snapshot reports the default and entry
+        // based on the public relay.
+        let default_cfg = AppConfig {
+            remote_enabled: true,
+            remote_relay_url: None,
+            remote_device_id: Some("my-pc".to_string()),
+            ..AppConfig::default()
+        };
+        let snap2 = remote_snapshot(&default_cfg, false, false);
+        let value2 = serde_json::to_value(&snap2).unwrap();
+        assert_eq!(value2["relayUrl"], DEFAULT_RELAY_URL);
+        assert_eq!(value2["customRelay"], false);
+        assert_eq!(
+            snap2.entry.as_deref(),
+            Some("https://my-pc.remote.anixuil.com/")
         );
     }
 }

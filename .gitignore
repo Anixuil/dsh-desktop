@@ -2,6 +2,8 @@
 node_modules/
 target/
 runtime/
+scripts/relay/.deploy/
+relay-state.json
 src-tauri/gen/
 src-tauri/target/
 *.log
