@@ -69,12 +69,19 @@ function resolveChange(callId) {
   return request(`/resolve?callId=${encodeURIComponent(callId)}`)
 }
 
+function getTurnApproval(sessionId, turn) {
+  return request(`/turn?sessionId=${encodeURIComponent(sessionId)}&turn=${encodeURIComponent(turn)}`)
+}
+
 /**
  * Read the current on-disk text of a file for the built-in viewer.
  * @returns {Promise<{ok:boolean, path:string, content:string, bytes:number, totalLines:number|null, lang:string|null, truncated:boolean}>}
  */
-function readFile(path) {
-  return request(`/read?path=${encodeURIComponent(path)}`)
+function readFile(path, changeId) {
+  const change = typeof changeId === 'string' && changeId !== ''
+    ? `&changeId=${encodeURIComponent(changeId)}`
+    : ''
+  return request(`/read?path=${encodeURIComponent(path)}${change}`)
 }
 
 /** @returns {Promise<{ok:boolean, reviewed:boolean}>} */
@@ -82,12 +89,20 @@ function reviewChange(id, reviewed) {
   return request('/review', { method: 'POST', body: JSON.stringify({ id, reviewed }) })
 }
 
+function approveChange(id) {
+  return request('/approve', { method: 'POST', body: JSON.stringify({ id }) })
+}
+
+function approveTurn(sessionId, turn) {
+  return request('/approve-turn', { method: 'POST', body: JSON.stringify({ sessionId, turn }) })
+}
+
 /** @returns {Promise<{ok:boolean, action:string, diverged?:boolean}>} */
 function rollbackChange(id) {
   return request('/rollback', { method: 'POST', body: JSON.stringify({ id }) })
 }
 
-module.exports = { ApiError, listChanges, resolveChange, readFile, reviewChange, rollbackChange }
+module.exports = { ApiError, listChanges, resolveChange, getTurnApproval, readFile, reviewChange, approveChange, approveTurn, rollbackChange }
 
 },
 "./locales.js": function (require, module, exports) {
@@ -107,6 +122,9 @@ const zh = {
   'row.updated': '覆盖',
   'row.diffLines': '+{added} / -{removed}',
   'row.diffOmitted': 'diff 过大已省略',
+  'row.status.pending': '待审核',
+  'row.status.approved': '已通过',
+  'row.status.rejected': '已驳回',
   'row.rollback': '回滚此修改',
   'row.rollback.noBaseline': '无法回滚（改动前内容不可用）',
   'row.rollback.created': '回滚为删除文件',
@@ -133,13 +151,29 @@ const zh = {
   'inline.confirm.ok': '回滚',
   'inline.confirm.cancel': '取消',
   'viewer.title': '文件查看器',
+  'viewer.resize': '调整文件查看器宽度',
   'viewer.close': '关闭',
   'viewer.copy': '复制内容',
   'viewer.openExternal': '用系统应用打开',
   'viewer.loading': '正在读取文件…',
   'viewer.error': '读取失败：{error}',
   'viewer.truncated': '文件过大，仅显示末尾约 1 MB 内容',
+  'viewer.snapshot': '原文件已不存在，正在显示本次改动保存的历史快照。',
   'viewer.lines': '{count} 行',
+  'approval.summary': '已编辑 {count} 个文件',
+  'approval.review': '审查',
+  'approval.approveAll': '审核全部',
+  'approval.title': '变更审批',
+  'approval.files': '{count} 个文件',
+  'approval.empty': '此回复没有可审批的文件变更。',
+  'approval.approve': '审核通过',
+  'approval.reject': '驳回并回滚',
+  'approval.noBaseline': '无法回滚',
+  'approval.close': '关闭',
+  'approval.confirm.title': '驳回并回滚此修改？',
+  'approval.confirm.desc': '将把“{path}”恢复到本次 AI 改动之前的内容。',
+  'approval.confirm.ok': '驳回并回滚',
+  'approval.confirm.cancel': '取消',
 };
 
 const en = {
@@ -156,6 +190,9 @@ const en = {
   'row.updated': 'updated',
   'row.diffLines': '+{added} / -{removed}',
   'row.diffOmitted': 'diff omitted (too large)',
+  'row.status.pending': 'Pending',
+  'row.status.approved': 'Approved',
+  'row.status.rejected': 'Rejected',
   'row.rollback': 'Revert this change',
   'row.rollback.noBaseline': 'Cannot revert (pre-change content unavailable)',
   'row.rollback.created': 'Revert (delete file)',
@@ -182,13 +219,29 @@ const en = {
   'inline.confirm.ok': 'Revert',
   'inline.confirm.cancel': 'Cancel',
   'viewer.title': 'File Viewer',
+  'viewer.resize': 'Resize file viewer',
   'viewer.close': 'Close',
   'viewer.copy': 'Copy content',
   'viewer.openExternal': 'Open with system app',
   'viewer.loading': 'Reading file…',
   'viewer.error': 'Failed to read: {error}',
   'viewer.truncated': 'File too large; showing the last ~1 MB',
+  'viewer.snapshot': 'The original file no longer exists; showing the saved snapshot from this change.',
   'viewer.lines': '{count} lines',
+  'approval.summary': 'Edited {count} files',
+  'approval.review': 'Review',
+  'approval.approveAll': 'Approve all',
+  'approval.title': 'Change review',
+  'approval.files': '{count} files',
+  'approval.empty': 'This response has no reviewable file changes.',
+  'approval.approve': 'Approve',
+  'approval.reject': 'Reject and revert',
+  'approval.noBaseline': 'Cannot revert',
+  'approval.close': 'Close',
+  'approval.confirm.title': 'Reject and revert this change?',
+  'approval.confirm.desc': 'Restore “{path}” to its content before this AI change.',
+  'approval.confirm.ok': 'Reject and revert',
+  'approval.confirm.cancel': 'Cancel',
 };
 
 module.exports = { zh, en };
@@ -200,8 +253,7 @@ const { useCallback, useEffect, useMemo, useState } = require('react')
 const api = require('./api.js')
 
 /**
- * Loads the host change list and owns the rollback action with optimistic
- * local updates (the reverted change is dropped from the list on success).
+ * Loads the host change list and owns approval / rejection state updates.
  */
 function useChangeHistory() {
   const [changes, setChanges] = useState([])
@@ -236,8 +288,23 @@ function useChangeHistory() {
     setError(null)
     try {
       const outcome = await api.rollbackChange(id)
-      setChanges((list) => list.filter((row) => row.id !== id))
+      setChanges((list) => list.map((row) => row.id === id ? { ...row, status: 'rejected', reviewed: false } : row))
       setNotice({ kind: outcome.diverged ? 'diverged' : 'rolledBack' })
+      return true
+    } catch (err) {
+      setError(err)
+      return false
+    } finally {
+      setBusyId(null)
+    }
+  }, [])
+
+  const approve = useCallback(async (id) => {
+    setBusyId(id)
+    setError(null)
+    try {
+      await api.approveChange(id)
+      setChanges((list) => list.map((row) => row.id === id ? { ...row, status: 'approved', reviewed: true } : row))
       return true
     } catch (err) {
       setError(err)
@@ -258,7 +325,7 @@ function useChangeHistory() {
     return Array.from(map.values())
   }, [changes])
 
-  return { changes, groups, loading, error, busyId, notice, refresh, rollback, clearNotice }
+  return { changes, groups, loading, error, busyId, notice, refresh, rollback, approve, clearNotice }
 }
 
 module.exports = { useChangeHistory }
@@ -324,8 +391,17 @@ function ensureStyles() {
 .chx_actionReviewed, .chx_actionReviewed:not(:disabled) { color: var(--dsw-alias-state-success-primary); }
 
 /* ——— built-in side file viewer ——— */
-.chx_viewerBackdrop { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: flex-end; background: rgba(0, 0, 0, 0.32); pointer-events: auto; }
-.chx_viewerPanel { position: relative; box-sizing: border-box; height: 100%; width: min(560px, 88vw); background: var(--dsw-alias-bg-base); border-left: 1px solid var(--dsw-alias-border-l2); box-shadow: var(--dsw-shadow-lv3); display: flex; flex-direction: column; overflow: hidden; }
+.chx_viewerBackdrop { --chx-ease-out: cubic-bezier(0.23, 1, 0.32, 1); --chx-ease-drawer: cubic-bezier(0.32, 0.72, 0, 1); position: fixed; inset: 0; z-index: 90; display: flex; justify-content: flex-end; background: rgba(0, 0, 0, 0.32); opacity: 1; pointer-events: auto; transition: opacity 180ms var(--chx-ease-out); }
+.chx_viewerPanel { position: relative; box-sizing: border-box; height: 100%; width: min(560px, calc(100vw - 48px)); min-width: min(360px, calc(100vw - 48px)); max-width: calc(100vw - 48px); background: var(--dsw-alias-bg-base); border-left: 1px solid var(--dsw-alias-border-l2); box-shadow: var(--dsw-shadow-lv3); display: flex; flex-direction: column; overflow: hidden; opacity: 1; transform: translateX(0); will-change: transform; transition: transform 240ms var(--chx-ease-drawer); }
+.chx_viewerBackdrop.is-closing { opacity: 0; pointer-events: none; }
+.chx_viewerBackdrop.is-closing .chx_viewerPanel { transform: translateX(100%); }
+@starting-style { .chx_viewerBackdrop { opacity: 0; } .chx_viewerPanel { transform: translateX(100%); } }
+.chx_viewerResizeHandle { position: absolute; z-index: 1; inset: 0 auto 0 -5px; width: 10px; cursor: col-resize; touch-action: none; outline: none; }
+.chx_viewerResizeHandle::after { content: ""; position: absolute; inset: 0 auto 0 4px; width: 2px; background: var(--dsw-alias-state-business-primary); opacity: 0; transition: opacity 120ms ease; }
+.chx_viewerResizeHandle:hover::after, .chx_viewerResizeHandle:focus-visible::after, .chx_viewerPanel.is-resizing .chx_viewerResizeHandle::after { opacity: 1; }
+.chx_viewerResizeHandle:focus-visible::after { box-shadow: 0 0 0 1px var(--dsw-alias-bg-base); }
+.chx_viewerPanel.is-resizing, .chx_viewerPanel.is-resizing * { user-select: none; }
+html.chx_viewerResizing, html.chx_viewerResizing * { cursor: col-resize !important; }
 .chx_viewerHeader { box-sizing: border-box; border-bottom: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); flex: none; justify-content: space-between; align-items: center; gap: 8px; min-height: 48px; padding: 8px 12px; display: flex; }
 .chx_viewerTitle { min-width: 0; align-items: center; gap: 8px; display: flex; }
 .chx_viewerTitleIcon { color: var(--dsw-alias-state-business-primary); flex: none; display: inline-flex; }
@@ -334,22 +410,55 @@ function ensureStyles() {
 .chx_viewerIconBtn { width: 26px; height: 26px; color: var(--dsw-alias-label-tertiary); cursor: pointer; background: 0 0; border: none; border-radius: 999px; justify-content: center; align-items: center; padding: 0; display: inline-flex; }
 .chx_viewerIconBtn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .chx_viewerIconBtn:disabled { opacity: 0.45; cursor: default; }
-.chx_viewerBody { flex: 1; min-height: 0; overflow: auto; background: var(--dsw-alias-markdown-code-block); --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); }
+.chx_viewerBody { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--dsw-alias-markdown-code-block); --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); }
 .chx_viewerNotice { padding: 10px 14px; color: var(--dsw-alias-state-warn-label); border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 12px; line-height: 18px; background: var(--dsw-alias-bg-base); }
 .chx_viewerLoading, .chx_viewerError { padding: 22px 16px; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
 .chx_viewerError { color: var(--dsw-alias-state-error-primary); }
-.chx_viewerLines { padding: 10px 0; font-family: var(--ds-font-family-code, ui-monospace, Consolas, monospace); font-size: 12px; line-height: 18px; }
-.chx_viewerLine { display: grid; grid-template-columns: 62px 1fr; min-width: max-content; }
+.chx_viewerLines { box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ds-font-family-code, ui-monospace, Consolas, monospace); font-size: 12px; line-height: 18px; }
+.chx_viewerLine { display: grid; grid-template-columns: 62px minmax(0, 1fr); min-width: 0; }
 .chx_viewerLine:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .chx_viewerGutter { text-align: right; color: var(--dsw-alias-label-caption); padding-right: 16px; user-select: none; }
-.chx_viewerText { color: var(--dsw-alias-label-primary); white-space: pre; padding-right: 20px; }
+.chx_viewerText { min-width: 0; color: var(--dsw-alias-label-primary); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; padding-right: 20px; }
 .chx_viewerFooter { box-sizing: border-box; border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); flex: none; align-items: center; gap: 14px; min-height: 30px; padding: 6px 12px; display: flex; color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 16px; }
 .chx_viewerMeta { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
+/* ——— per-turn approval workspace ——— */
+.chx_turnSummary { border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-base); margin-top: 14px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; }
+.chx_turnSummaryLead { min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
+.chx_turnSummaryLead span, .chx_turnSummaryFiles { color: var(--dsw-alias-label-tertiary); font-family: var(--ds-font-family-code, ui-monospace, Consolas, monospace); font-size: 12px; line-height: 18px; }
+.chx_turnSummaryFiles { grid-column: 1 / 2; display: flex; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.chx_turnSummaryFiles span { overflow: hidden; text-overflow: ellipsis; }
+.chx_turnSummaryActions { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 6px; }
+.chx_approvalBackdrop { position: fixed; inset: 0; z-index: 95; padding: 32px; background: rgba(0, 0, 0, 0.52); display: flex; justify-content: center; align-items: center; }
+.chx_approvalPanel { width: min(1180px, 100%); height: min(760px, 100%); border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-base); box-shadow: var(--dsw-shadow-lv3); display: flex; flex-direction: column; overflow: hidden; }
+.chx_approvalHeader { min-height: 58px; padding: 10px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2); display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.chx_approvalTitle { margin: 0; color: var(--dsw-alias-label-primary); font-size: 16px; line-height: 22px; font-weight: 600; }
+.chx_approvalMeta { margin: 2px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.chx_approvalHeaderActions, .chx_approvalFileActions { display: flex; align-items: center; gap: 8px; }
+.chx_approvalContent { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); }
+.chx_approvalList { overflow: auto; border-right: 1px solid var(--dsw-alias-border-l2); padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.chx_approvalFile { width: 100%; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; padding: 7px 8px; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
+.chx_approvalFile:hover, .chx_approvalFile.is-selected { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.chx_approvalFile:focus-visible, .chx_approvalFileActions button:focus-visible { outline: 2px solid var(--dsw-alias-border-l3); outline-offset: 1px; }
+.chx_approvalFileName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code, ui-monospace, Consolas, monospace); font-size: 12px; line-height: 18px; }
+.chx_approvalFileStats { grid-column: 1 / 2; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.chx_approvalStatus { align-self: center; border-radius: 5px; padding: 1px 5px; font-size: 10px; line-height: 15px; background: var(--dsw-alias-interactive-bg-hover); }
+.chx_approvalStatus.is-approved { color: var(--dsw-alias-state-success-primary); }
+.chx_approvalStatus.is-rejected { color: var(--dsw-alias-state-error-primary); }
+.chx_approvalStatus.is-pending { color: var(--dsw-alias-state-warn-label); }
+.chx_approvalDiff { min-width: 0; overflow: auto; padding: 12px; background: var(--dsw-alias-markdown-code-block); }
+.chx_approvalFileHead { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); }
+.chx_approvalDisabled { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.chx_approvalEmpty { margin: auto; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+@media (max-width: 720px) { .chx_viewerPanel { width: 100% !important; min-width: 0; max-width: 100%; } .chx_viewerResizeHandle { display: none; } }
+@media (max-width: 720px) { .chx_approvalBackdrop { padding: 10px; } .chx_approvalContent { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 32%) minmax(0, 1fr); } .chx_approvalList { border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); } .chx_turnSummary { grid-template-columns: 1fr; } .chx_turnSummaryActions { grid-row: auto; grid-column: 1; } }
+@media (prefers-reduced-motion: reduce) { .chx_viewerResizeHandle::after { transition: none; } .chx_viewerBackdrop { transition: opacity 140ms var(--chx-ease-out); } .chx_viewerPanel { transform: none; will-change: opacity; transition: opacity 140ms var(--chx-ease-out); } .chx_viewerBackdrop.is-closing .chx_viewerPanel { opacity: 0; transform: none; } @starting-style { .chx_viewerBackdrop { opacity: 0; } .chx_viewerPanel { opacity: 0; transform: none; } } }
 `
   document.head.appendChild(style)
 }
 
 module.exports = { ensureStyles }
+
 },
 "./message.js": function (require, module, exports) {
 const { showMessage } = (() => { const ROOT_ID = 'dsh-desktop-message-root'; function showMessage(text) { if (typeof document === 'undefined' || text == null || text === '') return; let root = document.getElementById(ROOT_ID); if (root === null) { root = document.createElement('div'); root.id = ROOT_ID; root.className = 'dsh_messageRoot'; root.setAttribute('aria-live', 'polite'); document.body.appendChild(root); } if (document.getElementById('dsh-desktop-message-style') === null) { const style = document.createElement('style'); style.id = 'dsh-desktop-message-style'; style.textContent = '.dsh_messageRoot{position:fixed;z-index:10000;top:20px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:10px}.dsh_message{box-sizing:border-box;min-height:40px;padding:10px 12px;border:1px solid var(--dsw-alias-state-error-primary,#f56c6c);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#303133);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px;pointer-events:auto;display:flex;gap:8px}.dsh_messageText{flex:1;overflow-wrap:anywhere}.dsh_messageClose{border:0;background:transparent;cursor:pointer;font:inherit;font-size:18px;line-height:18px;padding:0}.dsh_message{animation:dsh-message-in .2s ease-out}@keyframes dsh-message-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}'; document.head.appendChild(style); } const item = document.createElement('div'); item.className = 'dsh_message'; item.setAttribute('role', 'alert'); const content = document.createElement('span'); content.className = 'dsh_messageText'; content.textContent = String(text); const close = document.createElement('button'); close.className = 'dsh_messageClose'; close.type = 'button'; close.setAttribute('aria-label', '关闭提示'); close.textContent = '×'; const dismiss = () => item.remove(); close.addEventListener('click', dismiss); item.append(content, close); root.appendChild(item); window.setTimeout(dismiss, 4500); } return { showMessage }; })();
@@ -367,11 +476,38 @@ module.exports = { showMessage };
 // edit+save surface can be added later without reshaping the viewer: swap the
 // read body for an editor, drive it with the same content, and wire a host
 // save route (a `saveFileContent` api next to `readFile`).
-const { createElement: el, useEffect, useState, useSyncExternalStore } = require('react')
+const { createElement: el, useEffect, useRef, useState, useSyncExternalStore } = require('react')
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
 const api = require('./api.js')
 const { ensureStyles } = require('./styles.js')
 const { showMessage } = require('./message.js')
+
+const VIEWER_WIDTH_KEY = 'dsh-desktop-change-history:viewer-width'
+const DEFAULT_VIEWER_WIDTH = 560
+const MIN_VIEWER_WIDTH = 360
+const VIEWPORT_GUTTER = 48
+const VIEWER_EXIT_MS = 240
+
+function viewerWidthBounds() {
+  const viewportWidth = typeof window === 'undefined' ? DEFAULT_VIEWER_WIDTH + VIEWPORT_GUTTER : window.innerWidth
+  const max = Math.max(280, viewportWidth - VIEWPORT_GUTTER)
+  return { min: Math.min(MIN_VIEWER_WIDTH, max), max }
+}
+
+function clampViewerWidth(width) {
+  const { min, max } = viewerWidthBounds()
+  const numeric = Number(width)
+  return Math.min(max, Math.max(min, Number.isFinite(numeric) ? numeric : DEFAULT_VIEWER_WIDTH))
+}
+
+function storedViewerWidth() {
+  try {
+    const stored = window.localStorage?.getItem(VIEWER_WIDTH_KEY)
+    return stored === null || stored === undefined ? clampViewerWidth(DEFAULT_VIEWER_WIDTH) : clampViewerWidth(stored)
+  } catch {
+    return clampViewerWidth(DEFAULT_VIEWER_WIDTH)
+  }
+}
 
 // ——— shared store (module singleton, one per bundle) ———
 let state = {
@@ -385,6 +521,7 @@ let state = {
   totalLines: null,
   lang: null,
   truncated: false,
+  snapshot: false,
   openExternal: null,
 }
 const listeners = new Set()
@@ -395,7 +532,7 @@ const subscribe = (fn) => { listeners.add(fn); return () => { listeners.delete(f
 let readToken = 0
 
 /** Open the viewer for `path`; `openFile` keeps the system-open fallback. */
-function openFileViewer(path, openFile) {
+function openFileViewer(path, openFile, changeId) {
   readToken += 1
   const token = readToken
   state = {
@@ -410,10 +547,11 @@ function openFileViewer(path, openFile) {
     totalLines: null,
     lang: null,
     truncated: false,
+    snapshot: false,
     openExternal: typeof openFile === 'function' ? openFile : null,
   }
   notify()
-  api.readFile(path).then(
+  api.readFile(path, changeId).then(
     (res) => {
       if (token !== readToken) return
       state = {
@@ -424,6 +562,10 @@ function openFileViewer(path, openFile) {
         totalLines: typeof res.totalLines === 'number' ? res.totalLines : null,
         lang: res.lang ?? null,
         truncated: res.truncated === true,
+        snapshot: res.snapshot === true,
+        // A removed file cannot be opened by the operating system; omit the
+        // external-open action while its recorded snapshot is on screen.
+        openExternal: res.snapshot === true ? null : state.openExternal,
       }
       notify()
     },
@@ -437,7 +579,15 @@ function openFileViewer(path, openFile) {
 
 function closeFileViewer() {
   readToken += 1
-  state = { ...state, open: false, path: null, content: null, error: null, openExternal: null }
+  // Keep the current content mounted until the drawer's exit transition ends.
+  // A new open interrupts this state immediately and reuses the same surface.
+  state = { ...state, open: false, loading: false }
+  notify()
+}
+
+function finalizeClosedFileViewer() {
+  if (state.open) return
+  state = { ...state, path: null, content: null, bytes: 0, totalLines: null, lang: null, truncated: false, snapshot: false, error: null, openExternal: null }
   notify()
 }
 
@@ -470,10 +620,33 @@ function CodeView({ content, totalLines, truncated }) {
 function FileViewerOverlay({ t }) {
   const snap = useFileViewer()
   const [copied, setCopied] = useState(false)
+  const [rendered, setRendered] = useState(snap.open)
+  const [closing, setClosing] = useState(false)
+  const panelRef = useRef(null)
+  const resizeHandleRef = useRef(null)
+  const dragRef = useRef(null)
 
   useEffect(() => {
     ensureStyles()
   }, [])
+
+  useEffect(() => {
+    if (snap.open) {
+      setRendered(true)
+      setClosing(false)
+      return
+    }
+    if (!rendered) return
+
+    if (panelRef.current?.contains(document.activeElement)) document.activeElement.blur()
+    setClosing(true)
+    const timer = window.setTimeout(() => {
+      setRendered(false)
+      setClosing(false)
+      finalizeClosedFileViewer()
+    }, VIEWER_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [snap.open, rendered])
 
   useEffect(() => {
     if (!snap.open) return
@@ -483,10 +656,38 @@ function FileViewerOverlay({ t }) {
   }, [snap.open])
 
   useEffect(() => {
+    if (!snap.open) return
+
+    const resizeTo = (width, persist = false) => {
+      const next = Math.round(clampViewerWidth(width))
+      if (panelRef.current !== null) panelRef.current.style.width = `${next}px`
+      if (resizeHandleRef.current !== null) {
+        const { min, max } = viewerWidthBounds()
+        resizeHandleRef.current.setAttribute('aria-valuemin', String(Math.round(min)))
+        resizeHandleRef.current.setAttribute('aria-valuemax', String(Math.round(max)))
+        resizeHandleRef.current.setAttribute('aria-valuenow', String(next))
+      }
+      if (persist) {
+        try { window.localStorage?.setItem(VIEWER_WIDTH_KEY, String(next)) } catch {}
+      }
+      return next
+    }
+
+    resizeTo(storedViewerWidth())
+    const onViewportResize = () => resizeTo(panelRef.current?.getBoundingClientRect().width ?? DEFAULT_VIEWER_WIDTH, true)
+    window.addEventListener('resize', onViewportResize)
+    return () => {
+      window.removeEventListener('resize', onViewportResize)
+      dragRef.current = null
+      document.documentElement.classList.remove('chx_viewerResizing')
+    }
+  }, [snap.open])
+
+  useEffect(() => {
     if (snap.error !== null) showMessage(t('viewer.error', { error: String(snap.error?.message ?? snap.error) }))
   }, [snap.error, t])
 
-  if (!snap.open) return null
+  if (!rendered) return null
 
   const copy = async () => {
     if (snap.content === null) return
@@ -501,6 +702,65 @@ function FileViewerOverlay({ t }) {
     if (typeof snap.openExternal === 'function' && typeof snap.path === 'string') snap.openExternal(snap.path)
   }
 
+  const resizeTo = (width, persist = false) => {
+    const next = Math.round(clampViewerWidth(width))
+    if (panelRef.current !== null) panelRef.current.style.width = `${next}px`
+    if (resizeHandleRef.current !== null) resizeHandleRef.current.setAttribute('aria-valuenow', String(next))
+    if (persist) {
+      try { window.localStorage?.setItem(VIEWER_WIDTH_KEY, String(next)) } catch {}
+    }
+    return next
+  }
+
+  const startResize = (event) => {
+    if (event.button !== 0 || panelRef.current === null) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: panelRef.current.getBoundingClientRect().width,
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    panelRef.current.classList.add('is-resizing')
+    document.documentElement.classList.add('chx_viewerResizing')
+  }
+
+  const moveResize = (event) => {
+    const drag = dragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    resizeTo(drag.startWidth + drag.startX - event.clientX)
+  }
+
+  const finishResize = (event) => {
+    const drag = dragRef.current
+    if (drag === null || drag.pointerId !== event.pointerId) return
+    dragRef.current = null
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
+    panelRef.current?.classList.remove('is-resizing')
+    document.documentElement.classList.remove('chx_viewerResizing')
+    resizeTo(panelRef.current?.getBoundingClientRect().width ?? DEFAULT_VIEWER_WIDTH, true)
+  }
+
+  const resizeWithKeyboard = (event) => {
+    if (panelRef.current === null) return
+    const { min, max } = viewerWidthBounds()
+    const current = panelRef.current.getBoundingClientRect().width
+    const step = event.shiftKey ? 64 : 16
+    const next = event.key === 'ArrowLeft'
+      ? current + step
+      : event.key === 'ArrowRight'
+        ? current - step
+        : event.key === 'Home'
+          ? min
+          : event.key === 'End'
+            ? max
+            : null
+    if (next === null) return
+    event.preventDefault()
+    resizeTo(next, true)
+  }
+
   const metaBits = []
   if (typeof snap.bytes === 'number' && snap.bytes > 0) {
     metaBits.push(snap.bytes >= 1024 * 1024 ? `${(snap.bytes / 1024 / 1024).toFixed(1)} MB` : `${(snap.bytes / 1024).toFixed(1)} KB`)
@@ -510,10 +770,32 @@ function FileViewerOverlay({ t }) {
 
   return el(
     'div',
-    { className: 'chx_viewerBackdrop', onClick: closeFileViewer },
+    {
+      className: `chx_viewerBackdrop${closing ? ' is-closing' : ''}`,
+      'data-state': closing ? 'closing' : 'open',
+      'aria-hidden': closing || undefined,
+      onClick: closing ? undefined : closeFileViewer,
+    },
     el(
       'div',
-      { className: 'chx_viewerPanel', role: 'dialog', 'aria-label': t('viewer.title'), onClick: (e) => e.stopPropagation() },
+      { ref: panelRef, className: 'chx_viewerPanel', role: 'dialog', 'aria-label': t('viewer.title'), onClick: (e) => e.stopPropagation() },
+      el('div', {
+        ref: resizeHandleRef,
+        className: 'chx_viewerResizeHandle',
+        role: 'separator',
+        tabIndex: 0,
+        'aria-label': t('viewer.resize'),
+        'aria-orientation': 'vertical',
+        'aria-valuemin': MIN_VIEWER_WIDTH,
+        'aria-valuemax': DEFAULT_VIEWER_WIDTH,
+        'aria-valuenow': DEFAULT_VIEWER_WIDTH,
+        onPointerDown: startResize,
+        onPointerMove: moveResize,
+        onPointerUp: finishResize,
+        onPointerCancel: finishResize,
+        onDoubleClick: () => resizeTo(DEFAULT_VIEWER_WIDTH, true),
+        onKeyDown: resizeWithKeyboard,
+      }),
       el(
         'header',
         { className: 'chx_viewerHeader' },
@@ -546,6 +828,7 @@ function FileViewerOverlay({ t }) {
         ),
       ),
       snap.truncated ? el('div', { className: 'chx_viewerNotice' }, t('viewer.truncated')) : null,
+      snap.snapshot ? el('div', { className: 'chx_viewerNotice' }, t('viewer.snapshot')) : null,
       el(
         'div',
         { className: 'chx_viewerBody' },
@@ -561,6 +844,145 @@ function FileViewerOverlay({ t }) {
 }
 
 module.exports = { FileViewerOverlay, CodeView, useFileViewer, openFileViewer, closeFileViewer }
+
+},
+"./approval-panel.js": function (require, module, exports) {
+// Codex-inspired review summary and per-turn approval workspace.
+const { createElement: el, Fragment, useCallback, useEffect, useMemo, useState } = require('react')
+const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+const api = require('./api.js')
+const { ensureStyles } = require('./styles.js')
+const { showMessage } = require('./message.js')
+
+function basename(path) {
+  const parts = String(path ?? '').split(/[\\/]/)
+  return parts[parts.length - 1] || path
+}
+
+function diffOf(row) {
+  return [{ path: row.path, oldText: row.operation === 'create' ? null : row.before, newText: row.after }]
+}
+
+function canReject(row) {
+  return row.status !== 'rejected' && (row.operation === 'create' || typeof row.before === 'string')
+}
+
+function ApprovalPanel({ sessionId, turn, openFile, t, onClose }) {
+  const [approval, setApproval] = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
+  const [confirming, setConfirming] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const result = await api.getTurnApproval(sessionId, turn)
+      const next = result.approval
+      setApproval(next)
+      setSelectedId((id) => id && next.changes.some((row) => row.id === id) ? id : next.changes[0]?.id ?? null)
+    } catch (err) { setError(err) }
+  }, [sessionId, turn])
+
+  useEffect(() => { ensureStyles(); void refresh() }, [refresh])
+  useEffect(() => {
+    const keydown = (event) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', keydown)
+    return () => document.removeEventListener('keydown', keydown)
+  }, [onClose])
+  useEffect(() => { if (error) showMessage(String(error.message ?? error)) }, [error])
+
+  const selected = useMemo(() => approval?.changes.find((row) => row.id === selectedId) ?? null, [approval, selectedId])
+  const pending = approval?.changes.filter((row) => row.status === 'pending') ?? []
+
+  const approveAll = async () => {
+    setBusy(true); setError(null)
+    try { await api.approveTurn(sessionId, turn); await refresh() } catch (err) { setError(err) } finally { setBusy(false) }
+  }
+  const approve = async () => {
+    if (!selected) return
+    setBusy(true); setError(null)
+    try { await api.approveChange(selected.id); await refresh() } catch (err) { setError(err) } finally { setBusy(false) }
+  }
+  const reject = async () => {
+    if (!confirming) return
+    setBusy(true); setError(null)
+    try { await api.rollbackChange(confirming.id); setConfirming(null); await refresh() } catch (err) { setError(err) } finally { setBusy(false) }
+  }
+
+  return el('div', { className: 'chx_approvalBackdrop', onClick: onClose },
+    el('section', { className: 'chx_approvalPanel', role: 'dialog', 'aria-modal': true, 'aria-label': t('approval.title'), onClick: (event) => event.stopPropagation() },
+      el('header', { className: 'chx_approvalHeader' },
+        el('div', null, el('h2', { className: 'chx_approvalTitle' }, t('approval.title')), el('p', { className: 'chx_approvalMeta' }, approval ? `${t('approval.files', { count: approval.changes.length })} · +${approval.totals.added} / -${approval.totals.removed}` : '')),
+        el('div', { className: 'chx_approvalHeaderActions' },
+          el(primitives.Button, { type: 'button', size: 'sm', variant: 'outline', disabled: busy || pending.length === 0, onClick: approveAll }, t('approval.approveAll')),
+          el('button', { type: 'button', className: 'chx_viewerIconBtn', onClick: onClose, 'aria-label': t('approval.close'), title: t('approval.close') }, el(primitives.IconCloseOutline16, { size: 16 })),
+        ),
+      ),
+      approval === null ? el('p', { className: 'chx_approvalEmpty' }, t('loading')) : approval.changes.length === 0 ? el('p', { className: 'chx_approvalEmpty' }, t('approval.empty')) :
+        el('div', { className: 'chx_approvalContent' },
+          el('aside', { className: 'chx_approvalList', 'aria-label': t('approval.files', { count: approval.changes.length }) }, approval.changes.map((row) =>
+            el('button', { type: 'button', key: row.id, className: `chx_approvalFile${row.id === selectedId ? ' is-selected' : ''}`, onClick: () => setSelectedId(row.id) },
+              el('span', { className: 'chx_approvalFileName' }, basename(row.path)),
+              el('span', { className: `chx_approvalStatus is-${row.status}` }, t(`row.status.${row.status}`)),
+              el('span', { className: 'chx_approvalFileStats' }, `+${row.stats.added} / -${row.stats.removed}`),
+            ),
+          )),
+          selected ? el('main', { className: 'chx_approvalDiff' },
+            el('div', { className: 'chx_approvalFileHead' },
+              el('button', { type: 'button', className: 'chx_mutationPath', onClick: () => openFile(selected.path), title: selected.path }, selected.path),
+              el('div', { className: 'chx_approvalFileActions' },
+                selected.status === 'pending' ? el(primitives.Button, { type: 'button', size: 'sm', variant: 'outline', disabled: busy, onClick: approve }, t('approval.approve')) : null,
+                canReject(selected) ? el(primitives.Button, { type: 'button', size: 'sm', variant: 'ghost', className: 'chx_actionDanger', disabled: busy, onClick: () => setConfirming(selected) }, t('approval.reject')) : null,
+                !canReject(selected) && selected.status !== 'rejected' ? el('span', { className: 'chx_approvalDisabled' }, t('approval.noBaseline')) : null,
+              ),
+            ),
+            el(primitives.DiffBlock, { diffs: diffOf(selected) }),
+          ) : null,
+        ),
+      confirming ? el(primitives.Modal, { open: true, onClose: () => setConfirming(null), title: t('approval.confirm.title'), closeLabel: t('approval.confirm.cancel'), description: t('approval.confirm.desc', { path: confirming.path }), footer: el(Fragment, null,
+        el(primitives.Button, { type: 'button', size: 'sm', variant: 'ghost', disabled: busy, onClick: () => setConfirming(null) }, t('approval.confirm.cancel')),
+        el(primitives.Button, { type: 'button', size: 'sm', variant: 'outline', className: 'chx_actionDanger', disabled: busy, onClick: reject }, t('approval.confirm.ok')),
+      ) }, null) : null,
+    ),
+  )
+}
+
+function TurnApprovalSummary({ matched, sessionId, openFile, t }) {
+  const { turn } = matched
+  const [approval, setApproval] = useState(null)
+  const [opened, setOpened] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const refresh = useCallback(async () => {
+    const result = await api.getTurnApproval(sessionId, turn)
+    setApproval(result.approval)
+  }, [sessionId, turn])
+  useEffect(() => { ensureStyles(); void refresh().catch((err) => showMessage(String(err.message ?? err))) }, [refresh])
+  const approveAll = async () => {
+    setBusy(true)
+    try { await api.approveTurn(sessionId, turn); await refresh() } catch (err) { showMessage(String(err.message ?? err)) } finally { setBusy(false) }
+  }
+  if (approval === null) return el('section', { className: 'chx_turnSummary', 'aria-busy': true }, el('span', { className: 'chx_approvalMeta' }, t('loading')))
+  if (approval.changes.length === 0) return null
+  const pending = approval.changes.filter((row) => row.status === 'pending').length
+  return el(Fragment, null,
+    el('section', { className: 'chx_turnSummary' },
+      el('div', { className: 'chx_turnSummaryLead' }, el('strong', null, t('approval.summary', { count: approval.changes.length })), el('span', null, `+${approval.totals.added} / -${approval.totals.removed}`)),
+      el('div', { className: 'chx_turnSummaryFiles' }, approval.changes.slice(0, 3).map((row) => el('span', { key: row.id }, basename(row.path))), approval.changes.length > 3 ? el('span', null, `+${approval.changes.length - 3}`) : null),
+      el('div', { className: 'chx_turnSummaryActions' },
+        el(primitives.Button, { type: 'button', size: 'sm', variant: 'ghost', onClick: () => setOpened(true) }, t('approval.review')),
+        el(primitives.Button, { type: 'button', size: 'sm', variant: 'outline', disabled: busy || pending === 0, onClick: approveAll }, t('approval.approveAll')),
+      ),
+    ),
+    opened ? el(ApprovalPanel, { sessionId, turn, openFile, t, onClose: () => { setOpened(false); void refresh() } }) : null,
+  )
+}
+
+function selectTurnApproval(owner) {
+  const turn = owner.turn?.turn
+  return Number.isInteger(turn) ? { turn } : null
+}
+
+module.exports = { ApprovalPanel, TurnApprovalSummary, selectTurnApproval }
 
 },
 "./mutation-row.js": function (require, module, exports) {
@@ -624,8 +1046,8 @@ function ChangeMutationRow({ toolName, block, openFile, t }) {
   }, [callId, block?.resultView]);
 
   const open = useCallback(() => {
-    if (typeof path === 'string' && path !== '') openFileViewer(path, openFile);
-  }, [path, openFile]);
+    if (typeof path === 'string' && path !== '') openFileViewer(path, openFile, change?.id);
+  }, [path, openFile, change?.id]);
 
   const rollback = useCallback(async () => {
     if (change === null) return;
@@ -779,8 +1201,8 @@ function diffsOf(row) {
   return [{ path: row.path, oldText: isCreate ? null : (row.before ?? null), newText: row.after ?? '' }];
 }
 
-/** One change card: identity + meta + diff + revert action. */
-function ChangeRow({ row, busy, onRollback, t }) {
+/** One historical change card: identity, approval result, diff and safe revert. */
+function ChangeRow({ row, busy, onRollback, onApprove, t }) {
   const isCreate = row.operation === 'create';
   const noBaseline = !isCreate && (row.before === null || row.before === undefined);
   const metaBits = [];
@@ -792,6 +1214,7 @@ function ChangeRow({ row, busy, onRollback, t }) {
   }
   const date = fmtDate(row.createdAt);
   if (date) metaBits.push(date);
+  metaBits.push(t(`row.status.${row.status ?? (row.reviewed ? 'approved' : 'pending')}`));
 
   const rollbackLabel = noBaseline
     ? t('row.rollback.noBaseline')
@@ -811,15 +1234,13 @@ function ChangeRow({ row, busy, onRollback, t }) {
         el('span', { className: 'chx_rowPath' }, basename(row.path)),
         el('span', { className: 'chx_rowMeta' }, dirname(row.path)),
       ),
-      el(
-        'button',
-        {
-          type: 'button',
-          className: 'chx_dangerButton',
-          disabled: busy || noBaseline,
-          onClick: () => onRollback(row),
-        },
-        rollbackLabel,
+      el('div', { className: 'chx_approvalFileActions' },
+        row.status === 'pending'
+          ? el('button', { type: 'button', className: 'chx_footerButton', disabled: busy, onClick: () => onApprove(row) }, t('approval.approve'))
+          : null,
+        row.status !== 'rejected'
+          ? el('button', { type: 'button', className: 'chx_dangerButton', disabled: busy || noBaseline, onClick: () => onRollback(row) }, rollbackLabel)
+          : null,
       ),
     ),
     el('div', { className: 'chx_rowMeta' }, metaBits.map((bit, i) => el('span', { key: i, className: 'chx_tag' }, bit))),
@@ -856,7 +1277,7 @@ function ChangeHistorySection(props) {
   const { t, manager: managerOverride } = props;
   const hookManager = useChangeHistory();
   const manager = managerOverride ?? hookManager;
-  const { changes, groups, loading, error, busyId, notice, rollback, clearNotice } = manager;
+  const { changes, groups, loading, error, busyId, notice, rollback, approve, clearNotice } = manager;
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [sessionFilter, setSessionFilter] = useState('');
 
@@ -927,6 +1348,7 @@ function ChangeHistorySection(props) {
                     row,
                     busy: busyId === row.id,
                     onRollback: (target) => setConfirmTarget(target),
+                    onApprove: (target) => { void approve(target.id); },
                     t,
                   }),
                 ),
@@ -956,6 +1378,7 @@ module.exports = { ChangeHistorySection, ChangeRow, ConfirmModal };
 const { ChangeHistorySection, ChangeRow, ConfirmModal } = require('./section.js');
 const { ChangeMutationRow } = require('./mutation-row.js');
 const { FileViewerOverlay } = require('./file-viewer.js');
+const { ApprovalPanel, TurnApprovalSummary, selectTurnApproval } = require('./approval-panel.js');
 const { zh, en } = require('./locales.js');
 
 /** Dictionary namespace owned by this plugin. */
@@ -997,12 +1420,25 @@ function apply(ctx) {
       FileViewerOverlay,
     ),
   );
+  // One compact Codex-style review card after every completed AI turn that
+  // performed tracked file mutations. The session id arrives from slot scope.
+  ctx.slots.inject('conversation.chat.turnTail', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.chat.turnTail',
+        select: selectTurnApproval,
+        locale: NS,
+        inject: (sessionId) => ({ sessionId }),
+      },
+      TurnApprovalSummary,
+    ),
+  );
 }
 
 exports.apply = apply;
 exports.inject = inject;
 // Pure views re-exported for fixture-driven tests.
-exports.views = { ChangeHistorySection, ChangeRow, ConfirmModal, ChangeMutationRow, FileViewerOverlay };
+exports.views = { ChangeHistorySection, ChangeRow, ConfirmModal, ChangeMutationRow, FileViewerOverlay, ApprovalPanel, TurnApprovalSummary };
 
 }
 		};

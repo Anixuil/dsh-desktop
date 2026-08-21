@@ -36,8 +36,8 @@ function diffsOf(row) {
   return [{ path: row.path, oldText: isCreate ? null : (row.before ?? null), newText: row.after ?? '' }];
 }
 
-/** One change card: identity + meta + diff + revert action. */
-function ChangeRow({ row, busy, onRollback, t }) {
+/** One historical change card: identity, approval result, diff and safe revert. */
+function ChangeRow({ row, busy, onRollback, onApprove, t }) {
   const isCreate = row.operation === 'create';
   const noBaseline = !isCreate && (row.before === null || row.before === undefined);
   const metaBits = [];
@@ -49,6 +49,7 @@ function ChangeRow({ row, busy, onRollback, t }) {
   }
   const date = fmtDate(row.createdAt);
   if (date) metaBits.push(date);
+  metaBits.push(t(`row.status.${row.status ?? (row.reviewed ? 'approved' : 'pending')}`));
 
   const rollbackLabel = noBaseline
     ? t('row.rollback.noBaseline')
@@ -68,15 +69,13 @@ function ChangeRow({ row, busy, onRollback, t }) {
         el('span', { className: 'chx_rowPath' }, basename(row.path)),
         el('span', { className: 'chx_rowMeta' }, dirname(row.path)),
       ),
-      el(
-        'button',
-        {
-          type: 'button',
-          className: 'chx_dangerButton',
-          disabled: busy || noBaseline,
-          onClick: () => onRollback(row),
-        },
-        rollbackLabel,
+      el('div', { className: 'chx_approvalFileActions' },
+        row.status === 'pending'
+          ? el('button', { type: 'button', className: 'chx_footerButton', disabled: busy, onClick: () => onApprove(row) }, t('approval.approve'))
+          : null,
+        row.status !== 'rejected'
+          ? el('button', { type: 'button', className: 'chx_dangerButton', disabled: busy || noBaseline, onClick: () => onRollback(row) }, rollbackLabel)
+          : null,
       ),
     ),
     el('div', { className: 'chx_rowMeta' }, metaBits.map((bit, i) => el('span', { key: i, className: 'chx_tag' }, bit))),
@@ -113,7 +112,7 @@ function ChangeHistorySection(props) {
   const { t, manager: managerOverride } = props;
   const hookManager = useChangeHistory();
   const manager = managerOverride ?? hookManager;
-  const { changes, groups, loading, error, busyId, notice, rollback, clearNotice } = manager;
+  const { changes, groups, loading, error, busyId, notice, rollback, approve, clearNotice } = manager;
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [sessionFilter, setSessionFilter] = useState('');
 
@@ -184,6 +183,7 @@ function ChangeHistorySection(props) {
                     row,
                     busy: busyId === row.id,
                     onRollback: (target) => setConfirmTarget(target),
+                    onApprove: (target) => { void approve(target.id); },
                     t,
                   }),
                 ),

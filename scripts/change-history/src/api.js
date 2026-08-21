@@ -47,12 +47,19 @@ function resolveChange(callId) {
   return request(`/resolve?callId=${encodeURIComponent(callId)}`)
 }
 
+function getTurnApproval(sessionId, turn) {
+  return request(`/turn?sessionId=${encodeURIComponent(sessionId)}&turn=${encodeURIComponent(turn)}`)
+}
+
 /**
  * Read the current on-disk text of a file for the built-in viewer.
  * @returns {Promise<{ok:boolean, path:string, content:string, bytes:number, totalLines:number|null, lang:string|null, truncated:boolean}>}
  */
-function readFile(path) {
-  return request(`/read?path=${encodeURIComponent(path)}`)
+function readFile(path, changeId) {
+  const change = typeof changeId === 'string' && changeId !== ''
+    ? `&changeId=${encodeURIComponent(changeId)}`
+    : ''
+  return request(`/read?path=${encodeURIComponent(path)}${change}`)
 }
 
 /** @returns {Promise<{ok:boolean, reviewed:boolean}>} */
@@ -60,9 +67,17 @@ function reviewChange(id, reviewed) {
   return request('/review', { method: 'POST', body: JSON.stringify({ id, reviewed }) })
 }
 
+function approveChange(id) {
+  return request('/approve', { method: 'POST', body: JSON.stringify({ id }) })
+}
+
+function approveTurn(sessionId, turn) {
+  return request('/approve-turn', { method: 'POST', body: JSON.stringify({ sessionId, turn }) })
+}
+
 /** @returns {Promise<{ok:boolean, action:string, diverged?:boolean}>} */
 function rollbackChange(id) {
   return request('/rollback', { method: 'POST', body: JSON.stringify({ id }) })
 }
 
-module.exports = { ApiError, listChanges, resolveChange, readFile, reviewChange, rollbackChange }
+module.exports = { ApiError, listChanges, resolveChange, getTurnApproval, readFile, reviewChange, approveChange, approveTurn, rollbackChange }

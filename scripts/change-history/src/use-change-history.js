@@ -3,8 +3,7 @@ const { useCallback, useEffect, useMemo, useState } = require('react')
 const api = require('./api.js')
 
 /**
- * Loads the host change list and owns the rollback action with optimistic
- * local updates (the reverted change is dropped from the list on success).
+ * Loads the host change list and owns approval / rejection state updates.
  */
 function useChangeHistory() {
   const [changes, setChanges] = useState([])
@@ -39,8 +38,23 @@ function useChangeHistory() {
     setError(null)
     try {
       const outcome = await api.rollbackChange(id)
-      setChanges((list) => list.filter((row) => row.id !== id))
+      setChanges((list) => list.map((row) => row.id === id ? { ...row, status: 'rejected', reviewed: false } : row))
       setNotice({ kind: outcome.diverged ? 'diverged' : 'rolledBack' })
+      return true
+    } catch (err) {
+      setError(err)
+      return false
+    } finally {
+      setBusyId(null)
+    }
+  }, [])
+
+  const approve = useCallback(async (id) => {
+    setBusyId(id)
+    setError(null)
+    try {
+      await api.approveChange(id)
+      setChanges((list) => list.map((row) => row.id === id ? { ...row, status: 'approved', reviewed: true } : row))
       return true
     } catch (err) {
       setError(err)
@@ -61,7 +75,7 @@ function useChangeHistory() {
     return Array.from(map.values())
   }, [changes])
 
-  return { changes, groups, loading, error, busyId, notice, refresh, rollback, clearNotice }
+  return { changes, groups, loading, error, busyId, notice, refresh, rollback, approve, clearNotice }
 }
 
 module.exports = { useChangeHistory }

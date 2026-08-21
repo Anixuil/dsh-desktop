@@ -18,6 +18,7 @@ buildClientBundle({
     'balance-panel.js',
     'about-section.js',
     'appearance-section.js',
+    'plugin-network-section.js',
     'remote-section.js',
     'qr.js',
     'index.js',

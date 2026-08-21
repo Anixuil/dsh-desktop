@@ -17,6 +17,7 @@ buildClientBundle({
     'styles.js',
     'message.js',
     'file-viewer.js',
+    'approval-panel.js',
     'mutation-row.js',
     'section.js',
     'index.js',

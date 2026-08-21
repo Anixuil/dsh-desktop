@@ -9,6 +9,9 @@ window.__ModuleLoader__.load({
 // Side effect module: index.js requires it first so the styles install when
 // the bundle loads, matching the pre-split bundle's load-time behavior.
 const css = `
+.dbb_footerItem{order:2147483647;box-sizing:border-box;flex:none;min-width:0;width:100%;display:flex;flex-direction:column}
+.dbb_footerItem.dbb_footerRail{width:auto;align-items:center}
+.dbb_footerStack{flex-direction:column!important;align-items:stretch!important}
 .dbb_trigger{box-sizing:border-box;cursor:pointer;width:calc(100% + 8px);height:44px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex:none;align-items:center;gap:8px;margin:4px -4px 8px;padding:0 10px;font-family:inherit;font-size:14px;line-height:22px;display:flex;overflow:hidden}
 .dbb_trigger:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dbb_trigger.dbb_rail{background:0 0;border:none;border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;margin:8px 0 10px;padding:0}
@@ -34,9 +37,27 @@ const css = `
 @keyframes dbb_spin{to{transform:rotate(360deg)}}
 .dbb_body{flex:1;min-height:0;padding:4px 12px 12px;overflow-y:auto}
 .dbb_card{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;margin-top:8px;padding:10px 12px}
+.dbb_providerCard{box-sizing:border-box;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;display:block}
+.dbb_providerCard:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_providerCard:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}
+.dbb_providerCard.dbb_selected{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary)}
 .dbb_providerHead{justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;display:flex}
 .dbb_providerName{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}
 .dbb_secTitle{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;text-transform:uppercase;letter-spacing:.4px;margin:14px 2px 6px}
+.dbb_sectionHead{align-items:center;justify-content:space-between;display:flex}
+.dbb_sectionHead .dbb_secTitle{margin-bottom:6px}
+.dbb_resetBtn{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:transparent;border:0;border-radius:6px;padding:3px 6px;font:inherit;font-size:11px}
+.dbb_resetBtn:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_resetBtn:disabled{opacity:.5;cursor:default}
+.dbb_confirmScrim{z-index:2;background:color-mix(in srgb, var(--dsw-alias-bg-base) 72%, transparent);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:18px}
+.dbb_confirm{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;box-shadow:var(--dsw-shadow-lv2);padding:16px;width:min(300px,100%)}
+.dbb_confirmTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}
+.dbb_confirmText{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;margin:8px 0 14px}
+.dbb_confirmActions{display:flex;justify-content:flex-end;gap:8px}
+.dbb_confirmCancel,.dbb_confirmDanger{border:0;border-radius:7px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12px}
+.dbb_confirmCancel{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_confirmDanger{color:#fff;background:var(--dsw-alias-state-error-primary)}
+.dbb_confirmError{margin-top:10px}
 .dbb_balanceTop{align-items:baseline;gap:6px;display:flex}
 .dbb_balanceBig{color:var(--dsw-alias-label-primary);font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;line-height:32px}
 .dbb_currency{color:var(--dsw-alias-label-caption);font-size:13px;font-variant-numeric:tabular-nums}
@@ -115,6 +136,15 @@ const css = `
 .dbb_remoteQr{flex-direction:column;align-items:flex-start;gap:6px;margin-top:6px;display:flex}
 .dbb_remoteQr img{width:168px;height:168px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:#fff;padding:6px;box-sizing:border-box}
 
+.dbb_pluginNetwork{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
+.dbb_networkHint{margin-top:0}
+.dbb_networkSelect{appearance:auto;cursor:pointer}
+.dbb_networkResults{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-base);flex-direction:column;gap:2px;padding:10px 12px;display:flex}
+.dbb_networkRow{align-items:center;gap:8px;border-top:1px solid var(--dsw-alias-border-l2);padding:8px 0;display:flex}
+.dbb_networkRow:first-of-type{margin-top:4px}
+.dbb_networkName{color:var(--dsw-alias-label-secondary);font:12px/18px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-width:72px}
+.dbb_networkMeta{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 .dbb_appearance{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
 .dbb_seg{box-sizing:border-box;align-self:flex-start;gap:3px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);display:inline-flex}
 .dbb_segBtn{box-sizing:border-box;height:30px;font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border:none;border-radius:8px;align-items:center;gap:6px;padding:0 14px;font-size:13px;line-height:20px;display:inline-flex}
@@ -162,7 +192,9 @@ function ensureMessageLayer() {
   if (document.getElementById(STYLE_ID) === null) {
     const style = document.createElement('style');
     style.id = STYLE_ID;
-    style.textContent = '.dsh_messageRoot{position:fixed;z-index:10000;top:20px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:10px}.dsh_message{box-sizing:border-box;min-height:40px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#e4e7ed);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#303133);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px;pointer-events:auto;display:flex;align-items:flex-start;gap:8px;animation:dsh-message-in .2s ease-out}.dsh_messageError{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#f56c6c) 36%,transparent)}.dsh_messageIcon{flex:none;color:var(--dsw-alias-state-error-primary,#f56c6c);font-weight:700}.dsh_messageText{min-width:0;flex:1;overflow-wrap:anywhere}.dsh_messageClose{flex:none;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:18px;line-height:18px;padding:0;opacity:.65}.dsh_messageClose:hover{opacity:1}@keyframes dsh-message-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@media (prefers-reduced-motion:reduce){.dsh_message{animation:none}}';
+    // The host window keeps its title bar over the first 40px of the page.
+    // Leave a 12px gap below it so messages remain fully visible in settings.
+    style.textContent = '.dsh_messageRoot{position:fixed;z-index:10000;top:52px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:10px}.dsh_message{box-sizing:border-box;min-height:40px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#e4e7ed);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#303133);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px;pointer-events:auto;display:flex;align-items:flex-start;gap:8px;animation:dsh-message-in .2s ease-out}.dsh_messageError{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#f56c6c) 36%,transparent)}.dsh_messageIcon{flex:none;color:var(--dsw-alias-state-error-primary,#f56c6c);font-weight:700}.dsh_messageText{min-width:0;flex:1;overflow-wrap:anywhere}.dsh_messageClose{flex:none;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;font-size:18px;line-height:18px;padding:0;opacity:.65}.dsh_messageClose:hover{opacity:1}@keyframes dsh-message-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@media (prefers-reduced-motion:reduce){.dsh_message{animation:none}}';
     document.head.appendChild(style);
   }
   return root;
@@ -279,6 +311,7 @@ const zh = {
   "balance.none": "未获取",
   "balance.low": "余额不足",
   "balance.ok": "可用",
+  "balance.select": "展示 {name} 账户",
   "balance.usageNote": "该平台按量计费，无账户余额概念；数据来自平台账单接口",
   "balance.remainingNote": "剩余用量数据来自平台用量接口",
   "balance.unsupported": "不支持",
@@ -308,6 +341,13 @@ const zh = {
   "usage.sessionsCount": "共 {count} 个会话 · 活跃 {days} 天",
   "usage.empty": "暂无消费数据",
   "usage.error": "读取消费数据失败",
+  "usage.reset": "重置统计",
+  "usage.resetting": "正在重置…",
+  "usage.resetTitle": "重置用量统计？",
+  "usage.resetText": "这会把当前统计起点设为现在，历史会话和原始数据不会删除。之后的用量将从 0 重新累计。",
+  "usage.resetCancel": "取消",
+  "usage.resetConfirm": "确认重置",
+  "usage.resetError": "重置失败，请稍后重试。",
   "turns": "{count} 轮",
   "session.unknown": "未知模型",
   "session.untitled": "(未命名会话)",
@@ -319,6 +359,26 @@ const zh = {
   "appearance.motionRich": "丰富",
   "appearance.hint": "安静：隐藏主界面的波浪波纹，只保留必要的过渡与交互反馈；丰富：完整的海洋氛围动效（光斑漂移、波浪、气泡、主题过渡）。",
   "appearance.offline": "无法连接桌面壳服务",
+  "pluginNetwork.nav": "插件下载网络",
+  "pluginNetwork.title": "插件下载网络",
+  "pluginNetwork.intro": "为插件市场配置稳定的下载线路。GitHub 源码插件依赖代理；npm 源只影响已发布到 npm 的插件。",
+  "pluginNetwork.proxy": "HTTP(S) 代理（可选）",
+  "pluginNetwork.proxyHint": "例如 http://127.0.0.1:7890。留空时沿用启动桌面端时继承的网络环境。",
+  "pluginNetwork.registry": "npm 源（可选）",
+  "pluginNetwork.registryHint": "例如企业私服或可信镜像。它不能加速 GitHub / codeload 源码下载。",
+  "pluginNetwork.timeout": "单次安装总时长",
+  "pluginNetwork.minutes": "{minutes} 分钟",
+  "pluginNetwork.save": "保存并重启服务",
+  "pluginNetwork.saving": "正在保存并重启…",
+  "pluginNetwork.test": "检测下载链路",
+  "pluginNetwork.testing": "正在检测…",
+  "pluginNetwork.restartHint": "保存后会自动重启 DSH 服务，使插件市场和内置 pnpm 立即使用新设置。",
+  "pluginNetwork.saved": "下载网络设置已保存，DSH 服务正在重启。",
+  "pluginNetwork.healthy": "下载链路检测通过",
+  "pluginNetwork.unhealthy": "存在不可用或缓慢的下载链路",
+  "pluginNetwork.ok": "可用",
+  "pluginNetwork.failed": "失败",
+  "pluginNetwork.offline": "无法连接桌面壳服务",
   "about.nav": "关于",
   "about.title": "关于",
   "about.intro": "DeepSeek Harness 的 Windows 桌面壳，由 Anixuil 开发维护。",
@@ -392,6 +452,7 @@ const en = {
   "balance.none": "Not fetched",
   "balance.low": "Low balance",
   "balance.ok": "Available",
+  "balance.select": "Show {name} account",
   "balance.usageNote": "This platform bills by usage and has no account-balance concept; data comes from its billing API",
   "balance.remainingNote": "Remaining usage data comes from the platform usage API",
   "balance.unsupported": "Unsupported",
@@ -421,6 +482,13 @@ const en = {
   "usage.sessionsCount": "{count} sessions · {days} active days",
   "usage.empty": "No consumption data yet",
   "usage.error": "Failed to read consumption data",
+  "usage.reset": "Reset stats",
+  "usage.resetting": "Resetting…",
+  "usage.resetTitle": "Reset usage stats?",
+  "usage.resetText": "This sets the counting baseline to now. Historical sessions and raw data stay intact, and usage starts accumulating from 0.",
+  "usage.resetCancel": "Cancel",
+  "usage.resetConfirm": "Reset stats",
+  "usage.resetError": "Reset failed. Please try again.",
   "turns": "{count} turns",
   "session.unknown": "Unknown model",
   "session.untitled": "(untitled session)",
@@ -432,6 +500,26 @@ const en = {
   "appearance.motionRich": "Rich",
   "appearance.hint": "Quiet: hide the main window's waves and keep only essential transitions and interaction feedback; Rich: the full ocean ambient set (drifting glows, waves, bubbles, theme transitions).",
   "appearance.offline": "Desktop shell service unavailable",
+  "pluginNetwork.nav": "Plugin download network",
+  "pluginNetwork.title": "Plugin download network",
+  "pluginNetwork.intro": "Configure a reliable route for the plugin market. GitHub-source plugins need a proxy; the npm registry only affects packages published to npm.",
+  "pluginNetwork.proxy": "HTTP(S) proxy (optional)",
+  "pluginNetwork.proxyHint": "For example http://127.0.0.1:7890. Leave blank to keep the network environment inherited when Desktop started.",
+  "pluginNetwork.registry": "npm registry (optional)",
+  "pluginNetwork.registryHint": "For example a company registry or trusted mirror. It cannot accelerate GitHub/codeload source downloads.",
+  "pluginNetwork.timeout": "Total timeout per install",
+  "pluginNetwork.minutes": "{minutes} min",
+  "pluginNetwork.save": "Save & restart service",
+  "pluginNetwork.saving": "Saving & restarting…",
+  "pluginNetwork.test": "Test download routes",
+  "pluginNetwork.testing": "Testing…",
+  "pluginNetwork.restartHint": "Saving automatically restarts DSH so the plugin market and packaged pnpm use these settings immediately.",
+  "pluginNetwork.saved": "Download settings saved; the DSH service is restarting.",
+  "pluginNetwork.healthy": "Download routes are healthy",
+  "pluginNetwork.unhealthy": "One or more download routes are unavailable or slow",
+  "pluginNetwork.ok": "Ready",
+  "pluginNetwork.failed": "Failed",
+  "pluginNetwork.offline": "Desktop shell service unavailable",
   "about.nav": "About",
   "about.title": "About",
   "about.intro": "The Windows desktop shell for DeepSeek Harness, built and maintained by Anixuil.",
@@ -504,10 +592,29 @@ const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { BalancePanel } = require('./balance-panel.js');
 
 const noopSub = () => () => {};
+const SELECTED_PROVIDER_KEY = "dsh-desktop:selected-balance-provider";
 
-/** The active platform entry for a model selection (falls back to DeepSeek). */
-function activeProvider(providers, selection) {
+/** Move the footer-stack marker when React mounts, replaces, or removes us. */
+function footerContainer(node) {
+  const slotAnchor = node?.closest?.('[data-slot="sidebar.footer.action"]');
+  return slotAnchor?.parentElement ?? node?.parentElement ?? null;
+}
+
+function setFooterStack(previousNode, node) {
+  const previousFooter = footerContainer(previousNode);
+  if (previousFooter) previousFooter.classList.remove("dbb_footerStack");
+  const footer = footerContainer(node);
+  if (footer) footer.classList.add("dbb_footerStack");
+  return node;
+}
+
+/** The active platform entry for an explicit card selection or model selection. */
+function activeProvider(providers, selection, selectedProviderId) {
   if (!Array.isArray(providers) || providers.length === 0) return null;
+  if (selectedProviderId) {
+    const selected = providers.find((p) => p.id === selectedProviderId);
+    if (selected) return selected;
+  }
   if (selection?.provider) {
     const match = providers.find((p) => p.id === selection.provider);
     if (match) return match;
@@ -541,6 +648,34 @@ function BalanceBadge(props) {
   const [balance, setBalance] = react.useState(null);
   const [error, setError] = react.useState(false);
   const [open, setOpen] = react.useState(false);
+  const footerItemRef = react.useRef(null);
+  const bindFooterItem = react.useCallback((node) => {
+    footerItemRef.current = setFooterStack(footerItemRef.current, node);
+  }, []);
+  const [selectedProviderId, setSelectedProviderId] = react.useState(() => {
+    try {
+      return window.localStorage?.getItem(SELECTED_PROVIDER_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  });
+
+  // The upstream footer slot is a horizontal flex row. Mark the actual slot
+  // node as soon as React commits this item so every other plugin action stacks
+  // above the full-width balance card. The renderer's stable data-slot anchor
+  // is display:contents, so setFooterStack steps through it to the real flex
+  // container. This stays independent from upstream CSS-module hashes and
+  // :has() support in the host WebView.
+
+  react.useEffect(() => {
+    try {
+      if (selectedProviderId) {
+        window.localStorage?.setItem(SELECTED_PROVIDER_KEY, selectedProviderId);
+      } else {
+        window.localStorage?.removeItem(SELECTED_PROVIDER_KEY);
+      }
+    } catch { /* selection persistence is best-effort */ }
+  }, [selectedProviderId]);
 
   const loadBalance = react.useCallback(async (signal) => {
     try {
@@ -624,7 +759,7 @@ function BalanceBadge(props) {
   const selection = dirSnap?.current ?? null;
 
   const providers = balance?.providers ?? null;
-  const active = activeProvider(providers, selection);
+  const active = activeProvider(providers, selection, selectedProviderId);
   const amount = providers === null
     // legacy shell without multi-provider payload
     ? (() => {
@@ -640,7 +775,10 @@ function BalanceBadge(props) {
     : !providers.some((p) => p.configured);
   const amountLabel = active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
 
-  return jsxs(Fragment, { children: [
+  return jsxs("div", {
+    ref: bindFooterItem,
+    className: "dbb_footerItem" + (wide ? "" : " dbb_footerRail"),
+    children: [
     jsx(primitives.Tooltip, {
       label: error ? t("badge.offline") : amount !== null ? `${amountLabel}: ${amount}` : off ? t("badge.unconfigured") : amountLabel,
       delayMs: 500,
@@ -670,12 +808,15 @@ function BalanceBadge(props) {
       balance,
       error,
       loadBalance,
+      selectedProviderId: active?.id ?? null,
+      onSelectProvider: setSelectedProviderId,
       onClose: () => { setOpen(false); },
     })
-  ] });
+    ]
+  });
 }
 
-module.exports = { noopSub, activeProvider, providerAmount, BalanceBadge };
+module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, BalanceBadge };
 
 },
 "./balance-panel.js": function (require, module, exports) {
@@ -693,7 +834,7 @@ const { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost } = require('./helper
 
 /** Pure render layer: props in, panel markup out (no fetch, no effects). */
 function BalancePanelView(props) {
-  const { t, balance, error, usage, usageError, refreshing, onRefresh, onClose, panelRef } = props;
+  const { t, balance, error, usage, usageError, refreshing, resetting, resetPending, resetError, onRefresh, onClose, onResetRequest, onResetCancel, onResetConfirm, panelRef, selectedProviderId, onSelectProvider } = props;
 
   const providers = balance?.providers ?? null;
   const legacyInfo = balance?.balance?.balance_infos?.[0];
@@ -730,33 +871,40 @@ function BalancePanelView(props) {
       : hasRemaining ? usageData.remaining.toFixed(2)
         : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
     const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
-    return jsxs("section", { className: "dbb_card", children: [
-      jsxs("div", { className: "dbb_providerHead", children: [
-        jsx("span", { className: "dbb_providerName", children: p.display_name }),
-        providerBadge(p)
-      ] }),
-      !unsupported && jsxs("div", { className: "dbb_balanceTop", children: [
-        jsx("span", { className: "dbb_balanceBig", children: big }),
-        cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
-      ] }),
-      unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
-      p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
-        jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
-        jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
-      ] }),
-      p.kind === "usage" && usageData && jsxs(Fragment, { children: [
-        hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
-        }),
-        jsxs("div", { className: "dbb_balanceSub", children: [
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
+    return jsxs("button", {
+      type: "button",
+      className: "dbb_card dbb_providerCard" + (p.id === selectedProviderId ? " dbb_selected" : ""),
+      "aria-pressed": p.id === selectedProviderId,
+      "aria-label": t("balance.select", { name: p.display_name }),
+      onClick: () => onSelectProvider?.(p.id),
+      children: [
+        jsxs("div", { className: "dbb_providerHead", children: [
+          jsx("span", { className: "dbb_providerName", children: p.display_name }),
+          providerBadge(p)
         ] }),
-        jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
-      ] }),
-      p.error && jsx("div", { className: "dbb_error", children: p.error })
-    ] }, p.id);
+        !unsupported && jsxs("div", { className: "dbb_balanceTop", children: [
+          jsx("span", { className: "dbb_balanceBig", children: big }),
+          cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
+        ] }),
+        unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
+        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
+        ] }),
+        p.kind === "usage" && usageData && jsxs(Fragment, { children: [
+          hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
+          }),
+          jsxs("div", { className: "dbb_balanceSub", children: [
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
+          ] }),
+          jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
+        ] }),
+        p.error && jsx("div", { className: "dbb_error", children: p.error })
+      ]
+    }, p.id);
   };
 
   /** A provider card carries real data only when it actually returned a
@@ -853,7 +1001,10 @@ function BalancePanelView(props) {
               foldedProviders.map(providerCardFolded),
             ] }),
           ] }),
-        jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
+        jsxs("div", { className: "dbb_sectionHead", children: [
+          jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
+          jsx("button", { type: "button", className: "dbb_resetBtn", onClick: onResetRequest, disabled: resetting, children: resetting ? t("usage.resetting") : t("usage.reset") })
+        ] }),
         usageError
           ? jsx("div", { className: "dbb_error", children: t("usage.error") })
           : usage === null
@@ -941,17 +1092,29 @@ function BalancePanelView(props) {
                   ] })
                 ] })
               ] })
-      ] })
+      ] }),
+      resetPending && jsx("div", { className: "dbb_confirmScrim", role: "presentation", children: jsxs("div", { className: "dbb_confirm", role: "dialog", "aria-modal": "true", "aria-labelledby": "dbb-reset-title", children: [
+        jsx("div", { id: "dbb-reset-title", className: "dbb_confirmTitle", children: t("usage.resetTitle") }),
+        jsx("p", { className: "dbb_confirmText", children: t("usage.resetText") }),
+        jsxs("div", { className: "dbb_confirmActions", children: [
+          jsx("button", { type: "button", autoFocus: true, className: "dbb_confirmCancel", onClick: onResetCancel, children: t("usage.resetCancel") }),
+          jsx("button", { type: "button", className: "dbb_confirmDanger", onClick: onResetConfirm, children: t("usage.resetConfirm") })
+        ] }),
+        resetError && jsx("div", { className: "dbb_error dbb_confirmError", children: t("usage.resetError") })
+      ] }) })
     ] })
   });
 }
 
 /** Stateful wrapper: usage loading, dismissal wiring, refresh. */
 function BalancePanel(props) {
-  const { t, balance, error, loadBalance, onClose } = props;
+  const { t, balance, error, loadBalance, onClose, selectedProviderId, onSelectProvider } = props;
   const [usage, setUsage] = react.useState(null);
   const [usageError, setUsageError] = react.useState(false);
   const [refreshing, setRefreshing] = react.useState(false);
+  const [resetPending, setResetPending] = react.useState(false);
+  const [resetting, setResetting] = react.useState(false);
+  const [resetError, setResetError] = react.useState(false);
   const panelRef = react.useRef(null);
 
   const loadUsage = react.useCallback(async (registeredAt) => {
@@ -973,10 +1136,14 @@ function BalancePanel(props) {
   }, [loadUsage, balance?.registeredAt]);
 
   react.useEffect(() => {
-    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      if (resetPending) setResetPending(false);
+      else onClose();
+    };
     document.addEventListener("keydown", onKeyDown);
     return () => { document.removeEventListener("keydown", onKeyDown); };
-  }, [onClose]);
+  }, [onClose, resetPending]);
 
   react.useEffect(() => {
     const onPointerDown = (e) => {
@@ -1005,6 +1172,22 @@ function BalancePanel(props) {
     finally { setRefreshing(false); }
   };
 
+  const resetUsage = async () => {
+    if (resetting) return;
+    setResetting(true);
+    setResetError(false);
+    try {
+      const resp = await fetch('/desktop/usage-reset', { method: 'POST' });
+      if (!resp.ok) throw new Error('reset failed');
+      const data = await resp.json();
+      if (data?.ok !== true) throw new Error(data?.error ?? 'reset failed');
+      setResetPending(false);
+      await loadUsage(data.resetAt);
+    } catch {
+      setResetError(true);
+    } finally { setResetting(false); }
+  };
+
   return jsx(BalancePanelView, {
     t,
     balance,
@@ -1012,9 +1195,17 @@ function BalancePanel(props) {
     usage,
     usageError,
     refreshing,
+    resetting,
+    resetPending,
+    resetError,
     onRefresh: refresh,
+    onResetRequest: () => { setResetError(false); setResetPending(true); },
+    onResetCancel: () => { setResetError(false); setResetPending(false); },
+    onResetConfirm: resetUsage,
     onClose,
     panelRef,
+    selectedProviderId,
+    onSelectProvider,
   });
 }
 
@@ -1350,6 +1541,95 @@ function AppearanceSection(props) {
 }
 
 module.exports = { AppearanceSection, AppearanceSectionView };
+
+},
+"./plugin-network-section.js": function (require, module, exports) {
+// Plugin download network settings. The desktop shell owns persistence and
+// restarts DSH after a save so dshmarket's packaged pnpm receives the new env.
+const react = require('react');
+const { jsx, jsxs } = require('react/jsx-runtime');
+const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
+
+async function getJson(path, init) {
+  const response = await fetch(path, init);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true) throw new Error(payload?.error ?? `HTTP ${String(response.status)}`);
+  return payload;
+}
+
+function NetworkSectionView({ t, config, busy, testing, result, onChange, onSave, onTest }) {
+  const checks = Array.isArray(result?.checks) ? result.checks : [];
+  return jsxs('section', {
+    className: 'dbb_pluginNetwork',
+    'aria-label': t('pluginNetwork.title'),
+    children: [
+      jsx('h2', { className: 'dbb_aboutTitle', children: t('pluginNetwork.title') }),
+      jsx('p', { className: 'dbb_aboutIntro', children: t('pluginNetwork.intro') }),
+      jsxs('div', { className: 'dbb_aboutCard', children: [
+        jsxs('label', { className: 'dbb_remoteField', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('pluginNetwork.proxy') }),
+          jsx('input', { className: 'dbb_remoteInput', type: 'url', placeholder: 'http://127.0.0.1:7890', value: config.proxy ?? '', onChange: (e) => onChange({ proxy: e.target.value }), spellCheck: false, autoComplete: 'off' }),
+          jsx('span', { className: 'dbb_note dbb_networkHint', children: t('pluginNetwork.proxyHint') }),
+        ] }),
+        jsxs('label', { className: 'dbb_remoteField', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('pluginNetwork.registry') }),
+          jsx('input', { className: 'dbb_remoteInput', type: 'url', placeholder: 'https://registry.npmjs.org/', value: config.npmRegistry ?? '', onChange: (e) => onChange({ npmRegistry: e.target.value }), spellCheck: false, autoComplete: 'off' }),
+          jsx('span', { className: 'dbb_note dbb_networkHint', children: t('pluginNetwork.registryHint') }),
+        ] }),
+        jsxs('label', { className: 'dbb_remoteField', children: [
+          jsx('span', { className: 'dbb_remoteLabel', children: t('pluginNetwork.timeout') }),
+          jsx('select', { className: 'dbb_remoteInput dbb_networkSelect', value: String(config.installTimeoutMinutes ?? 30), onChange: (e) => onChange({ installTimeoutMinutes: Number(e.target.value) }), children: [10, 20, 30, 45, 60].map((minutes) => jsx('option', { value: String(minutes), children: t('pluginNetwork.minutes', { minutes }) }, minutes)) }),
+        ] }),
+        jsxs('div', { className: 'dbb_aboutActions', children: [
+          jsx('button', { type: 'button', className: 'dbb_aboutPrimary', disabled: busy || testing, onClick: onSave, children: busy ? t('pluginNetwork.saving') : t('pluginNetwork.save') }),
+          jsx('button', { type: 'button', className: 'dbb_aboutSecondary', disabled: busy || testing, onClick: onTest, children: testing ? t('pluginNetwork.testing') : t('pluginNetwork.test') }),
+        ] }),
+        jsx('p', { className: 'dbb_note', children: t('pluginNetwork.restartHint') }),
+      ] }),
+      result ? jsxs('div', { className: 'dbb_networkResults', children: [
+        jsx('span', { className: 'dbb_remoteLabel', children: result.ok ? t('pluginNetwork.healthy') : t('pluginNetwork.unhealthy') }),
+        ...checks.map((check) => jsxs('div', { className: 'dbb_networkRow', children: [
+          jsx('span', { className: check.ok ? 'dbb_badge dbb_badgeOk' : 'dbb_badge dbb_badgeErr', children: check.ok ? t('pluginNetwork.ok') : t('pluginNetwork.failed') }),
+          jsx('span', { className: 'dbb_networkName', children: check.name }),
+          jsx('span', { className: 'dbb_networkMeta', children: check.ok ? `${check.status} · ${check.elapsedMs}ms` : String(check.error ?? t('pluginNetwork.failed')) }),
+        ] }, check.name)),
+      ] }) : null,
+    ],
+  });
+}
+
+function PluginNetworkSection({ t }) {
+  const [config, setConfig] = react.useState({ proxy: '', npmRegistry: '', installTimeoutMinutes: 30 });
+  const [busy, setBusy] = react.useState(false);
+  const [testing, setTesting] = react.useState(false);
+  const [result, setResult] = react.useState(null);
+
+  react.useEffect(() => {
+    ensureStyles();
+    getJson('/desktop/plugin-network').then((payload) => setConfig((previous) => ({ ...previous, ...(payload.config ?? {}) }))).catch((error) => showMessage(`${t('pluginNetwork.offline')}（${String(error?.message ?? error)}）`));
+  }, [t]);
+
+  const onSave = async () => {
+    setBusy(true);
+    try {
+      const payload = await getJson('/desktop/plugin-network-save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) });
+      setConfig((previous) => ({ ...previous, ...(payload.config ?? {}) }));
+      showMessage(t('pluginNetwork.saved'));
+    } catch (error) {
+      showMessage(String(error?.message ?? error));
+    } finally { setBusy(false); }
+  };
+  const onTest = async () => {
+    setTesting(true);
+    try { setResult(await getJson('/desktop/plugin-network-test', { method: 'POST' })); }
+    catch (error) { setResult({ ok: false, checks: [{ name: 'network', ok: false, error: String(error?.message ?? error) }] }); }
+    finally { setTesting(false); }
+  };
+  return jsx(NetworkSectionView, { t, config, busy, testing, result, onChange: (patch) => setConfig((previous) => ({ ...previous, ...patch })), onSave, onTest });
+}
+
+module.exports = { PluginNetworkSection, NetworkSectionView };
 
 },
 "./remote-section.js": function (require, module, exports) {
@@ -1964,7 +2244,7 @@ module.exports = { qrSvgDataUri, matrixFor, _internals: { encodeData, interleave
 "./index.js": function (require, module, exports) {
 // dsh-desktop-bridge — web client module entry.
 //
-// Registered into the sidebar footer (list slot, order 100): the account /
+// Registered as the final item in the sidebar footer list: the account /
 // usage badge and its panel. Also registers the 外观与动效 (appearance) and
 // 关于 (About) pages into the in-app settings modal (`settings.section`).
 // Implementation lives in the modules under src/: styles (load-time
@@ -1974,12 +2254,17 @@ module.exports = { qrSvgDataUri, matrixFor, _internals: { encodeData, interleave
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
+const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-section.js');
 const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
+
+// The balance card is the footer's stable anchor. Third-party footer actions
+// must stay above it even when plugins are loaded after this bundle.
+const BALANCE_FOOTER_ORDER = Number.MAX_SAFE_INTEGER;
 
 /** Services required from the client root context. */
 const inject = ["slots", "locale", "sessions"];
@@ -2016,7 +2301,7 @@ function apply(ctx) {
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "desktop-balance",
-    order: 100,
+    order: BALANCE_FOOTER_ORDER,
     locale: NS,
     inject: () => ({
       t,
@@ -2032,7 +2317,7 @@ function apply(ctx) {
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "remote-access",
-    order: 10,
+    order: 11,
     label: () => t("remote.nav"),
     inject: () => ({ t }),
   }, RemoteSection));
@@ -2045,6 +2330,13 @@ function apply(ctx) {
     label: () => t("appearance.nav"),
     inject: () => ({ t }),
   }, AppearanceSection));
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "plugin-network",
+    order: 12,
+    label: () => t("pluginNetwork.nav"),
+    inject: () => ({ t }),
+  }, PluginNetworkSection));
   // 关于 (About) page in the in-app settings modal: shell identity, blog /
   // repo links into the default browser, and a shell+dsh check-update action.
   ctx.slots.inject("settings.section", () => ctx.slots.register({
@@ -2060,8 +2352,10 @@ exports.apply = apply;
 exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
-exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, RemoteSectionView };
+exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, PluginNetworkSectionView: NetworkSectionView, RemoteSectionView };
+exports.footer = { setFooterStack };
 exports.qr = require('./qr.js');
+
 }
 		};
 		var __cache = {};

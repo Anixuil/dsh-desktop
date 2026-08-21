@@ -1,6 +1,6 @@
 // dsh-desktop-bridge — web client module entry.
 //
-// Registered into the sidebar footer (list slot, order 100): the account /
+// Registered as the final item in the sidebar footer list: the account /
 // usage badge and its panel. Also registers the 外观与动效 (appearance) and
 // 关于 (About) pages into the in-app settings modal (`settings.section`).
 // Implementation lives in the modules under src/: styles (load-time
@@ -10,12 +10,17 @@
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
+const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-section.js');
 const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
+
+// The balance card is the footer's stable anchor. Third-party footer actions
+// must stay above it even when plugins are loaded after this bundle.
+const BALANCE_FOOTER_ORDER = Number.MAX_SAFE_INTEGER;
 
 /** Services required from the client root context. */
 const inject = ["slots", "locale", "sessions"];
@@ -52,7 +57,7 @@ function apply(ctx) {
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "desktop-balance",
-    order: 100,
+    order: BALANCE_FOOTER_ORDER,
     locale: NS,
     inject: () => ({
       t,
@@ -68,7 +73,7 @@ function apply(ctx) {
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "remote-access",
-    order: 10,
+    order: 11,
     label: () => t("remote.nav"),
     inject: () => ({ t }),
   }, RemoteSection));
@@ -81,6 +86,13 @@ function apply(ctx) {
     label: () => t("appearance.nav"),
     inject: () => ({ t }),
   }, AppearanceSection));
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "plugin-network",
+    order: 12,
+    label: () => t("pluginNetwork.nav"),
+    inject: () => ({ t }),
+  }, PluginNetworkSection));
   // 关于 (About) page in the in-app settings modal: shell identity, blog /
   // repo links into the default browser, and a shell+dsh check-update action.
   ctx.slots.inject("settings.section", () => ctx.slots.register({
@@ -96,5 +108,6 @@ exports.apply = apply;
 exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
-exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, RemoteSectionView };
+exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, PluginNetworkSectionView: NetworkSectionView, RemoteSectionView };
+exports.footer = { setFooterStack };
 exports.qr = require('./qr.js');

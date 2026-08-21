@@ -58,8 +58,8 @@ function ChangeMutationRow({ toolName, block, openFile, t }) {
   }, [callId, block?.resultView]);
 
   const open = useCallback(() => {
-    if (typeof path === 'string' && path !== '') openFileViewer(path, openFile);
-  }, [path, openFile]);
+    if (typeof path === 'string' && path !== '') openFileViewer(path, openFile, change?.id);
+  }, [path, openFile, change?.id]);
 
   const rollback = useCallback(async () => {
     if (change === null) return;

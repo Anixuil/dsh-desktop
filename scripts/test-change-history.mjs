@@ -112,7 +112,7 @@ import { join, dirname } from 'node:path'
   // record an edit through the observed event (path under the temp home)
   const target = join(home, 'proj', 'src', 'a.js')
   resultListener(
-    { name: 'edit', callId: 'call-1', parent: undefined, agent: { session: { id: 'sess-1', header: {}, events: [{ type: 'session/title', data: { title: 'hello' } }] } } },
+    { name: 'edit', callId: 'call-1', parent: undefined, agent: { session: { id: 'sess-1', header: {}, events: [{ type: 'turn/start', data: { turn: 3 } }, { type: 'session/title', data: { title: 'hello' } }] } } },
     { isError: false, value: { path: target, before: 'old', after: 'new' } },
   )
   // a nested call and a non-fs tool must be ignored
@@ -128,10 +128,23 @@ import { join, dirname } from 'node:path'
     if (payload.changes.length !== 1) throw new Error(`expected 1 change, got ${payload.changes.length}`)
     const row = payload.changes[0]
     if (row.path !== target || row.tool !== 'edit' || row.operation !== 'edit') throw new Error(`bad row: ${JSON.stringify(row)}`)
-    if (row.sessionId !== 'sess-1' || row.sessionTitle !== 'hello') throw new Error(`bad session fields: ${JSON.stringify(row)}`)
+    if (row.sessionId !== 'sess-1' || row.sessionTitle !== 'hello' || row.turn !== 3) throw new Error(`bad session fields: ${JSON.stringify(row)}`)
     if (typeof row.diff !== 'string' || !row.diff.includes('+new')) throw new Error(`row diff missing: ${JSON.stringify(row.diff)}`)
     if (row.stats.added !== 1 || row.stats.removed !== 1) throw new Error(`row stats wrong: ${JSON.stringify(row.stats)}`)
     console.log('host list ok:', JSON.stringify({ path: row.path, diff: row.diff }))
+  }
+
+  // Legacy reviewed array migrates to approved status; state persists as a map.
+  {
+    const stateDir = mkdtempSync(join(tmpdir(), 'dch-state-'))
+    writeFileSync(join(stateDir, 'reviewed.json'), JSON.stringify(['legacy']))
+    const { ChangeStore } = await import('./change-history/lib/store.js')
+    const stateStore = new ChangeStore(stateDir)
+    if (stateStore.statusOf('legacy') !== 'approved') throw new Error('legacy review state did not migrate')
+    stateStore.setStatus('rejected', 'rejected')
+    if (JSON.parse(readFileSync(join(stateDir, 'reviewed.json'), 'utf8')).rejected !== 'rejected') throw new Error('status map did not persist')
+    rmSync(stateDir, { recursive: true, force: true })
+    console.log('approval state migration ok')
   }
 
   // resolve by call id
@@ -156,11 +169,37 @@ import { join, dirname } from 'node:path'
     console.log('host review ok')
   }
 
+  // Per-turn approval isolates sessions, dedupes repeated writes to a path,
+  // supports individual and batch approvals, and never mixes same-number turns.
+  {
+    const second = join(home, 'proj', 'src', 'b.js')
+    resultListener({ name: 'write', callId: 'call-2', parent: undefined, agent: { session: { id: 'sess-1', header: {}, events: [{ type: 'turn/start', data: { turn: 3 } }] } } }, { isError: false, value: { path: second, operation: 'create', before: null, after: 'two' } })
+    resultListener({ name: 'edit', callId: 'call-3', parent: undefined, agent: { session: { id: 'sess-2', header: {}, events: [{ type: 'turn/start', data: { turn: 3 } }] } } }, { isError: false, value: { path: second, before: 'two', after: 'other session' } })
+    const res = fakeRes()
+    await routeHandler(emptyReq('GET', '/desktop-changes/turn?sessionId=sess-1&turn=3'), res)
+    const payload = JSON.parse(res.body)
+    if (res.status !== 200 || payload.approval.changes.length !== 2 || payload.approval.totals.added !== 2) throw new Error(`turn query failed: ${res.status} ${res.body}`)
+    const firstId = payload.approval.changes.find((row) => row.path === target).id
+    const approveReq = { method: 'POST', url: '/desktop-changes/approve', [Symbol.asyncIterator]: async function* () { yield JSON.stringify({ id: firstId }); } }
+    const approveRes = fakeRes()
+    await routeHandler(approveReq, approveRes)
+    if (JSON.parse(approveRes.body).status !== 'approved') throw new Error(`single approval failed: ${approveRes.body}`)
+    const bulkReq = { method: 'POST', url: '/desktop-changes/approve-turn', [Symbol.asyncIterator]: async function* () { yield JSON.stringify({ sessionId: 'sess-1', turn: 3 }); } }
+    const bulkRes = fakeRes()
+    await routeHandler(bulkReq, bulkRes)
+    if (JSON.parse(bulkRes.body).approvedIds.length !== 1) throw new Error(`bulk approval failed: ${bulkRes.body}`)
+    console.log('turn approval routes ok')
+  }
+
   // rollback through the route (restore an edit)
   {
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, 'new')
-    const row = (await (async () => { const res = fakeRes(); await routeHandler(emptyReq('GET', '/desktop-changes/list'), res); return JSON.parse(res.body).changes[0] })())
+    const row = (await (async () => {
+      const res = fakeRes()
+      await routeHandler(emptyReq('GET', '/desktop-changes/list'), res)
+      return JSON.parse(res.body).changes.find((change) => change.path === target)
+    })())
     const res = fakeRes()
     const body = JSON.stringify({ id: row.id })
     const req = { method: 'POST', url: '/desktop-changes/rollback', [Symbol.asyncIterator]: async function* () { yield body; } }
@@ -180,6 +219,26 @@ import { join, dirname } from 'node:path'
     const payload = JSON.parse(res.body)
     if (res.status !== 404 || payload.code !== 'not_found') throw new Error(`unknown id should 404: ${res.status} ${res.body}`)
     console.log('host unknown-id guard ok')
+  }
+
+  // Failed rejection keeps its pending state, while a rejected record cannot
+  // be rolled back twice.
+  {
+    resultListener({ name: 'edit', callId: 'call-no-baseline', parent: undefined, agent: { session: { id: 'sess-1', header: {}, events: [{ type: 'turn/start', data: { turn: 4 } }] } } }, { isError: false, value: { path: join(home, 'no-baseline.js'), before: null, after: 'after' } })
+    const list = fakeRes()
+    await routeHandler(emptyReq('GET', '/desktop-changes/list'), list)
+    const missingBaseline = JSON.parse(list.body).changes.find((change) => change.callId === 'call-no-baseline')
+    const rejectRes = fakeRes()
+    await routeHandler({ method: 'POST', url: '/desktop-changes/rollback', [Symbol.asyncIterator]: async function* () { yield JSON.stringify({ id: missingBaseline.id }); } }, rejectRes)
+    if (rejectRes.status === 200) throw new Error('no-baseline rejection must fail')
+    const refreshed = fakeRes()
+    await routeHandler(emptyReq('GET', '/desktop-changes/resolve?callId=call-no-baseline'), refreshed)
+    if (JSON.parse(refreshed.body).change.status !== 'pending') throw new Error('failed rejection changed approval state')
+    const rejectedId = JSON.parse(list.body).changes.find((change) => change.path === target).id
+    const again = fakeRes()
+    await routeHandler({ method: 'POST', url: '/desktop-changes/rollback', [Symbol.asyncIterator]: async function* () { yield JSON.stringify({ id: rejectedId }); } }, again)
+    if (again.status !== 409) throw new Error('rejected change must not roll back twice')
+    console.log('rejection safeguards ok')
   }
 
   // read route powers the built-in side viewer
@@ -203,6 +262,22 @@ import { join, dirname } from 'node:path'
     const payload = JSON.parse(res.body)
     if (res.status === 200 || payload.code !== 'not_readable') throw new Error(`missing file read should fail not_readable: ${res.status} ${res.body}`)
     console.log('host read missing-file guard ok')
+  }
+
+  // A moved/removed workspace file remains viewable from the change record.
+  {
+    rmSync(target, { force: true })
+    const res = fakeRes()
+    const row = await (async () => {
+      const list = fakeRes()
+      await routeHandler(emptyReq('GET', '/desktop-changes/list'), list)
+      return JSON.parse(list.body).changes.find((change) => change.path === target)
+    })()
+    await routeHandler(emptyReq('GET', `/desktop-changes/read?path=${encodeURIComponent(row.path)}&changeId=${encodeURIComponent(row.id)}`), res)
+    const payload = JSON.parse(res.body)
+    if (res.status !== 200 || payload.ok !== true || payload.snapshot !== true) throw new Error(`snapshot fallback failed: ${res.status} ${res.body}`)
+    if (payload.content !== 'new') throw new Error(`snapshot content wrong: ${JSON.stringify(payload.content)}`)
+    console.log('host read snapshot fallback ok')
   }
 
   if (warns.length > 0) throw new Error(`unexpected warnings: ${warns.join('; ')}`)
@@ -270,7 +345,11 @@ import { join, dirname } from 'node:path'
     },
   }
   vm.createContext(sandbox)
-  vm.runInContext(readFileSync(new URL('./scripts/change-history/client.js', new URL('../', import.meta.url)), 'utf8'), sandbox)
+  const clientSource = readFileSync(new URL('./scripts/change-history/client.js', new URL('../', import.meta.url)), 'utf8')
+  for (const marker of ['chx_viewerResizeHandle', "role: 'separator'", 'overflow-wrap: anywhere', 'white-space: pre-wrap', 'viewer.resize', "data-state': closing", '@starting-style', 'cubic-bezier(0.32, 0.72, 0, 1)', 'translateX(100%)']) {
+    if (!clientSource.includes(marker)) throw new Error(`resizable wrapping viewer bundle missing ${marker}`)
+  }
+  vm.runInContext(clientSource, sandbox)
   const factory = globalThis.__ModuleLoader__Factory
   if (typeof factory !== 'function') throw new Error('client bundle never registered')
   const result = factory(sandbox.require)
@@ -278,7 +357,7 @@ import { join, dirname } from 'node:path'
   if (!result.inject.includes('slots') || !result.inject.includes('locale')) throw new Error('client inject must include slots + locale')
 
   result.apply(mockCtx)
-  if (registrations.length !== 4) throw new Error(`expected 4 slot registrations, got ${registrations.length}`)
+  if (registrations.length !== 5) throw new Error(`expected 5 slot registrations, got ${registrations.length}`)
   const settingsReg = registrations.find((r) => r.slotName === 'settings.section')
   if (settingsReg === undefined || settingsReg.reg.id !== 'change-history' || settingsReg.reg.order !== 21) {
     throw new Error(`bad settings registration: ${JSON.stringify(settingsReg)}`)
@@ -300,6 +379,13 @@ import { join, dirname } from 'node:path'
   }
   console.log('shell.overlay registration ok:', { id: overlay.reg.id, locale: overlay.reg.locale })
 
+  const turnTail = registrations.find((r) => r.slotName === 'conversation.chat.turnTail')
+  if (turnTail === undefined || turnTail.reg.locale !== 'changeHistory' || typeof turnTail.reg.select !== 'function') {
+    throw new Error(`bad turn-tail registration: ${JSON.stringify(turnTail?.reg)}`)
+  }
+  if (turnTail.reg.select({ turn: { turn: 7 } })?.turn !== 7) throw new Error('turn-tail selector must match completed turns')
+  console.log('turn-tail review registration ok')
+
   // SSR of the inline mutation row (settled diff, actions absent until the
   // change resolves — the header + diff surface still render).
   {
@@ -319,16 +405,16 @@ import { join, dirname } from 'node:path'
   }
 
   // SSR with a fixture-driven manager (two groups, diffs, rollback actions)
-  const { ChangeHistorySection } = result.views
+  const { ChangeHistorySection, ApprovalPanel, TurnApprovalSummary } = result.views
   const t = (key, params) => key + (params ? ' ' + JSON.stringify(params) : '')
   const fakeManager = {
     changes: [
-      { id: 'c1', sessionId: 's1', sessionTitle: 'Session One', tool: 'edit', path: '/x/a.js', operation: 'edit', before: 'a', after: 'b', createdAt: 1735689600000, stats: { added: 1, removed: 1 }, diff: '@@ -1,1 +1,1 @@\n-a\n+b' },
-      { id: 'c2', sessionId: 's1', sessionTitle: 'Session One', tool: 'write', path: '/x/b.txt', operation: 'create', before: null, after: 'hi', createdAt: 1735689600000, stats: { added: 1, removed: 0 }, diff: '@@ -1,0 +1,1 @@\n+hi' },
+      { id: 'c1', sessionId: 's1', sessionTitle: 'Session One', tool: 'edit', path: '/x/a.js', operation: 'edit', before: 'a', after: 'b', createdAt: 1735689600000, status: 'pending', stats: { added: 1, removed: 1 }, diff: '@@ -1,1 +1,1 @@\n-a\n+b' },
+      { id: 'c2', sessionId: 's1', sessionTitle: 'Session One', tool: 'write', path: '/x/b.txt', operation: 'create', before: null, after: 'hi', createdAt: 1735689600000, status: 'approved', stats: { added: 1, removed: 0 }, diff: '@@ -1,0 +1,1 @@\n+hi' },
     ],
     groups: [{ sessionId: 's1', sessionTitle: 'Session One', changes: [
-      { id: 'c1', sessionId: 's1', sessionTitle: 'Session One', tool: 'edit', path: '/x/a.js', operation: 'edit', before: 'a', after: 'b', createdAt: 1735689600000, stats: { added: 1, removed: 1 }, diff: '@@ -1,1 +1,1 @@\n-a\n+b' },
-      { id: 'c2', sessionId: 's1', sessionTitle: 'Session One', tool: 'write', path: '/x/b.txt', operation: 'create', before: null, after: 'hi', createdAt: 1735689600000, stats: { added: 1, removed: 0 }, diff: '@@ -1,0 +1,1 @@\n+hi' },
+      { id: 'c1', sessionId: 's1', sessionTitle: 'Session One', tool: 'edit', path: '/x/a.js', operation: 'edit', before: 'a', after: 'b', createdAt: 1735689600000, status: 'pending', stats: { added: 1, removed: 1 }, diff: '@@ -1,1 +1,1 @@\n-a\n+b' },
+      { id: 'c2', sessionId: 's1', sessionTitle: 'Session One', tool: 'write', path: '/x/b.txt', operation: 'create', before: null, after: 'hi', createdAt: 1735689600000, status: 'approved', stats: { added: 1, removed: 0 }, diff: '@@ -1,0 +1,1 @@\n+hi' },
     ] }],
     loading: false,
     error: null,
@@ -336,6 +422,7 @@ import { join, dirname } from 'node:path'
     notice: null,
     refresh: async () => {},
     rollback: async () => true,
+    approve: async () => true,
     clearNotice: () => {},
   }
   const markup = renderToString(react.createElement(ChangeHistorySection, { t, manager: fakeManager }))
@@ -343,6 +430,12 @@ import { join, dirname } from 'node:path'
     if (!markup.includes(marker)) throw new Error(`fixture render missing ${marker}\n${markup}`)
   }
   console.log('client fixture render ok (groups, diffs, actions)')
+
+  const approvalMarkup = renderToString(react.createElement(ApprovalPanel, { sessionId: 's1', turn: 1, openFile: () => {}, onClose: () => {}, t }))
+  if (!approvalMarkup.includes('chx_approvalPanel')) throw new Error(`approval panel render missing\n${approvalMarkup}`)
+  const summaryMarkup = renderToString(react.createElement(TurnApprovalSummary, { matched: { turn: 1 }, sessionId: 's1', openFile: () => {}, t }))
+  if (!summaryMarkup.includes('chx_turnSummary')) throw new Error(`turn summary render missing\n${summaryMarkup}`)
+  console.log('approval views render ok')
 }
 
 console.log('change-history test PASSED')

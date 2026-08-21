@@ -10,8 +10,9 @@ const react = require('react');
 const jsxRuntime = require('react/jsx-runtime');
 
 globalThis.window = globalThis;
+const appendedStyles = [];
 globalThis.document = {
-  head: { appendChild: () => {} },
+  head: { appendChild: (node) => { appendedStyles.push(node.textContent); } },
   querySelector: () => null,
   createElement: () => ({ dataset: {}, textContent: '' }),
   addEventListener: () => {},
@@ -79,6 +80,37 @@ const result = factory(sandbox.require);
 
 if (typeof result.apply !== 'function') throw new Error('client bundle did not export apply');
 if (!Array.isArray(result.inject) || !result.inject.includes('slots')) throw new Error('client bundle inject must include slots');
+if (typeof result.footer?.setFooterStack !== 'function') throw new Error('footer stack binding helper missing');
+const footerClasses = new Set();
+const footerNode = {
+  classList: {
+    add: (name) => footerClasses.add(name),
+    remove: (name) => footerClasses.delete(name),
+  },
+};
+const slotAnchor = { parentElement: footerNode };
+const balanceNode = {
+  parentElement: slotAnchor,
+  closest: (selector) => selector === '[data-slot="sidebar.footer.action"]' ? slotAnchor : null,
+};
+let boundFooterNode = result.footer.setFooterStack(null, balanceNode);
+if (boundFooterNode !== balanceNode || !footerClasses.has('dbb_footerStack')) {
+  throw new Error('mounting balance did not stack the host footer');
+}
+boundFooterNode = result.footer.setFooterStack(boundFooterNode, null);
+if (boundFooterNode !== null || footerClasses.has('dbb_footerStack')) {
+  throw new Error('unmounting balance did not clean the host footer');
+}
+console.log('adaptive footer DOM binding ok');
+const installedCss = appendedStyles.join('\n');
+for (const marker of [
+  '.dbb_footerItem{order:2147483647',
+  '.dbb_footerItem.dbb_footerRail{width:auto;align-items:center}',
+  '.dbb_footerStack{flex-direction:column!important;align-items:stretch!important}',
+]) {
+  if (!installedCss.includes(marker)) throw new Error(`adaptive footer CSS missing ${marker}`);
+}
+console.log('adaptive footer layout CSS ok');
 
 result.apply(mockCtx);
 
@@ -95,16 +127,17 @@ if (focusPosts.length !== 2 || focusPosts[1].sessionId !== 'session-7') {
 console.log('focus publisher ok:', JSON.stringify(focusPosts));
 
 console.log(`registrations: ${registrations.length}`);
-if (registrations.length !== 4) throw new Error(`expected 4 registrations, got ${registrations.length}`);
+if (registrations.length !== 5) throw new Error(`expected 5 registrations, got ${registrations.length}`);
 for (const { slotName, reg } of registrations) {
   if (slotName === 'sidebar.footer.action') {
     if (reg.name !== 'sidebar.footer.action') throw new Error(`bad reg name ${reg.name}`);
     if (reg.id !== 'desktop-balance') throw new Error(`bad reg id ${reg.id}`);
+    if (reg.order !== Number.MAX_SAFE_INTEGER) throw new Error(`balance must remain the final footer action, got order ${reg.order}`);
     if (typeof reg.inject !== 'function') throw new Error('registration inject missing');
     console.log('slot registration ok:', { name: reg.name, id: reg.id, order: reg.order, locale: reg.locale });
   } else if (slotName === 'settings.section' && reg.id === 'remote-access') {
     if (reg.name !== 'settings.section') throw new Error(`bad reg name ${reg.name}`);
-    if (reg.order !== 10) throw new Error(`bad remote-access reg order ${reg.order}`);
+    if (reg.order !== 11) throw new Error(`bad remote-access reg order ${reg.order}`);
     if (typeof reg.label !== 'function' || typeof reg.inject !== 'function') {
       throw new Error('remote-access registration label/inject missing');
     }
@@ -116,6 +149,13 @@ for (const { slotName, reg } of registrations) {
       throw new Error('appearance registration label/inject missing');
     }
     console.log('appearance section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
+  } else if (slotName === 'settings.section' && reg.id === 'plugin-network') {
+    if (reg.name !== 'settings.section') throw new Error(`bad reg name ${reg.name}`);
+    if (reg.order !== 12) throw new Error(`bad plugin-network reg order ${reg.order}`);
+    if (typeof reg.label !== 'function' || typeof reg.inject !== 'function') {
+      throw new Error('plugin-network registration label/inject missing');
+    }
+    console.log('plugin-network section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
   } else if (slotName === 'settings.section') {
     if (reg.name !== 'settings.section') throw new Error(`bad reg name ${reg.name}`);
     if (reg.id !== 'about') throw new Error(`bad about reg id ${reg.id}`);

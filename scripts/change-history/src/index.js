@@ -7,6 +7,7 @@
 const { ChangeHistorySection, ChangeRow, ConfirmModal } = require('./section.js');
 const { ChangeMutationRow } = require('./mutation-row.js');
 const { FileViewerOverlay } = require('./file-viewer.js');
+const { ApprovalPanel, TurnApprovalSummary, selectTurnApproval } = require('./approval-panel.js');
 const { zh, en } = require('./locales.js');
 
 /** Dictionary namespace owned by this plugin. */
@@ -48,9 +49,22 @@ function apply(ctx) {
       FileViewerOverlay,
     ),
   );
+  // One compact Codex-style review card after every completed AI turn that
+  // performed tracked file mutations. The session id arrives from slot scope.
+  ctx.slots.inject('conversation.chat.turnTail', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.chat.turnTail',
+        select: selectTurnApproval,
+        locale: NS,
+        inject: (sessionId) => ({ sessionId }),
+      },
+      TurnApprovalSummary,
+    ),
+  );
 }
 
 exports.apply = apply;
 exports.inject = inject;
 // Pure views re-exported for fixture-driven tests.
-exports.views = { ChangeHistorySection, ChangeRow, ConfirmModal, ChangeMutationRow, FileViewerOverlay };
+exports.views = { ChangeHistorySection, ChangeRow, ConfirmModal, ChangeMutationRow, FileViewerOverlay, ApprovalPanel, TurnApprovalSummary };

@@ -5,14 +5,14 @@
 //   * usageReport aggregates a temp home (projcache + session log)
 //   * apply() wires credentials server (ephemeral port) + /desktop routes
 //   * /desktop/status and /desktop/usage handlers answer through the route
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 
 const { scanFrames } = await import('./bridge/lib/zstd.js')
 const { readSessionModel, encodeWorkspace } = await import('./bridge/lib/model-attribution.js')
-const { usageReport } = await import('./bridge/lib/usage.js')
+const { usageReport, resetUsageCounter } = await import('./bridge/lib/usage.js')
 const plugin = await import('./bridge/index.js')
 
 // --- 1. zstd frame scan round-trip -----------------------------------------
@@ -68,6 +68,19 @@ try {
   if (report.totals.total !== 18 || report.counts.sessions !== 1) throw new Error(`bad report totals: ${JSON.stringify(report.totals)}`)
   console.log('usageReport ok:', JSON.stringify({ totals: report.totals, counts: report.counts }))
 
+  const resetAt = createdAt + 1
+  resetUsageCounter(home, resetAt)
+  const resetReport = usageReport(home, 0)
+  if (resetReport.counts.sessions !== 0 || resetReport.resetAt !== resetAt) throw new Error(`usage reset marker failed: ${JSON.stringify(resetReport)}`)
+  const projectionPath = join(home, 'storages', 'session_projcache.json')
+  const projection = JSON.parse(readFileSync(projectionPath, 'utf8'))
+  projection.tables.sessions['session-1'].rows.tokenUsage.val.totals.outputTokens += 4
+  writeFileSync(projectionPath, JSON.stringify(projection))
+  const incrementReport = usageReport(home, 0)
+  if (incrementReport.totals.total !== 4 || incrementReport.sessions[0]?.id !== 'session-1') throw new Error(`usage reset increment failed: ${JSON.stringify(incrementReport)}`)
+  writeFileSync(projectionPath, JSON.stringify({ tables: { sessions: projection.tables.sessions } }))
+  console.log('usage reset snapshot + active-session increment ok')
+
   // --- 3. apply() wiring + routes -------------------------------------------
   const handlers = {}
   const emit = (event, ...args) => (handlers[event] ?? []).forEach((fn) => fn(...args))
@@ -109,6 +122,13 @@ try {
     const payload = JSON.parse(res.body)
     if (res.status !== 200 || payload.ok !== true || payload.counts.sessions !== 1) throw new Error(`usage route failed: ${res.status} ${res.body}`)
     console.log('/desktop/usage ok:', JSON.stringify({ counts: payload.counts, sessions: payload.sessions.length }))
+  }
+  {
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'POST', url: '/desktop/usage-reset', [Symbol.asyncIterator]: async function* () {} }, res)
+    const payload = JSON.parse(res.body)
+    if (res.status !== 200 || payload.ok !== true || typeof payload.resetAt !== 'number') throw new Error(`usage reset route failed: ${res.status} ${res.body}`)
+    console.log('/desktop/usage-reset ok')
   }
   {
     // Shell listener may or may not be live in this harness: the about /
@@ -173,6 +193,26 @@ try {
     await routeRegistration.handler(saveReq, res2)
     if ((res2.status !== 200 && res2.status !== 502) || !res2.body.includes('"ok"')) throw new Error(`motion-save route failed: ${res2.status} ${res2.body}`)
     console.log(`/desktop/motion-save proxy ok (status ${res2.status})`)
+  }
+  {
+    // Plugin-download-network proxies use the same local shell contract as
+    // remote and motion settings. They must never 404 when the shell is down.
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/plugin-network' }, res)
+    if ((res.status !== 200 && res.status !== 502) || !res.body.includes('"ok"')) throw new Error(`plugin-network route failed: ${res.status} ${res.body}`)
+    console.log(`/desktop/plugin-network proxy ok (status ${res.status})`)
+    const saveReq = {
+      method: 'POST', url: '/desktop/plugin-network-save',
+      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ proxy: 'http://127.0.0.1:7890', npmRegistry: 'https://registry.npmjs.org/', installTimeoutMinutes: 30 })) },
+    }
+    const saveRes = fakeRes()
+    await routeRegistration.handler(saveReq, saveRes)
+    if ((saveRes.status !== 200 && saveRes.status !== 502) || !saveRes.body.includes('"ok"')) throw new Error(`plugin-network-save route failed: ${saveRes.status} ${saveRes.body}`)
+    const testReq = { method: 'POST', url: '/desktop/plugin-network-test', async *[Symbol.asyncIterator]() {} }
+    const testRes = fakeRes()
+    await routeRegistration.handler(testReq, testRes)
+    if ((testRes.status !== 200 && testRes.status !== 502) || !testRes.body.includes('"ok"')) throw new Error(`plugin-network-test route failed: ${testRes.status} ${testRes.body}`)
+    console.log(`/desktop/plugin-network save/test proxies ok (save ${saveRes.status}, test ${testRes.status})`)
   }
   {
     // open-external: GET → 404; POST with a non-http(s) url → the shell

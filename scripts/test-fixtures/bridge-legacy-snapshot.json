@@ -2,11 +2,11 @@
   "registration": {
     "slot": "sidebar.footer.action",
     "id": "desktop-balance",
-    "order": 100,
+    "order": 9007199254740991,
     "locale": "desktop-balance"
   },
   "renders": {
-    "wide": "<button type=\"button\" class=\"dbb_trigger\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span class=\"dbb_avatar\"></span><span class=\"dbb_label\">badge</span><span class=\"dbb_amount dbb_off\">badge.unconfigured</span></button>",
-    "rail": "<button type=\"button\" class=\"dbb_trigger dbb_rail\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span class=\"dbb_icon\"></span></button>"
+    "wide": "<div class=\"dbb_footerItem\"><button type=\"button\" class=\"dbb_trigger\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span class=\"dbb_avatar\"></span><span class=\"dbb_label\">badge</span><span class=\"dbb_amount dbb_off\">badge.unconfigured</span></button></div>",
+    "rail": "<div class=\"dbb_footerItem dbb_footerRail\"><button type=\"button\" class=\"dbb_trigger dbb_rail\" aria-haspopup=\"dialog\" aria-expanded=\"false\"><span class=\"dbb_icon\"></span></button></div>"
   }
 }

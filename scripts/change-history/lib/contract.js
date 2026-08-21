@@ -27,6 +27,7 @@ export function changeRow(record) {
     id: record.id,
     sessionId: record.sessionId ?? null,
     sessionTitle: record.sessionTitle ?? null,
+    turn: typeof record.turn === 'number' ? record.turn : null,
     tool: record.tool,
     path: record.path,
     operation: record.operation,

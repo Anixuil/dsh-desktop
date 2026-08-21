@@ -6,7 +6,7 @@
 // transitions and POSTs /turn-end to the shell.
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { usageReport } from './usage.js'
+import { resetUsageCounter, usageReport } from './usage.js'
 
 export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
   let lastRunning = false
@@ -163,6 +163,27 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
+      if (pathname === '/desktop/plugin-network-save') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          return json(res, 200, await shellPost('/plugin-network-save', {
+            proxy: typeof body?.proxy === 'string' ? body.proxy : '',
+            npmRegistry: typeof body?.npmRegistry === 'string' ? body.npmRegistry : '',
+            installTimeoutMinutes: Number(body?.installTimeoutMinutes),
+          }, 15000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/plugin-network-test') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          return json(res, 200, await shellPost('/plugin-network-test', {}, 55000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
       // The persistent pairing endpoint is a write operation, so it must be
       // handled before the GET-only guard below. Keeping it after that guard
       // makes every save request fail with a misleading 404 at the bridge
@@ -178,10 +199,27 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
+      if (pathname === '/desktop/usage-reset') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+          const marker = resetUsageCounter(home)
+          return json(res, 200, { ok: true, resetAt: marker.resetAt })
+        } catch (error) {
+          return json(res, 500, { ok: false, error: String(error?.message ?? error) })
+        }
+      }
       if (req.method !== 'GET') return json(res, 404, { ok: false, error: 'not found' })
       if (pathname === '/desktop/motion') {
         try {
           return json(res, 200, await shellGet('/motion', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/plugin-network') {
+        try {
+          return json(res, 200, await shellGet('/plugin-network', 3000))
         } catch (error) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }

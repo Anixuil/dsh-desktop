@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto'
 
 const FILE = 'index.jsonl'
 const REVIEWED_FILE = 'reviewed.json'
+const STATUS = new Set(['pending', 'approved', 'rejected'])
 
 /** Parse one line as a record; malformed lines are skipped, not fatal. */
 function parseLine(line) {
@@ -31,7 +32,7 @@ export class ChangeStore {
     this.file = join(dir, FILE)
     this.reviewedFile = join(dir, REVIEWED_FILE)
     this.records = []
-    this.reviewed = new Set()
+    this.statuses = new Map()
     this.#load()
     this.#loadReviewed()
   }
@@ -50,7 +51,7 @@ export class ChangeStore {
     }
   }
 
-  /** Load the reviewed id set (a plain JSON array of change ids). */
+  /** Load approval state, accepting the former reviewed-id array format. */
   #loadReviewed() {
     let raw
     try {
@@ -59,18 +60,22 @@ export class ChangeStore {
       return // no review state yet
     }
     try {
-      const ids = JSON.parse(raw)
-      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') this.reviewed.add(id)
+      const stored = JSON.parse(raw)
+      if (Array.isArray(stored)) {
+        for (const id of stored) if (typeof id === 'string') this.statuses.set(id, 'approved')
+      } else if (stored !== null && typeof stored === 'object') {
+        for (const [id, status] of Object.entries(stored)) if (STATUS.has(status)) this.statuses.set(id, status)
+      }
     } catch {
       /* malformed review state is discarded */
     }
   }
 
-  /** Persist the reviewed id set (best-effort; failure keeps in-memory state). */
+  /** Persist approval state (best-effort; failure keeps in-memory state). */
   #saveReviewed() {
     try {
       mkdirSync(this.dir, { recursive: true })
-      writeFileSync(this.reviewedFile, JSON.stringify([...this.reviewed]))
+      writeFileSync(this.reviewedFile, JSON.stringify(Object.fromEntries(this.statuses)))
     } catch {
       /* review marking must not break the review flow */
     }
@@ -115,15 +120,20 @@ export class ChangeStore {
     return undefined
   }
 
-  /** Whether a change id is marked reviewed. */
-  isReviewed(id) {
-    return this.reviewed.has(id)
+  /** Approval state defaults to pending for legacy and new records. */
+  statusOf(id) {
+    return this.statuses.get(id) ?? 'pending'
   }
 
-  /** Mark or unmark a change id as reviewed, persisting the set. */
-  setReviewed(id, reviewed) {
-    if (reviewed) this.reviewed.add(id)
-    else this.reviewed.delete(id)
+  /** Update a change's approval state. */
+  setStatus(id, status) {
+    if (!STATUS.has(status)) throw new Error('无效的审批状态')
+    if (status === 'pending') this.statuses.delete(id)
+    else this.statuses.set(id, status)
     this.#saveReviewed()
   }
+
+  /** Kept for compatibility with callers from previous plugin builds. */
+  isReviewed(id) { return this.statusOf(id) === 'approved' }
+  setReviewed(id, reviewed) { this.setStatus(id, reviewed ? 'approved' : 'pending') }
 }

@@ -12,7 +12,7 @@ const { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost } = require('./helper
 
 /** Pure render layer: props in, panel markup out (no fetch, no effects). */
 function BalancePanelView(props) {
-  const { t, balance, error, usage, usageError, refreshing, onRefresh, onClose, panelRef } = props;
+  const { t, balance, error, usage, usageError, refreshing, resetting, resetPending, resetError, onRefresh, onClose, onResetRequest, onResetCancel, onResetConfirm, panelRef, selectedProviderId, onSelectProvider } = props;
 
   const providers = balance?.providers ?? null;
   const legacyInfo = balance?.balance?.balance_infos?.[0];
@@ -49,33 +49,40 @@ function BalancePanelView(props) {
       : hasRemaining ? usageData.remaining.toFixed(2)
         : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
     const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
-    return jsxs("section", { className: "dbb_card", children: [
-      jsxs("div", { className: "dbb_providerHead", children: [
-        jsx("span", { className: "dbb_providerName", children: p.display_name }),
-        providerBadge(p)
-      ] }),
-      !unsupported && jsxs("div", { className: "dbb_balanceTop", children: [
-        jsx("span", { className: "dbb_balanceBig", children: big }),
-        cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
-      ] }),
-      unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
-      p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
-        jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
-        jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
-      ] }),
-      p.kind === "usage" && usageData && jsxs(Fragment, { children: [
-        hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
-        }),
-        jsxs("div", { className: "dbb_balanceSub", children: [
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
-          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
+    return jsxs("button", {
+      type: "button",
+      className: "dbb_card dbb_providerCard" + (p.id === selectedProviderId ? " dbb_selected" : ""),
+      "aria-pressed": p.id === selectedProviderId,
+      "aria-label": t("balance.select", { name: p.display_name }),
+      onClick: () => onSelectProvider?.(p.id),
+      children: [
+        jsxs("div", { className: "dbb_providerHead", children: [
+          jsx("span", { className: "dbb_providerName", children: p.display_name }),
+          providerBadge(p)
         ] }),
-        jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
-      ] }),
-      p.error && jsx("div", { className: "dbb_error", children: p.error })
-    ] }, p.id);
+        !unsupported && jsxs("div", { className: "dbb_balanceTop", children: [
+          jsx("span", { className: "dbb_balanceBig", children: big }),
+          cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
+        ] }),
+        unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
+        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
+        ] }),
+        p.kind === "usage" && usageData && jsxs(Fragment, { children: [
+          hasRemaining && jsx("div", { className: "dbb_balanceSub", children:
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.status"), " ", jsx("b", { children: usageData.is_valid === false ? t("usage.inactive") : t("usage.active") })] }) })
+          }),
+          jsxs("div", { className: "dbb_balanceSub", children: [
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.softLimit"), " ", jsx("b", { children: fmtUsd(usageData.soft_limit_usd) })] }) }),
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.hardLimit"), " ", jsx("b", { children: fmtUsd(usageData.hard_limit_usd) })] }) }),
+            jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("usage.payment"), " ", jsx("b", { children: usageData.has_payment_method === true ? t("usage.paymentYes") : usageData.has_payment_method === false ? t("usage.paymentNo") : "—" })] }) })
+          ] }),
+          jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
+        ] }),
+        p.error && jsx("div", { className: "dbb_error", children: p.error })
+      ]
+    }, p.id);
   };
 
   /** A provider card carries real data only when it actually returned a
@@ -172,7 +179,10 @@ function BalancePanelView(props) {
               foldedProviders.map(providerCardFolded),
             ] }),
           ] }),
-        jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
+        jsxs("div", { className: "dbb_sectionHead", children: [
+          jsx("div", { className: "dbb_secTitle", children: t("usage.title") }),
+          jsx("button", { type: "button", className: "dbb_resetBtn", onClick: onResetRequest, disabled: resetting, children: resetting ? t("usage.resetting") : t("usage.reset") })
+        ] }),
         usageError
           ? jsx("div", { className: "dbb_error", children: t("usage.error") })
           : usage === null
@@ -260,17 +270,29 @@ function BalancePanelView(props) {
                   ] })
                 ] })
               ] })
-      ] })
+      ] }),
+      resetPending && jsx("div", { className: "dbb_confirmScrim", role: "presentation", children: jsxs("div", { className: "dbb_confirm", role: "dialog", "aria-modal": "true", "aria-labelledby": "dbb-reset-title", children: [
+        jsx("div", { id: "dbb-reset-title", className: "dbb_confirmTitle", children: t("usage.resetTitle") }),
+        jsx("p", { className: "dbb_confirmText", children: t("usage.resetText") }),
+        jsxs("div", { className: "dbb_confirmActions", children: [
+          jsx("button", { type: "button", autoFocus: true, className: "dbb_confirmCancel", onClick: onResetCancel, children: t("usage.resetCancel") }),
+          jsx("button", { type: "button", className: "dbb_confirmDanger", onClick: onResetConfirm, children: t("usage.resetConfirm") })
+        ] }),
+        resetError && jsx("div", { className: "dbb_error dbb_confirmError", children: t("usage.resetError") })
+      ] }) })
     ] })
   });
 }
 
 /** Stateful wrapper: usage loading, dismissal wiring, refresh. */
 function BalancePanel(props) {
-  const { t, balance, error, loadBalance, onClose } = props;
+  const { t, balance, error, loadBalance, onClose, selectedProviderId, onSelectProvider } = props;
   const [usage, setUsage] = react.useState(null);
   const [usageError, setUsageError] = react.useState(false);
   const [refreshing, setRefreshing] = react.useState(false);
+  const [resetPending, setResetPending] = react.useState(false);
+  const [resetting, setResetting] = react.useState(false);
+  const [resetError, setResetError] = react.useState(false);
   const panelRef = react.useRef(null);
 
   const loadUsage = react.useCallback(async (registeredAt) => {
@@ -292,10 +314,14 @@ function BalancePanel(props) {
   }, [loadUsage, balance?.registeredAt]);
 
   react.useEffect(() => {
-    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      if (resetPending) setResetPending(false);
+      else onClose();
+    };
     document.addEventListener("keydown", onKeyDown);
     return () => { document.removeEventListener("keydown", onKeyDown); };
-  }, [onClose]);
+  }, [onClose, resetPending]);
 
   react.useEffect(() => {
     const onPointerDown = (e) => {
@@ -324,6 +350,22 @@ function BalancePanel(props) {
     finally { setRefreshing(false); }
   };
 
+  const resetUsage = async () => {
+    if (resetting) return;
+    setResetting(true);
+    setResetError(false);
+    try {
+      const resp = await fetch('/desktop/usage-reset', { method: 'POST' });
+      if (!resp.ok) throw new Error('reset failed');
+      const data = await resp.json();
+      if (data?.ok !== true) throw new Error(data?.error ?? 'reset failed');
+      setResetPending(false);
+      await loadUsage(data.resetAt);
+    } catch {
+      setResetError(true);
+    } finally { setResetting(false); }
+  };
+
   return jsx(BalancePanelView, {
     t,
     balance,
@@ -331,9 +373,17 @@ function BalancePanel(props) {
     usage,
     usageError,
     refreshing,
+    resetting,
+    resetPending,
+    resetError,
     onRefresh: refresh,
+    onResetRequest: () => { setResetError(false); setResetPending(true); },
+    onResetCancel: () => { setResetError(false); setResetPending(false); },
+    onResetConfirm: resetUsage,
     onClose,
     panelRef,
+    selectedProviderId,
+    onSelectProvider,
   });
 }
 

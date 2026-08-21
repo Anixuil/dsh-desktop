@@ -82,3 +82,32 @@ export function readFileText(path) {
     truncated: read.truncated,
   }
 }
+
+/**
+ * Read a changed file, falling back to the recorded post-change text only
+ * when its original path has disappeared. Change records preserve that text,
+ * so historical entries remain inspectable after a workspace was moved.
+ */
+export function readChangedFile(path, after) {
+  const outcome = readFileText(path)
+  if (outcome.ok || outcome.code !== CODES.NOT_READABLE || typeof after !== 'string') return outcome
+  if (!/\bENOENT\b/.test(outcome.error)) return outcome
+
+  const content = after.replaceAll('\r\n', '\n')
+  const parts = content.split('\n')
+  const totalLines = content === ''
+    ? 0
+    : parts[parts.length - 1] === ''
+      ? parts.length - 1
+      : parts.length
+  return {
+    ok: true,
+    path,
+    content,
+    bytes: Buffer.byteLength(after, 'utf8'),
+    totalLines,
+    lang: langFromPath(path),
+    truncated: false,
+    snapshot: true,
+  }
+}

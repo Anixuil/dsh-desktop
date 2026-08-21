@@ -53,6 +53,7 @@ const result = factory(sandbox.require);
 if (typeof result.views?.BalancePanelView !== 'function') throw new Error('bundle must export views.BalancePanelView');
 if (typeof result.views?.AboutSectionView !== 'function') throw new Error('bundle must export views.AboutSectionView');
 if (typeof result.views?.AppearanceSectionView !== 'function') throw new Error('bundle must export views.AppearanceSectionView');
+if (typeof result.views?.PluginNetworkSectionView !== 'function') throw new Error('bundle must export views.PluginNetworkSectionView');
 if (typeof result.views?.RemoteSectionView !== 'function') throw new Error('bundle must export views.RemoteSectionView');
 if (typeof result.qr?.qrSvgDataUri !== 'function') throw new Error('bundle must export qr.qrSvgDataUri');
 if (typeof result.qr?.matrixFor !== 'function') throw new Error('bundle must export qr.matrixFor');
@@ -265,9 +266,17 @@ const render = (props) => renderToString(react.createElement(result.views.Balanc
   usage: null,
   usageError: false,
   refreshing: false,
+  resetting: false,
+  resetPending: false,
+  resetError: false,
   onRefresh: noop,
+  onResetRequest: noop,
+  onResetCancel: noop,
+  onResetConfirm: noop,
   onClose: noop,
   panelRef: null,
+  selectedProviderId: null,
+  onSelectProvider: noop,
   ...props,
 }));
 
@@ -316,8 +325,9 @@ const usageFixture = {
       ],
     },
     usage: usageFixture,
+    selectedProviderId: 'gateway',
   });
-  for (const marker of ['DeepSeek', '88.00', 'Gateway', '56.78', 'CNY', 'usage.active', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes']) {
+  for (const marker of ['DeepSeek', '88.00', 'Gateway', '56.78', 'CNY', 'usage.active', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes', 'dbb_providerCard', 'dbb_selected', 'aria-pressed="true"', 'balance.select']) {
     if (!markup.includes(marker)) throw new Error(`providers render missing ${marker}\n${markup}`);
   }
   // the three data-less providers are folded into a collapsed summary group
@@ -338,10 +348,19 @@ const usageFixture = {
 {
   const markup = render({ balance: { configured: true }, usage: null });
   if (!markup.includes('usage.empty')) throw new Error(`empty usage state missing marker\n${markup}`);
-  console.log('empty usage render ok');
+console.log('empty usage render ok');
 }
 
-// 5. about section view: identity rows + update/action markers
+// 5. reset uses a second confirmation layer and offers a recoverable cancel
+{
+  const markup = render({ balance: { configured: true }, usage: usageFixture, resetPending: true });
+  for (const marker of ['usage.reset', 'dbb_resetBtn', 'dbb_confirmScrim', 'usage.resetTitle', 'usage.resetText', 'usage.resetCancel', 'usage.resetConfirm']) {
+    if (!markup.includes(marker)) throw new Error(`usage reset confirmation missing ${marker}\n${markup}`);
+  }
+  console.log('usage reset confirmation render ok');
+}
+
+// 6. about section view: identity rows + update/action markers
 {
   const renderAbout = (props) => renderToString(react.createElement(result.views.AboutSectionView, {
     t,
@@ -368,7 +387,7 @@ const usageFixture = {
   console.log('about section render ok');
 }
 
-// 6. remote section view: online (custom relay) / default relay / disabled /
+// 7. remote section view: online (custom relay) / default relay / disabled /
 //    offline states
 {
   const renderRemote = (props) => renderToString(react.createElement(result.views.RemoteSectionView, {

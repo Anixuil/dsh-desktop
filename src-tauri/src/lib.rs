@@ -45,10 +45,11 @@ const MIN_REFRESH_INTERVAL_SECS: u64 = 3;
 /// Desktop plugin packages deployed from `runtime/plugins-src` into both the
 /// dsh module tree (update restore) and the boot-time profile tree
 /// (`ensure_runtime_files`). Each name doubles as its `--patch` row id.
-const DESKTOP_PLUGINS: [&str; 3] = [
+const DESKTOP_PLUGINS: [&str; 4] = [
     "dsh-desktop-bridge",
     "dsh-desktop-session-manager",
     "dsh-desktop-change-history",
+    "dsh-desktop-file-upload",
 ];
 /// Bundled third-party plugin (github.com/tianmingwan/dsh-vision-any). Ships in
 /// `runtime/plugins-src` and mounts through the web profile's `bundles` list —
@@ -1137,6 +1138,17 @@ pub struct AppConfig {
     /// itself is never persisted by the desktop client.
     #[serde(default)]
     pub remote_persistent_pairing_enabled: bool,
+    /// Optional outbound proxy used by the plugin market and pnpm. When absent,
+    /// the DSH child keeps the proxy inherited from the desktop process.
+    #[serde(default)]
+    pub plugin_network_proxy: Option<String>,
+    /// Optional npm-compatible registry for plugin packages. GitHub-source
+    /// plugins still use the proxy above for github.com/codeload.github.com.
+    #[serde(default)]
+    pub plugin_npm_registry: Option<String>,
+    /// Total timeout for one market package operation, in minutes.
+    #[serde(default = "default_plugin_install_timeout_minutes")]
+    pub plugin_install_timeout_minutes: u16,
 }
 
 fn default_remote_max_concurrent() -> u16 {
@@ -1145,6 +1157,10 @@ fn default_remote_max_concurrent() -> u16 {
 
 fn default_motion() -> MotionIntensity {
     MotionIntensity::Rich
+}
+
+fn default_plugin_install_timeout_minutes() -> u16 {
+    30
 }
 
 impl Default for AppConfig {
@@ -1166,6 +1182,9 @@ impl Default for AppConfig {
             remote_device_secret: None,
             remote_max_concurrent: 3,
             remote_persistent_pairing_enabled: false,
+            plugin_network_proxy: None,
+            plugin_npm_registry: None,
+            plugin_install_timeout_minutes: default_plugin_install_timeout_minutes(),
         }
     }
 }
@@ -1695,6 +1714,82 @@ fn save_config(path: &Path, config: &AppConfig) {
     if let Ok(s) = serde_json::to_string_pretty(config) {
         let _ = fs::write(path, s);
     }
+}
+
+fn valid_plugin_proxy(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(parsed.to_string().trim_end_matches('/').to_string())
+}
+
+fn valid_npm_registry(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(format!("{}/", parsed.as_str().trim_end_matches('/')))
+}
+
+fn plugin_network_snapshot(config: &AppConfig) -> serde_json::Value {
+    serde_json::json!({
+        "proxy": config.plugin_network_proxy,
+        "npmRegistry": config.plugin_npm_registry,
+        "installTimeoutMinutes": config.plugin_install_timeout_minutes.clamp(10, 60),
+    })
+}
+
+async fn probe_plugin_network(config: &AppConfig) -> serde_json::Value {
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(12));
+    if let Some(proxy) = config.plugin_network_proxy.as_deref() {
+        match reqwest::Proxy::all(proxy) {
+            Ok(value) => builder = builder.proxy(value),
+            Err(error) => {
+                return serde_json::json!({ "ok": false, "error": format!("代理配置无效: {error}") })
+            }
+        }
+    }
+    let client = match builder.build() {
+        Ok(value) => value,
+        Err(error) => {
+            return serde_json::json!({ "ok": false, "error": format!("无法创建网络检测客户端: {error}") })
+        }
+    };
+    let registry = config
+        .plugin_npm_registry
+        .as_deref()
+        .unwrap_or("https://registry.npmjs.org/");
+    let targets = [
+        ("market", "https://awesome-dsh-plugin.com/plugins.json"),
+        ("npm", registry),
+        ("github", "https://github.com"),
+        ("codeload", "https://codeload.github.com"),
+    ];
+    let mut checks = Vec::new();
+    for (name, url) in targets {
+        let started = Instant::now();
+        match client
+            .get(url)
+            .header(reqwest::header::RANGE, "bytes=0-1023")
+            .send()
+            .await
+        {
+            Ok(response) => checks.push(serde_json::json!({
+                "name": name,
+                "ok": response.status().is_success() || response.status().as_u16() == 206,
+                "status": response.status().as_u16(),
+                "elapsedMs": started.elapsed().as_millis(),
+            })),
+            Err(error) => checks.push(serde_json::json!({
+                "name": name,
+                "ok": false,
+                "elapsedMs": started.elapsed().as_millis(),
+                "error": error.to_string(),
+            })),
+        }
+    }
+    serde_json::json!({ "ok": checks.iter().all(|check| check["ok"] == true), "checks": checks })
 }
 
 /// Content for the shell's `--patch` overlay. The home-level user layer
@@ -2937,8 +3032,26 @@ fn spawn_dsh(paths: &Paths, config: &AppConfig) -> Result<Child, String> {
         .arg("--no-open")
         .arg("--port")
         .arg(dsh_port(config).to_string());
-    // always pass the resolved home explicitly (default = ~/.dsh, shares CLI sessions)
+    // Always pass the resolved home explicitly (default = ~/.dsh, shares CLI
+    // sessions). Plugin-network settings are injected into DSH's environment:
+    // dshmarket's Desktop runtime delegates to the packaged pnpm process, so
+    // this is the one durable boundary that covers both its catalog fetch and
+    // later package downloads.
     cmd.env("DSH_HOME", &paths.dsh_home);
+    if let Some(proxy) = config.plugin_network_proxy.as_deref() {
+        cmd.env("HTTP_PROXY", proxy)
+            .env("HTTPS_PROXY", proxy)
+            .env("http_proxy", proxy)
+            .env("https_proxy", proxy);
+    }
+    if let Some(registry) = config.plugin_npm_registry.as_deref() {
+        cmd.env("npm_config_registry", registry)
+            .env("NPM_CONFIG_REGISTRY", registry);
+    }
+    cmd.env(
+        "DSH_MARKET_INSTALL_TIMEOUT_MS",
+        (u64::from(config.plugin_install_timeout_minutes.clamp(10, 60)) * 60 * 1000).to_string(),
+    );
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     {
@@ -4334,6 +4447,113 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             200,
                             serde_json::json!({ "ok": true, "motion": parsed }),
                         ));
+                    }
+                    ("GET", "/plugin-network") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({ "ok": true, "config": plugin_network_snapshot(&config) }),
+                        ));
+                    }
+                    ("POST", "/plugin-network-save") => {
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                        let state2 = app2.state::<AppState>();
+                        let mut config = state2.config.lock().unwrap().clone();
+                        let proxy = payload
+                            .get("proxy")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        let registry = payload
+                            .get("npmRegistry")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        if !proxy.is_empty() && valid_plugin_proxy(proxy).is_none() {
+                            let _ = req.respond(json_response(400, serde_json::json!({ "ok": false, "error": "代理地址必须是 http:// 或 https:// URL" })));
+                            return;
+                        }
+                        if !registry.is_empty() && valid_npm_registry(registry).is_none() {
+                            let _ = req.respond(json_response(400, serde_json::json!({ "ok": false, "error": "npm 源必须是 http:// 或 https:// URL" })));
+                            return;
+                        }
+                        config.plugin_network_proxy = if proxy.is_empty() {
+                            None
+                        } else {
+                            valid_plugin_proxy(proxy)
+                        };
+                        config.plugin_npm_registry = if registry.is_empty() {
+                            None
+                        } else {
+                            valid_npm_registry(registry)
+                        };
+                        config.plugin_install_timeout_minutes = payload
+                            .get("installTimeoutMinutes")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(u64::from(default_plugin_install_timeout_minutes()))
+                            .clamp(10, 60)
+                            as u16;
+                        let paths2 = resolve_paths(&app2, &config);
+                        save_config(&paths2.config_file, &config);
+                        {
+                            let mut state_config = state2.config.lock().unwrap();
+                            *state_config = config.clone();
+                        }
+                        // This handler is reached THROUGH the DSH web server:
+                        // shell -> bridge -> browser. Killing DSH before its
+                        // bridge has relayed this response drops the browser
+                        // request and surfaces as a misleading “Failed to
+                        // fetch”. Acknowledge first, then restart from a
+                        // detached task after the response has cleared both
+                        // local hops.
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "config": plugin_network_snapshot(&config),
+                                "restartPending": true,
+                            }),
+                        ));
+                        let restart_app = app2.clone();
+                        let restart_paths = paths2.clone();
+                        let restart_config = config.clone();
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(750));
+                            let state = restart_app.state::<AppState>();
+                            // Hold the lifecycle lock across the hand-off so
+                            // the health loop cannot observe an empty slot and
+                            // launch a competing DSH process mid-restart.
+                            let mut dsh = state.dsh.lock().unwrap();
+                            let old = dsh.child.take();
+                            if let Some(mut child) = old {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            match spawn_dsh(&restart_paths, &restart_config) {
+                                Ok(child) => {
+                                    dsh.child = Some(child);
+                                    log_line(
+                                        &restart_paths.log_file,
+                                        "plugin network saved; DSH restarted",
+                                    );
+                                }
+                                Err(error) => log_line(
+                                    &restart_paths.log_file,
+                                    &format!("plugin network restart failed: {error}"),
+                                ),
+                            }
+                        });
+                    }
+                    ("POST", "/plugin-network-test") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let result = tauri::async_runtime::block_on(probe_plugin_network(&config));
+                        let status = if result["ok"] == true { 200 } else { 502 };
+                        let _ = req.respond(json_response(status, result));
                     }
                     ("GET", "/remote-config") => {
                         // Remote-access snapshot for the in-app settings
@@ -7517,6 +7737,27 @@ agent-default-model:
         assert_eq!(usage["total_usage_usd"], 1.0);
         assert_eq!(usage["soft_limit_usd"], 2.0);
         assert_eq!(usage["has_payment_method"], true);
+    }
+
+    #[test]
+    fn motion_defaults_to_rich_for_new_and_legacy_configs() {
+        assert_eq!(default_motion(), MotionIntensity::Rich);
+        assert_eq!(AppConfig::default().motion, MotionIntensity::Rich);
+
+        // Older config files omit `motion`; serde's field default must keep
+        // the first-run experience on the full, rich motion preset.
+        let legacy = serde_json::json!({
+            "apiKey": null,
+            "dshHome": null,
+            "dshPort": null,
+            "bridgeShellPort": 38657,
+            "bridgePort": 38658,
+            "balanceLowThreshold": 5.0,
+            "updateRepo": null,
+            "keyRegisteredAt": null
+        });
+        let parsed: AppConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.motion, MotionIntensity::Rich);
     }
 
     #[test]

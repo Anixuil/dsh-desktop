@@ -15,7 +15,7 @@ import { CODES, changeRow } from './lib/contract.js'
 import { ChangeStore } from './lib/store.js'
 import { unifiedDiff, diffStats } from './lib/diff.js'
 import { rollbackChange } from './lib/rollback.js'
-import { readFileText } from './lib/read.js'
+import { readChangedFile, readFileText } from './lib/read.js'
 
 export const name = 'dsh-desktop-change-history'
 export const inject = ['webServer']
@@ -32,6 +32,16 @@ function sessionTitleOf(session) {
     if (event?.type === 'session/title' && typeof event?.data?.title === 'string' && event.data.title !== '') {
       return event.data.title
     }
+  }
+  return null
+}
+
+/** Current agent turn from the latest durable turn/start event. */
+function turnOf(session) {
+  if (!Array.isArray(session?.events)) return null
+  for (let i = session.events.length - 1; i >= 0; i--) {
+    const event = session.events[i]
+    if (event?.type === 'turn/start' && typeof event.data?.turn === 'number') return event.data.turn
   }
   return null
 }
@@ -70,6 +80,7 @@ export function apply(ctx, config) {
       store.append({
         sessionId: session?.id ?? null,
         sessionTitle: sessionTitleOf(session),
+        turn: turnOf(session),
         callId: exec.callId ?? null,
         tool: exec.name,
         path: value.path,
@@ -91,13 +102,29 @@ export function apply(ctx, config) {
   }
   const guard = (res, error) => json(res, 400, { ok: false, code: CODES.BAD_REQUEST, error: String(error?.message ?? error) })
 
-  /** Project one stored record to a client-facing row (diff + stats + reviewed). */
+  /** Project one stored record to a client-facing row. */
   const rowOf = (record) => ({
     ...changeRow(record),
     stats: diffStats(record.before, record.after),
     diff: unifiedDiff(record.before, record.after),
+    status: store.statusOf(record.id),
     reviewed: store.isReviewed(record.id),
   })
+
+  /** One latest-record-per-path approval group, isolated to an agent turn. */
+  const turnOfRows = (sessionId, turn) => {
+    const selected = store.list()
+      .filter((record) => record.sessionId === sessionId && record.turn === turn)
+      .reverse()
+    const latest = new Map()
+    for (const record of selected) latest.set(record.path, record)
+    const changes = [...latest.values()].reverse().map(rowOf)
+    const totals = changes.reduce((out, row) => ({
+      added: out.added + (row.stats.added ?? 0),
+      removed: out.removed + (row.stats.removed ?? 0),
+    }), { added: 0, removed: 0 })
+    return { sessionId, turn, changes, totals }
+  }
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
@@ -119,7 +146,14 @@ export function apply(ctx, config) {
         }
         if (req.method === 'GET' && pathname === '/desktop-changes/read') {
           const path = url.searchParams.get('path') ?? ''
-          const outcome = readFileText(path)
+          const changeId = url.searchParams.get('changeId') ?? ''
+          const record = changeId === '' ? undefined : store.get(changeId)
+          // A record's post-change text is a safe, precise fallback for an
+          // ENOENT caused by a renamed or removed workspace. Never use it for
+          // a different path or for other read errors such as permissions.
+          const outcome = record?.path === path
+            ? readChangedFile(path, record.after)
+            : readFileText(path)
           return json(res, outcome.ok ? 200 : 400, outcome)
         }
         if (req.method === 'GET' && pathname === '/desktop-changes/resolve') {
@@ -137,6 +171,12 @@ export function apply(ctx, config) {
           }
           return json(res, 200, { ok: true, changes: rows.slice(0, limit) })
         }
+        if (req.method === 'GET' && pathname === '/desktop-changes/turn') {
+          const sessionId = url.searchParams.get('sessionId') ?? ''
+          const turn = Number(url.searchParams.get('turn'))
+          if (sessionId === '' || !Number.isInteger(turn)) return guard(res, new Error('缺少会话或轮次'))
+          return json(res, 200, { ok: true, approval: turnOfRows(sessionId, turn) })
+        }
         if (req.method === 'POST' && pathname === '/desktop-changes/review') {
           const body = await readJsonBody(req)
           const id = body.id
@@ -144,15 +184,32 @@ export function apply(ctx, config) {
           if (typeof id !== 'string' || id === '') return guard(res, new Error('缺少变更 id'))
           if (store.get(id) === undefined) return json(res, 404, { ok: false, code: CODES.NOT_FOUND, error: '变更记录不存在' })
           store.setReviewed(id, reviewed)
-          return json(res, 200, { ok: true, reviewed })
+          return json(res, 200, { ok: true, reviewed, status: store.statusOf(id) })
+        }
+        if (req.method === 'POST' && pathname === '/desktop-changes/approve') {
+          const { id } = await readJsonBody(req)
+          if (typeof id !== 'string' || id === '') return guard(res, new Error('缺少变更 id'))
+          if (store.get(id) === undefined) return json(res, 404, { ok: false, code: CODES.NOT_FOUND, error: '变更记录不存在' })
+          store.setStatus(id, 'approved')
+          return json(res, 200, { ok: true, status: 'approved' })
+        }
+        if (req.method === 'POST' && pathname === '/desktop-changes/approve-turn') {
+          const { sessionId, turn } = await readJsonBody(req)
+          if (typeof sessionId !== 'string' || sessionId === '' || !Number.isInteger(turn)) return guard(res, new Error('缺少会话或轮次'))
+          const approval = turnOfRows(sessionId, turn)
+          const approvedIds = approval.changes.filter((row) => row.status === 'pending').map((row) => row.id)
+          for (const id of approvedIds) store.setStatus(id, 'approved')
+          return json(res, 200, { ok: true, approvedIds })
         }
         if (req.method === 'POST' && pathname === '/desktop-changes/rollback') {
           const { id } = await readJsonBody(req)
           if (typeof id !== 'string' || id === '') return guard(res, new Error('缺少变更 id'))
           const record = store.get(id)
           if (record === undefined) return json(res, 404, { ok: false, code: CODES.NOT_FOUND, error: '变更记录不存在' })
+          if (store.statusOf(id) === 'rejected') return json(res, 409, { ok: false, code: CODES.BAD_REQUEST, error: '该变更已驳回' })
           const outcome = rollbackChange(record)
-          return json(res, outcome.ok ? 200 : 409, outcome)
+          if (outcome.ok) store.setStatus(id, 'rejected')
+          return json(res, outcome.ok ? 200 : 409, outcome.ok ? { ...outcome, status: 'rejected' } : outcome)
         }
         // Catch-all: include the request method + pathname in the error so the
         // client (and logs) show exactly what wasn't matched.

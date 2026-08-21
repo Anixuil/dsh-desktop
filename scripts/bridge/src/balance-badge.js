@@ -5,10 +5,29 @@ const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { BalancePanel } = require('./balance-panel.js');
 
 const noopSub = () => () => {};
+const SELECTED_PROVIDER_KEY = "dsh-desktop:selected-balance-provider";
 
-/** The active platform entry for a model selection (falls back to DeepSeek). */
-function activeProvider(providers, selection) {
+/** Move the footer-stack marker when React mounts, replaces, or removes us. */
+function footerContainer(node) {
+  const slotAnchor = node?.closest?.('[data-slot="sidebar.footer.action"]');
+  return slotAnchor?.parentElement ?? node?.parentElement ?? null;
+}
+
+function setFooterStack(previousNode, node) {
+  const previousFooter = footerContainer(previousNode);
+  if (previousFooter) previousFooter.classList.remove("dbb_footerStack");
+  const footer = footerContainer(node);
+  if (footer) footer.classList.add("dbb_footerStack");
+  return node;
+}
+
+/** The active platform entry for an explicit card selection or model selection. */
+function activeProvider(providers, selection, selectedProviderId) {
   if (!Array.isArray(providers) || providers.length === 0) return null;
+  if (selectedProviderId) {
+    const selected = providers.find((p) => p.id === selectedProviderId);
+    if (selected) return selected;
+  }
   if (selection?.provider) {
     const match = providers.find((p) => p.id === selection.provider);
     if (match) return match;
@@ -42,6 +61,34 @@ function BalanceBadge(props) {
   const [balance, setBalance] = react.useState(null);
   const [error, setError] = react.useState(false);
   const [open, setOpen] = react.useState(false);
+  const footerItemRef = react.useRef(null);
+  const bindFooterItem = react.useCallback((node) => {
+    footerItemRef.current = setFooterStack(footerItemRef.current, node);
+  }, []);
+  const [selectedProviderId, setSelectedProviderId] = react.useState(() => {
+    try {
+      return window.localStorage?.getItem(SELECTED_PROVIDER_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  });
+
+  // The upstream footer slot is a horizontal flex row. Mark the actual slot
+  // node as soon as React commits this item so every other plugin action stacks
+  // above the full-width balance card. The renderer's stable data-slot anchor
+  // is display:contents, so setFooterStack steps through it to the real flex
+  // container. This stays independent from upstream CSS-module hashes and
+  // :has() support in the host WebView.
+
+  react.useEffect(() => {
+    try {
+      if (selectedProviderId) {
+        window.localStorage?.setItem(SELECTED_PROVIDER_KEY, selectedProviderId);
+      } else {
+        window.localStorage?.removeItem(SELECTED_PROVIDER_KEY);
+      }
+    } catch { /* selection persistence is best-effort */ }
+  }, [selectedProviderId]);
 
   const loadBalance = react.useCallback(async (signal) => {
     try {
@@ -125,7 +172,7 @@ function BalanceBadge(props) {
   const selection = dirSnap?.current ?? null;
 
   const providers = balance?.providers ?? null;
-  const active = activeProvider(providers, selection);
+  const active = activeProvider(providers, selection, selectedProviderId);
   const amount = providers === null
     // legacy shell without multi-provider payload
     ? (() => {
@@ -141,7 +188,10 @@ function BalanceBadge(props) {
     : !providers.some((p) => p.configured);
   const amountLabel = active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
 
-  return jsxs(Fragment, { children: [
+  return jsxs("div", {
+    ref: bindFooterItem,
+    className: "dbb_footerItem" + (wide ? "" : " dbb_footerRail"),
+    children: [
     jsx(primitives.Tooltip, {
       label: error ? t("badge.offline") : amount !== null ? `${amountLabel}: ${amount}` : off ? t("badge.unconfigured") : amountLabel,
       delayMs: 500,
@@ -171,9 +221,12 @@ function BalanceBadge(props) {
       balance,
       error,
       loadBalance,
+      selectedProviderId: active?.id ?? null,
+      onSelectProvider: setSelectedProviderId,
       onClose: () => { setOpen(false); },
     })
-  ] });
+    ]
+  });
 }
 
-module.exports = { noopSub, activeProvider, providerAmount, BalanceBadge };
+module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, BalanceBadge };

@@ -20,6 +20,8 @@ import {
 } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import path, { join } from 'node:path';
+import { applyDshmarketDesktopPatch } from './dshmarket-desktop-patch.mjs';
+import { applyDshSkillDesktopPatch } from './dsh-skill-desktop-patch.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const runtimeDir = path.join(root, 'runtime');
@@ -110,6 +112,7 @@ if (!existsSync(dshBin) || refreshDsh) {
 } else {
   console.log(`[2/3] dsh already installed`);
 }
+applyDshSkillDesktopPatch(path.join(dshDir, 'node_modules'));
 
 // ---------------------------------------------------------------- 3. plugins
 console.log('[3/3] installing desktop plugin packages into the dsh module tree ...');
@@ -193,6 +196,7 @@ console.log('[4/5] installing bundled plugin market (dshmarket) ...');
   } else {
     console.log(`plugin market ${name}@${version} already installed`);
   }
+  applyDshmarketDesktopPatch(path.join(dshDir, 'node_modules', name));
   for (const packageName of runtimePackages) {
     const src = path.join(dshDir, 'node_modules', packageName);
     if (!existsSync(path.join(src, 'package.json'))) {

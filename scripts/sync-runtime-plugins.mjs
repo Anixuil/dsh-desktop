@@ -18,6 +18,7 @@ const plugins = [
   { name: 'dsh-desktop-bridge', dir: 'bridge' },
   { name: 'dsh-desktop-session-manager', dir: 'session-manager' },
   { name: 'dsh-desktop-change-history', dir: 'change-history' },
+  { name: 'dsh-desktop-file-upload', dir: 'file-upload' },
 ]
 
 if (!existsSync(runtime)) {
