@@ -41,9 +41,10 @@ body {
 .splash .emblem { animation-delay: .05s; }
 .splash .brand { animation-delay: .14s; }
 .splash .brand-sub { animation-delay: .18s; }
-.splash .track { animation-delay: .24s; }
-.splash .meta { animation-delay: .3s; }
-.splash .status { animation-delay: .34s; }
+.splash .brand-meta { animation-delay: .22s; }
+.splash .track { animation-delay: .28s; }
+.splash .meta { animation-delay: .34s; }
+.splash .status { animation-delay: .38s; }
 
 /* ready → "dive" transition before navigating to the dsh web UI */
 body.dive .splash { opacity: 0; transform: translateY(14px) scale(1.02); }
@@ -99,10 +100,20 @@ body.dive .waves, body.dive .bg { transition: opacity .3s ease; opacity: .4; }
   margin-top: 4px; font-size: 12px; letter-spacing: 3px;
   color: var(--depth); text-transform: uppercase;
 }
+.brand-meta {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 11px; min-height: 16px;
+  color: rgba(156, 177, 215, .68); font-size: 11px; letter-spacing: .3px;
+}
+.brand-meta-item[hidden], .brand-meta-separator[hidden] { display: none; }
+.brand-meta-item strong { color: rgba(214, 226, 247, .88); font-weight: 500; }
+.brand-meta-separator {
+  width: 1px; height: 10px; background: rgba(131, 161, 215, .28);
+}
 
 /* ---- progress ---- */
 .track {
-  width: 264px; height: 4px; margin-top: 30px;
+  width: 264px; height: 4px; margin-top: 24px;
   background: rgba(255, 255, 255, .07);
   border-radius: 999px; overflow: hidden;
 }

@@ -8,14 +8,15 @@
     "build": "tauri build",
     "release:build": "node scripts/release-build.mjs",
     "release-dev": "node scripts/release-build.mjs --dev",
+    "release-dev:fast": "node scripts/release-build.mjs --dev --fast",
     "check": "tauri build --no-bundle",
     "fetch-runtime": "node scripts/fetch-runtime.mjs",
     "bundle-runtime": "node scripts/make-runtime-archive.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "icons": "node scripts/make-whale-icon.mjs && node scripts/rasterize-whale.mjs && tauri icon src-tauri/icons/icon.png",
-    "build:plugins": "node scripts/bridge/build.mjs && node scripts/session-manager/build.mjs && node scripts/change-history/build.mjs && node scripts/file-upload/build.mjs && node scripts/web-search/build.mjs && node scripts/sync-runtime-plugins.mjs --no-build && node scripts/vision-any/build.mjs && node scripts/sync-vision-any.mjs --no-build",
+    "build:plugins": "node scripts/bridge/build.mjs && node scripts/session-manager/build.mjs && node scripts/change-history/build.mjs && node scripts/file-upload/build.mjs && node scripts/conversation-navigator/build.mjs && node scripts/web-search/build.mjs && node scripts/sync-runtime-plugins.mjs --no-build && node scripts/vision-any/build.mjs && node scripts/sync-vision-any.mjs --no-build",
     "test:ui": "node scripts/test-ui-syntax.mjs",
-    "test:plugins": "node scripts/test-client-bundle.mjs && node scripts/test-session-manager.mjs && node scripts/test-session-manager-host.mjs && node scripts/test-change-history.mjs && node scripts/test-bridge-bundle-diff.mjs && node scripts/test-bridge-views.mjs && node scripts/test-bridge-host.mjs && node scripts/test-model-behavior.mjs && node scripts/test-web-search.mjs && node scripts/test-vision-any.mjs && node scripts/test-ui-syntax.mjs && node scripts/test-release-config.mjs && node scripts/test-relay.mjs && node scripts/test-relay-client.mjs && node scripts/test-skill-provider-isolation.mjs && node scripts/test-model-reasoning.mjs && node scripts/test-content-scroll.mjs && node scripts/test-dshmarket-cancel-rollback.mjs && node scripts/test-dshmarket-residue-cleanup.mjs"
+    "test:plugins": "node scripts/test-client-bundle.mjs && node scripts/test-session-manager.mjs && node scripts/test-session-manager-host.mjs && node scripts/test-change-history.mjs && node scripts/test-conversation-navigator.mjs && node scripts/test-bridge-bundle-diff.mjs && node scripts/test-bridge-views.mjs && node scripts/test-bridge-host.mjs && node scripts/test-model-behavior.mjs && node scripts/test-web-search.mjs && node scripts/test-vision-any.mjs && node scripts/test-ui-syntax.mjs && node scripts/test-release-config.mjs && node scripts/test-relay.mjs && node scripts/test-relay-client.mjs && node scripts/test-skill-provider-isolation.mjs && node scripts/test-model-reasoning.mjs && node scripts/test-content-scroll.mjs && node scripts/test-dshmarket-cancel-rollback.mjs && node scripts/test-dshmarket-residue-cleanup.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

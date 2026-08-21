@@ -46,8 +46,8 @@ workflow 会在工作树版本仍等于线上 latest、tag 与配置不一致，
 
 ```
 runtime/
-├─ runtime-archive.tar.gz   安装包内置的单归档（node/ + dsh/）
-├─ plugins-src/             桌面插件规范副本（每个 dsh 更新后恢复到新树）
+├─ runtime-archive.tar.gz   安装包内置的 core 归档（node/ + dsh/，不重复包含桌面插件）
+├─ plugins-src/             独立打包的桌面插件规范副本（启动部署、每个 dsh 更新后恢复）
 │  ├─ dsh-desktop-bridge/   壳↔DSH 桥（turn-end 通知、凭据写入、用量看板）
 │  ├─ dsh-desktop-session-manager/  会话管理插件（列表/删除/恢复归档）
 │  ├─ dsh-desktop-change-history/   变更历史插件（AI 文件改动 diff 查看/回滚）
@@ -59,7 +59,9 @@ runtime/
 └─ .update-backup.json      dsh 更新后的待验证记录（回滚依据）
 ```
 
-`node/` 与 `dsh/` 默认解压到安装目录下的 `runtime/`。安装器完成资源复制后会以
+`node/` 与 `dsh/` core 默认解压到安装目录下的 `runtime/`；桌面插件从独立的
+`plugins-src/` 部署到共享 DSH profile，因此仅修改插件不会使整个 core 归档失效。
+安装器完成资源复制后会以
 隐藏模式启动一次桌面端，后台预热归档；用户在预热结束后首次打开即可直接进入正常冷
 启动。若用户立刻打开，单实例窗口会复用同一预热任务，不会重复解压。预热被中断或
 失败时，普通启动会自动安全重试。

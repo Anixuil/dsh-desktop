@@ -46,6 +46,11 @@ export function normalizeTurnTitle(session, event) {
 export function registerTurnNotifier(ctx, { shellPort, post } = {}) {
   const turns = new Map()
   let focusedId = null
+  // Exact turn events are a runtime capability, not a per-session feature.
+  // Once observed, coarse agent lifecycle transitions must never create turns:
+  // maintenance work (including balance refreshes) can also move an agent back
+  // to idle and is not a conversation completion.
+  let exactTurnEventsAvailable = false
 
   const send = post ?? ((payload) => fetch(`http://127.0.0.1:${shellPort}${TURN_END_PATH}`, {
     method: 'POST',
@@ -98,11 +103,18 @@ export function registerTurnNotifier(ctx, { shellPort, post } = {}) {
     const id = idOf(session)
     if (id === null) return
     const title = normalizeTurnTitle(session, event)
-    if (event?.type === 'turn/start') arm(id, title)
-    if (event?.type === 'turn/end') finish(id, title)
+    if (event?.type === 'turn/start') {
+      exactTurnEventsAvailable = true
+      arm(id, title)
+    }
+    if (event?.type === 'turn/end') {
+      exactTurnEventsAvailable = true
+      finish(id, title)
+    }
   })
 
   ctx.on('agent/status', (payload) => {
+    if (exactTurnEventsAvailable) return
     const id = idOf(payload?.agent)
     if (id === null) return
     const title = normalizeTurnTitle(payload.agent, payload)

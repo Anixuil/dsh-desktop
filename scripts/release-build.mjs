@@ -1,12 +1,20 @@
 // Full Windows release build with step-level progress and timings.
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
 const startedAt = Date.now();
 const npmCli = process.env.npm_execpath;
 const developmentRelease = process.argv.includes('--dev');
+const fastRelease = process.argv.includes('--fast');
+const forceInstall = process.argv.includes('--force-install');
+const installStateFile = path.join(root, '.npm-cache', 'release-install-state.json');
+
+if (fastRelease && !developmentRelease) {
+  throw new Error('--fast 仅用于本地 development release，请使用 npm run release-dev:fast');
+}
 
 function stamp() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -28,7 +36,7 @@ function readDshVersion() {
   }
 }
 
-function run(index, total, name, command, args) {
+function run(index, total, name, command, args, options = {}) {
   const stepStartedAt = Date.now();
   console.log(`\n[${stamp()}] [${index}/${total}] START ${name}`);
   console.log(`> ${command} ${args.join(' ')}`);
@@ -36,6 +44,7 @@ function run(index, total, name, command, args) {
     cwd: root,
     stdio: 'inherit',
     windowsHide: true,
+    env: { ...process.env, ...options.env },
   });
   const elapsed = duration(Date.now() - stepStartedAt);
   if (result.error) {
@@ -49,9 +58,42 @@ function run(index, total, name, command, args) {
   console.log(`[${stamp()}] [${index}/${total}] DONE ${name} in ${elapsed}`);
 }
 
-function runNpm(index, total, name, args) {
-  if (npmCli) return run(index, total, name, process.execPath, [npmCli, ...args]);
-  return run(index, total, name, 'npm', args);
+function runNpm(index, total, name, args, options) {
+  if (npmCli) return run(index, total, name, process.execPath, [npmCli, ...args], options);
+  return run(index, total, name, 'npm', args, options);
+}
+
+function dependencyFingerprint() {
+  const hash = createHash('sha256');
+  for (const file of ['package.json', 'package-lock.json']) hash.update(readFileSync(path.join(root, file)));
+  return hash.digest('hex');
+}
+
+function dependenciesAreCurrent(fingerprint) {
+  if (forceInstall || !existsSync(path.join(root, 'node_modules', '@tauri-apps', 'cli', 'package.json'))) return false;
+  if (!existsSync(installStateFile)) return false;
+  try {
+    return JSON.parse(readFileSync(installStateFile, 'utf8')).fingerprint === fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+function ensureDependencies(index, total) {
+  const fingerprint = dependencyFingerprint();
+  if (dependenciesAreCurrent(fingerprint)) {
+    console.log(`\n[${stamp()}] [${index}/${total}] SKIP JavaScript dependencies unchanged`);
+    return;
+  }
+  runNpm(index, total, 'install JavaScript dependencies', [
+    'install',
+    '--cache',
+    '.npm-cache',
+    '--no-audit',
+    '--no-fund',
+  ]);
+  mkdirSync(path.dirname(installStateFile), { recursive: true });
+  writeFileSync(installStateFile, `${JSON.stringify({ fingerprint }, null, 2)}\n`);
 }
 
 function acquireReleaseLock() {
@@ -70,19 +112,22 @@ function acquireReleaseLock() {
 }
 
 if (process.argv.includes('--help')) {
-  console.log('Usage: npm run release:build | npm run release-dev');
+  console.log('Usage: npm run release:build | npm run release-dev | npm run release-dev:fast');
   console.log('release:build refreshes to the latest dsh runtime before building.');
   console.log('release-dev keeps the checked-out runtime and rebuilds all local release artifacts.');
+  console.log('release-dev:fast uses Thin LTO, parallel codegen, and an uncompressed NSIS test installer.');
+  console.log('Pass --force-install to refresh JavaScript dependencies even when lock files are unchanged.');
   process.exit(0);
 }
 
 const releaseLock = acquireReleaseLock();
 process.once('exit', releaseLock);
 
-const totalSteps = 8;
-console.log(`[${stamp()}] ${developmentRelease ? 'Development release' : 'Release'} build started in ${root}`);
+const totalSteps = 7;
+const releaseName = fastRelease ? 'Fast development release' : developmentRelease ? 'Development release' : 'Release';
+console.log(`[${stamp()}] ${releaseName} build started in ${root}`);
 
-runNpm(1, totalSteps, 'install JavaScript dependencies', ['install', '--cache', '.npm-cache']);
+ensureDependencies(1, totalSteps);
 let step = 2;
 if (developmentRelease) {
   run(step, totalSteps, 'verify embedded runtime', process.execPath, [
@@ -97,11 +142,25 @@ step += 1;
 runNpm(step++, totalSteps, 'rebuild embedded plugins', ['run', 'build:plugins']);
 runNpm(step++, totalSteps, 'run plugin and UI tests', ['run', 'test:plugins']);
 run(step++, totalSteps, 'run Rust tests', 'cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml']);
-runNpm(step++, totalSteps, 'compile Tauri without bundling', ['run', 'check']);
 runNpm(step++, totalSteps, 'archive embedded runtime', ['run', 'bundle-runtime']);
-runNpm(step, totalSteps, 'build NSIS installer', ['run', 'build']);
+const buildArgs = fastRelease
+  ? ['run', 'build', '--', '--config', 'src-tauri/tauri.fast.conf.json']
+  : ['run', 'build'];
+const buildEnv = fastRelease
+  ? {
+      CARGO_PROFILE_RELEASE_LTO: 'thin',
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '8',
+      CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target-fast'),
+    }
+  : undefined;
+runNpm(step, totalSteps, fastRelease ? 'build fast NSIS installer' : 'build NSIS installer', buildArgs, {
+  env: buildEnv,
+});
 
-const installerDir = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'nsis');
+const cargoTargetDir = fastRelease
+  ? path.join(root, 'src-tauri', 'target-fast')
+  : path.join(root, 'src-tauri', 'target');
+const installerDir = path.join(cargoTargetDir, 'release', 'bundle', 'nsis');
 console.log(`\n[${stamp()}] Release build complete in ${duration(Date.now() - startedAt)}`);
 console.log(`Embedded dsh version: ${readDshVersion()}`);
 console.log(`Installer directory: ${installerDir}`);

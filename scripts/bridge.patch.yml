@@ -14,5 +14,7 @@
       name: dsh-desktop-change-history
     - id: dsh-desktop-file-upload
       name: dsh-desktop-file-upload
+    - id: dsh-desktop-conversation-navigator
+      name: dsh-desktop-conversation-navigator
     - id: dsh-desktop-web-search
       name: dsh-desktop-web-search

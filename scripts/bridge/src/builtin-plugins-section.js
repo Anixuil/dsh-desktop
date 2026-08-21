@@ -13,6 +13,7 @@ const PLUGIN_GROUPS = [
       'dsh-desktop-session-manager',
       'dsh-desktop-change-history',
       'dsh-desktop-file-upload',
+      'dsh-desktop-conversation-navigator',
     ],
   },
   { id: 'services', plugins: ['dsh-vision-any', 'dshmarket'] },

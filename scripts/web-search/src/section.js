@@ -17,6 +17,7 @@ async function request(path, init) {
   if (!response.ok || payload?.ok !== true) {
     const error = new Error(payload?.error?.message ?? `HTTP ${String(response.status)}`)
     error.code = payload?.error?.code
+    error.details = payload?.error?.details
     throw error
   }
   return payload.value
@@ -52,13 +53,65 @@ function SourceHeader({ index, title, description, enabled, disabled, onToggle, 
   ] })
 }
 
-function WebSearchSection({ t, isLoopback, subscribe }) {
+const selectCurrentSession = (state) => state.current
+const emptyUseSessions = (selector) => selector({ current: undefined })
+
+function SourceTest({ kind, result, testing, disabled, t, onTest }) {
+  const success = result?.kind === 'ok'
+  const failed = result?.kind === 'err'
+  const text = success
+    ? kind === 'native'
+      ? t('nativeTestOk', {
+          provider: result.value.provider,
+          model: result.value.model,
+          count: result.value.count,
+          elapsed: result.value.elapsedMs,
+        })
+      : t('customTestOk', { count: result.value.count, elapsed: result.value.elapsedMs })
+    : failed
+      ? kind === 'native' && result.details?.provider && result.details?.model
+        ? t('nativeTestFailed', {
+            provider: result.details.provider,
+            model: result.details.model,
+            elapsed: result.details.elapsedMs,
+            message: result.message,
+          })
+        : kind === 'custom' && result.details?.source
+          ? t('customTestFailed', {
+              source: result.details.source,
+              elapsed: result.details.elapsedMs,
+              message: result.message,
+            })
+          : t('testFailed', { message: result.message })
+      : null
+  return jsxs('div', { className: 'dws_testRow', children: [
+    jsxs('div', { className: 'dws_testCopy', 'aria-live': 'polite', children: [
+      jsx('span', { className: 'dws_testLabel', children: kind === 'native' ? t('nativeTestLabel') : t('customTestLabel') }),
+      text ? jsx('span', {
+        className: success ? 'dws_testResult dws_testResultOk' : 'dws_testResult dws_testResultErr',
+        role: failed ? 'alert' : 'status',
+        children: text,
+      }) : jsx('span', { className: 'dws_testHint', children: kind === 'native' ? t('nativeTestHint') : t('customTestHint') }),
+    ] }),
+    jsx('button', {
+      type: 'button',
+      className: 'dws_secondary dws_testButton',
+      disabled,
+      onClick: onTest,
+      children: testing ? t('testing') : kind === 'native' ? t('testNative') : t('testCustom'),
+    }),
+  ] })
+}
+
+function WebSearchSection({ t, isLoopback, subscribe, useSessions = emptyUseSessions }) {
+  const currentSessionId = useSessions(selectCurrentSession)
   const [view, setView] = react.useState(null)
   const [writable, setWritable] = react.useState(true)
   const [credential, setCredential] = react.useState({ configured: false, writable: false })
   const [draft, setDraft] = react.useState(null)
   const [busy, setBusy] = react.useState(false)
-  const [testing, setTesting] = react.useState(false)
+  const [testingSource, setTestingSource] = react.useState(null)
+  const [testResults, setTestResults] = react.useState({})
   const [error, setError] = react.useState(null)
   const [notice, setNotice] = react.useState(null)
 
@@ -97,10 +150,11 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     ] })
   }
 
-  const disabled = busy || testing || !writable
+  const disabled = busy || testingSource !== null || !writable
   const customEnabled = draft.customProvider !== 'none'
   const update = (patch) => {
     setNotice(null)
+    setTestResults({})
     setDraft((current) => ({ ...current, ...patch }))
   }
 
@@ -158,18 +212,32 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     }
   }
 
-  const test = async () => {
-    setTesting(true)
-    setNotice(null)
+  const test = async (kind) => {
+    setTestingSource(kind)
+    setTestResults((current) => ({ ...current, [kind]: null }))
     try {
-      const value = await request('/test', { method: 'POST' })
-      setNotice({ kind: 'ok', text: t('testOk', { count: value.count }) })
+      const body = kind === 'custom'
+        ? {
+            config: {
+              customProvider: draft.customProvider,
+              customBaseURL: draft.customBaseURL.trim(),
+              customApiKeyEnv: draft.customApiKeyEnv.trim(),
+              sourceTimeoutMs: draft.sourceTimeoutMs,
+            },
+            apiKey: draft.apiKey,
+          }
+        : { sessionId: currentSessionId }
+      const value = await request(`/test/${kind}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setTestResults((current) => ({ ...current, [kind]: { kind: 'ok', value } }))
     } catch (cause) {
-      const text = String(cause?.message ?? cause)
-      setNotice({ kind: 'err', text })
-      showMessage(text)
+      const message = String(cause?.message ?? cause)
+      setTestResults((current) => ({ ...current, [kind]: { kind: 'err', message, details: cause?.details } }))
     } finally {
-      setTesting(false)
+      setTestingSource(null)
     }
   }
 
@@ -220,10 +288,26 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
             jsx('span', { className: 'dws_hint', children: t('apiKeyEnvHint') }),
             credential.configured ? jsx('button', { type: 'button', className: 'dws_textButton', disabled, onClick: clearKey, children: t('clearKey') }) : null,
           ] }),
+          jsx(SourceTest, {
+            kind: 'custom',
+            result: testResults.custom,
+            testing: testingSource === 'custom',
+            disabled: busy || testingSource !== null,
+            t,
+            onTest: () => test('custom'),
+          }),
         ] }) : null,
       ] }),
       jsxs('div', { className: `dws_source${draft.nativeEnabled ? ' dws_sourceEnabled' : ''}`, children: [
         jsx(SourceHeader, { index: 2, title: t('nativeTitle'), description: t('nativeDescription'), enabled: draft.nativeEnabled, disabled, onToggle: (checked) => update({ nativeEnabled: checked }) }),
+        draft.nativeEnabled ? jsx('div', { className: 'dws_sourceBody dws_sourceBodyCompact', children: jsx(SourceTest, {
+          kind: 'native',
+          result: testResults.native,
+          testing: testingSource === 'native',
+          disabled: busy || testingSource !== null,
+          t,
+          onTest: () => test('native'),
+        }) }) : null,
       ] }),
       jsxs('div', { className: `dws_source${draft.deepseekFallback ? ' dws_sourceEnabled' : ''}`, children: [
         jsx(SourceHeader, { index: 3, title: t('deepseekTitle'), description: t('deepseekDescription'), enabled: draft.deepseekFallback, disabled, onToggle: (checked) => update({ deepseekFallback: checked }) }),
@@ -236,7 +320,6 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     jsxs('div', { className: 'dws_actions', children: [
       !writable ? jsx('span', { className: 'dws_notice', children: t('readOnly') }) : null,
       notice ? jsx('span', { className: notice.kind === 'ok' ? 'dws_status dws_statusOk' : 'dws_status dws_statusErr', role: notice.kind === 'err' ? 'alert' : 'status', children: notice.text }) : null,
-      jsx('button', { type: 'button', className: 'dws_secondary', disabled: disabled || !customEnabled, onClick: test, children: testing ? t('testing') : t('test') }),
       jsx('button', { type: 'button', className: 'dws_primary', disabled, onClick: save, children: busy ? t('saving') : t('save') }),
     ] }),
   ] })

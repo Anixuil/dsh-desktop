@@ -34,7 +34,7 @@ export function apply(ctx, rowConfig = {}) {
 
   const provider = new PrioritySearchProvider(ctx, () => source())
   ctx.web.registerSearchProvider(provider)
-  registerSearchRoutes(ctx, SEARCH_SETTINGS_NAMESPACE, () => handle, () => source())
+  registerSearchRoutes(ctx, SEARCH_SETTINGS_NAMESPACE, () => handle, () => source(), provider)
 }
 
 export { PrioritySearchProvider } from './lib/provider.js'

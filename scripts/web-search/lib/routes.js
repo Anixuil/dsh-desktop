@@ -1,8 +1,18 @@
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { searchCustom } from './search.js'
+import { validateConfig } from './config.js'
 
 const MAX_BODY_BYTES = 64 * 1024
+const TEST_QUERY = 'DeepSeek Harness official website'
+const CONFIG_FIELDS = [
+  'customProvider',
+  'customBaseURL',
+  'customApiKeyEnv',
+  'nativeEnabled',
+  'deepseekFallback',
+  'sourceTimeoutMs',
+]
 
 function json(res, status, payload) {
   res.writeHead(status, {
@@ -58,7 +68,41 @@ async function settingsPayload(ctx, namespace, handle) {
   }
 }
 
-export function registerSearchRoutes(ctx, namespace, handle, getConfig) {
+function testConfig(current, value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return current
+  const next = { ...current }
+  for (const field of CONFIG_FIELDS) {
+    if (Object.hasOwn(value, field)) next[field] = value[field]
+  }
+  validateConfig(next)
+  return next
+}
+
+function currentModelRoute(ctx, sessionId) {
+  const agents = ctx.get('agents')
+  const agent = typeof sessionId === 'string' && sessionId.length > 0 ? agents?.get(sessionId) : undefined
+  const logged = agent?.session?.requestHeader?.()?.config
+  if (logged?.provider && logged?.model) return { provider: logged.provider, model: logged.model }
+  if (agent?.options?.provider && agent?.options?.model) {
+    return { provider: agent.options.provider, model: agent.options.model }
+  }
+  const fallback = ctx.get('agentDefaultModel')?.currentSelection?.()
+  if (fallback?.provider && fallback?.model) return { provider: fallback.provider, model: fallback.model }
+  return undefined
+}
+
+function testFailure(res, error, startedAt, details = {}) {
+  return json(res, 502, {
+    ok: false,
+    error: {
+      code: error?.code ?? 'test-failed',
+      message: String(error?.message ?? error),
+      details: { ...details, elapsedMs: Date.now() - startedAt },
+    },
+  })
+}
+
+export function registerSearchRoutes(ctx, namespace, handle, getConfig, provider) {
   ctx.inject(['webServer'], (sctx) => {
     sctx.effect(() => sctx.webServer.register({
       kind: 'prefix',
@@ -112,18 +156,79 @@ export function registerSearchRoutes(ctx, namespace, handle, getConfig) {
             return json(res, 400, { ok: false, error: { code: 'credential-rejected', message: String(error?.message ?? error) } })
           }
         }
-        if (pathname === '/desktop-web-search/test' && req.method === 'POST') {
-          const config = getConfig()
+        if ((pathname === '/desktop-web-search/test' || pathname === '/desktop-web-search/test/custom') && req.method === 'POST') {
+          let body
+          try { body = await readJsonBody(req) } catch (error) {
+            return json(res, 400, { ok: false, error: { code: 'bad-request', message: String(error?.message ?? error) } })
+          }
+          let config
+          try { config = testConfig(getConfig(), body.config) } catch (error) {
+            return json(res, 400, { ok: false, error: { code: 'settings-rejected', message: String(error?.message ?? error) } })
+          }
           if (config.customProvider === 'none') {
             return json(res, 400, { ok: false, error: { code: 'custom-disabled', message: 'custom search is disabled' } })
           }
           const controller = new AbortController()
           const timer = setTimeout(() => controller.abort(), config.sourceTimeoutMs)
+          const startedAt = Date.now()
           try {
-            const result = await searchCustom(ctx, config, { query: 'DeepSeek Harness', maxResults: 3 }, controller.signal)
-            return json(res, 200, { ok: true, value: { count: result.sources.length, sources: result.sources } })
+            const result = await searchCustom(
+              ctx,
+              config,
+              { query: TEST_QUERY, maxResults: 3 },
+              controller.signal,
+              { apiKey: body.apiKey },
+            )
+            return json(res, 200, {
+              ok: true,
+              value: {
+                source: `custom/${config.customProvider}`,
+                count: result.sources.length,
+                sources: result.sources,
+                elapsedMs: Date.now() - startedAt,
+              },
+            })
           } catch (error) {
-            return json(res, 502, { ok: false, error: { code: error?.code ?? 'test-failed', message: String(error?.message ?? error) } })
+            return testFailure(res, error, startedAt, { source: `custom/${config.customProvider}` })
+          } finally {
+            clearTimeout(timer)
+          }
+        }
+        if (pathname === '/desktop-web-search/test/native' && req.method === 'POST') {
+          let body
+          try { body = await readJsonBody(req) } catch (error) {
+            return json(res, 400, { ok: false, error: { code: 'bad-request', message: String(error?.message ?? error) } })
+          }
+          const route = currentModelRoute(ctx, body.sessionId)
+          if (!route) {
+            return json(res, 400, {
+              ok: false,
+              error: { code: 'model-unavailable', message: 'no current provider/model is available for testing' },
+            })
+          }
+          const config = getConfig()
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), config.sourceTimeoutMs)
+          const startedAt = Date.now()
+          try {
+            const result = await provider.searchCurrentModel(
+              { query: TEST_QUERY, maxResults: 3 },
+              controller.signal,
+              route,
+            )
+            return json(res, 200, {
+              ok: true,
+              value: {
+                source: 'model-native',
+                provider: route.provider,
+                model: route.model,
+                count: result.sources.length,
+                sources: result.sources,
+                elapsedMs: Date.now() - startedAt,
+              },
+            })
+          } catch (error) {
+            return testFailure(res, error, startedAt, route)
           } finally {
             clearTimeout(timer)
           }

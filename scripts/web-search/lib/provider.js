@@ -107,9 +107,9 @@ export class PrioritySearchProvider {
     )
   }
 
-  async searchCurrentModel(request, signal) {
+  async searchCurrentModel(request, signal, route) {
     const agent = this.ctx.get('agents')?.currentInitiator()
-    const routed = agent?.session?.requestHeader?.()?.config
+    const routed = route ?? agent?.session?.requestHeader?.()?.config
     const provider = routed?.provider ?? agent?.options?.provider
     const model = routed?.model ?? agent?.options?.model
     if (!provider || !model) {

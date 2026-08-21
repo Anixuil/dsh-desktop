@@ -20,6 +20,7 @@ const css = `
 .dws_sourceTitle{margin:0;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}
 .dws_sourceDescription{max-width:610px;margin:2px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dws_sourceBody{display:flex;flex-direction:column;gap:12px;padding:0 16px 16px 52px}
+.dws_sourceBodyCompact{padding-top:0}
 .dws_grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
 .dws_field,.dws_timeout{display:flex;flex-direction:column;gap:6px}
 .dws_label{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}
@@ -31,6 +32,13 @@ const css = `
 .dws_keySet{background:var(--dsw-alias-state-success-secondary);color:var(--dsw-alias-state-success-primary)}
 .dws_keyMissing{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-caption)}
 .dws_inlineActions{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.dws_testRow{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px}
+.dws_testCopy{min-width:0;display:flex;flex-direction:column;gap:2px}
+.dws_testLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}
+.dws_testHint,.dws_testResult{overflow-wrap:anywhere;color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}
+.dws_testResultOk{color:var(--dsw-alias-state-success-primary)}
+.dws_testResultErr{color:var(--dsw-alias-state-error-primary)}
+.dws_testButton{flex:none;white-space:nowrap}
 .dws_switch{position:relative;flex:none;width:36px;height:22px;margin-top:1px;cursor:pointer}
 .dws_switch input{position:absolute;width:1px;height:1px;opacity:0}
 .dws_switchTrack{position:absolute;inset:0;border-radius:11px;background:var(--dsw-alias-border-l3);transition:background-color .16s ease}
@@ -60,7 +68,7 @@ const css = `
 .dws_messageRoot{position:fixed;z-index:10000;top:20px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px}
 .dws_message{box-sizing:border-box;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px}
 @keyframes dws-pulse{from{opacity:.5}to{opacity:1}}
-@media (width<=640px){.dws_grid{grid-template-columns:minmax(0,1fr)}.dws_sourceHeader{padding:12px}.dws_sourceBody{padding:0 12px 14px 48px}.dws_actions{flex-wrap:wrap}.dws_status,.dws_notice{width:100%;margin-right:0}.dws_secondary,.dws_primary{flex:1;justify-content:center}.dws_timeout,.dws_timeoutSelect{width:100%}}
+@media (width<=640px){.dws_grid{grid-template-columns:minmax(0,1fr)}.dws_sourceHeader{padding:12px}.dws_sourceBody{padding:0 12px 14px 48px}.dws_testRow{align-items:stretch;flex-direction:column;gap:8px}.dws_testButton{width:100%}.dws_actions{flex-wrap:wrap}.dws_status,.dws_notice{width:100%;margin-right:0}.dws_actions .dws_primary{width:100%}.dws_timeout,.dws_timeoutSelect{width:100%}}
 @media (prefers-reduced-motion:reduce){.dws_switchTrack,.dws_switchTrack:after,.dws_primary,.dws_secondary,.dws_textButton{transition:none}.dws_skeleton span{animation:none}}
 `
 
@@ -129,9 +137,18 @@ const zh = {
   save: '保存',
   saving: '保存中…',
   saved: '搜索设置已保存',
-  test: '测试第三方搜索',
+  testCustom: '测试第三方搜索',
+  testNative: '测试当前模型',
   testing: '测试中…',
-  testOk: '连接成功，返回 {count} 条结果',
+  customTestLabel: '第三方搜索测试',
+  customTestHint: '使用当前表单配置发起一次搜索，未保存的地址和密钥也会参与测试。',
+  nativeTestLabel: '当前模型测试',
+  nativeTestHint: '使用当前会话最近生效的模型路由；没有会话时使用默认模型。',
+  customTestOk: '成功返回 {count} 条结果 · {elapsed} ms',
+  nativeTestOk: '{provider} / {model} · {count} 条结果 · {elapsed} ms',
+  customTestFailed: '{source} · 失败 · {elapsed} ms：{message}',
+  nativeTestFailed: '{provider} / {model} · 失败 · {elapsed} ms：{message}',
+  testFailed: '测试失败：{message}',
   readOnly: '当前设置只读。',
   loadFailed: '读取搜索设置失败',
   conflict: '设置已在其他位置修改，请重试。',
@@ -171,9 +188,18 @@ const en = {
   save: 'Save',
   saving: 'Saving…',
   saved: 'Search settings saved',
-  test: 'Test third-party search',
+  testCustom: 'Test third-party search',
+  testNative: 'Test current model',
   testing: 'Testing…',
-  testOk: 'Connection succeeded with {count} results',
+  customTestLabel: 'Third-party search test',
+  customTestHint: 'Runs one search with the current form, including unsaved endpoint and credential changes.',
+  nativeTestLabel: 'Current model test',
+  nativeTestHint: 'Uses the current session’s last effective model route, or the default model without a session.',
+  customTestOk: '{count} results · {elapsed} ms',
+  nativeTestOk: '{provider} / {model} · {count} results · {elapsed} ms',
+  customTestFailed: '{source} · Failed · {elapsed} ms: {message}',
+  nativeTestFailed: '{provider} / {model} · Failed · {elapsed} ms: {message}',
+  testFailed: 'Test failed: {message}',
   readOnly: 'Settings are read-only.',
   loadFailed: 'Failed to load search settings',
   conflict: 'Settings changed elsewhere. Please retry.',
@@ -205,6 +231,7 @@ async function request(path, init) {
   if (!response.ok || payload?.ok !== true) {
     const error = new Error(payload?.error?.message ?? `HTTP ${String(response.status)}`)
     error.code = payload?.error?.code
+    error.details = payload?.error?.details
     throw error
   }
   return payload.value
@@ -240,13 +267,65 @@ function SourceHeader({ index, title, description, enabled, disabled, onToggle, 
   ] })
 }
 
-function WebSearchSection({ t, isLoopback, subscribe }) {
+const selectCurrentSession = (state) => state.current
+const emptyUseSessions = (selector) => selector({ current: undefined })
+
+function SourceTest({ kind, result, testing, disabled, t, onTest }) {
+  const success = result?.kind === 'ok'
+  const failed = result?.kind === 'err'
+  const text = success
+    ? kind === 'native'
+      ? t('nativeTestOk', {
+          provider: result.value.provider,
+          model: result.value.model,
+          count: result.value.count,
+          elapsed: result.value.elapsedMs,
+        })
+      : t('customTestOk', { count: result.value.count, elapsed: result.value.elapsedMs })
+    : failed
+      ? kind === 'native' && result.details?.provider && result.details?.model
+        ? t('nativeTestFailed', {
+            provider: result.details.provider,
+            model: result.details.model,
+            elapsed: result.details.elapsedMs,
+            message: result.message,
+          })
+        : kind === 'custom' && result.details?.source
+          ? t('customTestFailed', {
+              source: result.details.source,
+              elapsed: result.details.elapsedMs,
+              message: result.message,
+            })
+          : t('testFailed', { message: result.message })
+      : null
+  return jsxs('div', { className: 'dws_testRow', children: [
+    jsxs('div', { className: 'dws_testCopy', 'aria-live': 'polite', children: [
+      jsx('span', { className: 'dws_testLabel', children: kind === 'native' ? t('nativeTestLabel') : t('customTestLabel') }),
+      text ? jsx('span', {
+        className: success ? 'dws_testResult dws_testResultOk' : 'dws_testResult dws_testResultErr',
+        role: failed ? 'alert' : 'status',
+        children: text,
+      }) : jsx('span', { className: 'dws_testHint', children: kind === 'native' ? t('nativeTestHint') : t('customTestHint') }),
+    ] }),
+    jsx('button', {
+      type: 'button',
+      className: 'dws_secondary dws_testButton',
+      disabled,
+      onClick: onTest,
+      children: testing ? t('testing') : kind === 'native' ? t('testNative') : t('testCustom'),
+    }),
+  ] })
+}
+
+function WebSearchSection({ t, isLoopback, subscribe, useSessions = emptyUseSessions }) {
+  const currentSessionId = useSessions(selectCurrentSession)
   const [view, setView] = react.useState(null)
   const [writable, setWritable] = react.useState(true)
   const [credential, setCredential] = react.useState({ configured: false, writable: false })
   const [draft, setDraft] = react.useState(null)
   const [busy, setBusy] = react.useState(false)
-  const [testing, setTesting] = react.useState(false)
+  const [testingSource, setTestingSource] = react.useState(null)
+  const [testResults, setTestResults] = react.useState({})
   const [error, setError] = react.useState(null)
   const [notice, setNotice] = react.useState(null)
 
@@ -285,10 +364,11 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     ] })
   }
 
-  const disabled = busy || testing || !writable
+  const disabled = busy || testingSource !== null || !writable
   const customEnabled = draft.customProvider !== 'none'
   const update = (patch) => {
     setNotice(null)
+    setTestResults({})
     setDraft((current) => ({ ...current, ...patch }))
   }
 
@@ -346,18 +426,32 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     }
   }
 
-  const test = async () => {
-    setTesting(true)
-    setNotice(null)
+  const test = async (kind) => {
+    setTestingSource(kind)
+    setTestResults((current) => ({ ...current, [kind]: null }))
     try {
-      const value = await request('/test', { method: 'POST' })
-      setNotice({ kind: 'ok', text: t('testOk', { count: value.count }) })
+      const body = kind === 'custom'
+        ? {
+            config: {
+              customProvider: draft.customProvider,
+              customBaseURL: draft.customBaseURL.trim(),
+              customApiKeyEnv: draft.customApiKeyEnv.trim(),
+              sourceTimeoutMs: draft.sourceTimeoutMs,
+            },
+            apiKey: draft.apiKey,
+          }
+        : { sessionId: currentSessionId }
+      const value = await request(`/test/${kind}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setTestResults((current) => ({ ...current, [kind]: { kind: 'ok', value } }))
     } catch (cause) {
-      const text = String(cause?.message ?? cause)
-      setNotice({ kind: 'err', text })
-      showMessage(text)
+      const message = String(cause?.message ?? cause)
+      setTestResults((current) => ({ ...current, [kind]: { kind: 'err', message, details: cause?.details } }))
     } finally {
-      setTesting(false)
+      setTestingSource(null)
     }
   }
 
@@ -408,10 +502,26 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
             jsx('span', { className: 'dws_hint', children: t('apiKeyEnvHint') }),
             credential.configured ? jsx('button', { type: 'button', className: 'dws_textButton', disabled, onClick: clearKey, children: t('clearKey') }) : null,
           ] }),
+          jsx(SourceTest, {
+            kind: 'custom',
+            result: testResults.custom,
+            testing: testingSource === 'custom',
+            disabled: busy || testingSource !== null,
+            t,
+            onTest: () => test('custom'),
+          }),
         ] }) : null,
       ] }),
       jsxs('div', { className: `dws_source${draft.nativeEnabled ? ' dws_sourceEnabled' : ''}`, children: [
         jsx(SourceHeader, { index: 2, title: t('nativeTitle'), description: t('nativeDescription'), enabled: draft.nativeEnabled, disabled, onToggle: (checked) => update({ nativeEnabled: checked }) }),
+        draft.nativeEnabled ? jsx('div', { className: 'dws_sourceBody dws_sourceBodyCompact', children: jsx(SourceTest, {
+          kind: 'native',
+          result: testResults.native,
+          testing: testingSource === 'native',
+          disabled: busy || testingSource !== null,
+          t,
+          onTest: () => test('native'),
+        }) }) : null,
       ] }),
       jsxs('div', { className: `dws_source${draft.deepseekFallback ? ' dws_sourceEnabled' : ''}`, children: [
         jsx(SourceHeader, { index: 3, title: t('deepseekTitle'), description: t('deepseekDescription'), enabled: draft.deepseekFallback, disabled, onToggle: (checked) => update({ deepseekFallback: checked }) }),
@@ -424,7 +534,6 @@ function WebSearchSection({ t, isLoopback, subscribe }) {
     jsxs('div', { className: 'dws_actions', children: [
       !writable ? jsx('span', { className: 'dws_notice', children: t('readOnly') }) : null,
       notice ? jsx('span', { className: notice.kind === 'ok' ? 'dws_status dws_statusOk' : 'dws_status dws_statusErr', role: notice.kind === 'err' ? 'alert' : 'status', children: notice.text }) : null,
-      jsx('button', { type: 'button', className: 'dws_secondary', disabled: disabled || !customEnabled, onClick: test, children: testing ? t('testing') : t('test') }),
       jsx('button', { type: 'button', className: 'dws_primary', disabled, onClick: save, children: busy ? t('saving') : t('save') }),
     ] }),
   ] })

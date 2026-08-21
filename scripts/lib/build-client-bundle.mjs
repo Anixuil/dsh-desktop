@@ -11,7 +11,7 @@
 // Usage (from a package's build.mjs):
 //   import { buildClientBundle } from '../lib/build-client-bundle.mjs'
 //   buildClientBundle({ pkgDir: <this dir>, files: ['styles.js', ..., 'index.js'] })
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -73,6 +73,10 @@ ${factories}
 `
 
   mkdirSync(path.dirname(target), { recursive: true })
+  if (existsSync(target) && readFileSync(target, 'utf8') === bundle) {
+    console.log(`client bundle unchanged: ${target} (${bundle.length} bytes)`)
+    return target
+  }
   writeFileSync(target, bundle)
   console.log(`client bundle written: ${target} (${bundle.length} bytes)`)
   return target

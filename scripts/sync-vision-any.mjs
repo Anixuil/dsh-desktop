@@ -38,7 +38,7 @@ if (!skipBuild) {
 
 const copyFile = (from, to) => {
   mkdirSync(dirname(to), { recursive: true })
-  cpSync(from, to, { force: true })
+  cpSync(from, to, { force: true, preserveTimestamps: true })
 }
 const copyTree = (src, dst) => {
   for (const entry of readdirSync(src, { withFileTypes: true })) {
@@ -48,7 +48,7 @@ const copyTree = (src, dst) => {
       mkdirSync(to, { recursive: true })
       copyTree(from, to)
     } else {
-      cpSync(from, to, { force: true })
+      cpSync(from, to, { force: true, preserveTimestamps: true })
     }
   }
 }
@@ -72,7 +72,7 @@ if (existsSync(join(runtime, 'dsh', 'node_modules'))) {
       copyTree(from, to)
     } else {
       mkdirSync(dirname(to), { recursive: true })
-      cpSync(from, to, { force: true })
+      cpSync(from, to, { force: true, preserveTimestamps: true })
     }
   }
   for (const entry of readdirSync(pkgDir)) {

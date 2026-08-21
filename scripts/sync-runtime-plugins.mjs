@@ -19,6 +19,7 @@ const plugins = [
   { name: 'dsh-desktop-session-manager', dir: 'session-manager' },
   { name: 'dsh-desktop-change-history', dir: 'change-history' },
   { name: 'dsh-desktop-file-upload', dir: 'file-upload' },
+  { name: 'dsh-desktop-conversation-navigator', dir: 'conversation-navigator' },
   { name: 'dsh-desktop-web-search', dir: 'web-search' },
 ]
 
@@ -41,7 +42,7 @@ for (const { name, dir } of plugins) {
   for (const target of [join(runtime, 'plugins-src', name), join(runtime, 'dsh', 'node_modules', name)]) {
     rmSync(target, { recursive: true, force: true })
     mkdirSync(target, { recursive: true })
-    cpSync(src, target, { recursive: true })
+    cpSync(src, target, { recursive: true, preserveTimestamps: true })
     console.log(`synced ${name} -> ${target}`)
   }
 }

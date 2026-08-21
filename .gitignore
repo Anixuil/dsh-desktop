@@ -6,6 +6,7 @@ scripts/relay/.deploy/
 relay-state.json
 src-tauri/gen/
 src-tauri/target/
+src-tauri/target-fast/
 *.log
 
 # sandbox / dev-machine artifacts (keep these OUT of the repo!)

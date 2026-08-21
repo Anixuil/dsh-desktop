@@ -4,6 +4,9 @@ import { join } from 'node:path'
 export const CONTENT_SCROLL_PATCH_MARKER = 'dsh-desktop bounded long content 2026-08-21'
 export const CONTENT_SCROLL_FLEX_MARKER = 'dsh-desktop bounded tool flex content 2026-08-21'
 export const CONTENT_SCROLL_GROUP_MARKER = 'dsh-desktop grouped process flow 2026-08-21'
+export const CONTENT_SCROLL_FOLD_MARKER = 'dsh-desktop collapsible process flow 2026-08-21'
+export const CONTENT_SCROLL_POLISH_MARKER = 'dsh-desktop polished process disclosure 2026-08-21'
+export const CONTENT_SCROLL_LIFECYCLE_MARKER = 'dsh-desktop process lifecycle disclosure 2026-08-21'
 
 const SUPPORTED_CONVERSATION_VERSIONS = new Set(['0.1.0-rc.8'])
 const SUPPORTED_TOOL_VERSIONS = new Set(['0.1.0-rc.8'])
@@ -79,7 +82,7 @@ export function applyDshContentScrollPatch(dshModulesDir) {
     conversation = replaceOnce(
       conversation,
       '.Md3f7G_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}',
-      '.Md3f7G_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.Md3f7G_processGroup{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;padding-right:8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:16px;display:flex}',
+      '.Md3f7G_column{max-width:var(--dsh-chat-content-width);flex-direction:column;gap:16px;width:100%;margin:0 auto;display:flex}.Md3f7G_processGroup{min-width:0;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-base) 92%,var(--dsw-alias-interactive-bg-hover));border-radius:10px;transition:border-color .12s,background-color .12s;overflow:hidden}.Md3f7G_processGroup[data-expanded]{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.Md3f7G_processGroup[data-running]{border-color:var(--dsw-alias-state-business-secondary)}.Md3f7G_processGroupHeader{width:100%;height:36px;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;border:none;align-items:center;gap:8px;padding:0 10px;display:flex}.Md3f7G_processGroupHeader:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.Md3f7G_processGroupHeader:active{background:var(--dsw-alias-interactive-bg-hover-solid)}.Md3f7G_processGroupHeader:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:-2px}.Md3f7G_processGroupIcon{color:var(--dsw-alias-label-tertiary);flex:none}.Md3f7G_processGroupLabel{color:var(--dsw-alias-label-primary-dimmed);font-size:14px;line-height:24px}.Md3f7G_processGroupMeta{color:var(--dsw-alias-label-caption);font-size:12px;font-variant-numeric:tabular-nums;line-height:18px}.Md3f7G_processGroupChevron{color:var(--dsw-alias-label-secondary);flex:none;margin-left:auto;transition:transform .12s cubic-bezier(.16,1,.3,1)}.Md3f7G_processGroup[data-expanded] .Md3f7G_processGroupChevron{transform:rotate(90deg)}.Md3f7G_processGroupScroll{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;border-top:1px solid var(--dsw-alias-border-l1);padding:10px 10px 12px 8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:12px;display:flex}@media (prefers-reduced-motion:reduce){.Md3f7G_processGroup,.Md3f7G_processGroupChevron{transition:none}}',
       conversationClientFile,
     )
     conversation = replaceOnce(
@@ -119,6 +122,12 @@ export function applyDshContentScrollPatch(dshModulesDir) {
 \t\t\treturn flow;
 \t\t}
 \t\tfunction ProcessFlowGroup({ nodeKeys, useSession, selectedCallId, cwd, openFile, inspectCall, forkAt, renderMessageImages, fileMentions, renderSlot, t }) {
+\t\t\tconst active = useSession((snapshot) => nodeKeys.some((nodeKey) => {
+\t\t\t\tconst node = snapshot.chat.nodes.get(nodeKey);
+\t\t\t\treturn node?.kind === "assistant-step" && node.data.status === "running" || node?.kind === "tool-call" && isRunningTool(node.data.root);
+\t\t\t}));
+\t\t\tconst [expanded, setExpanded] = (0, react.useState)(active);
+\t\t\tconst regionId = (0, react.useId)();
 \t\t\tconst scrollRef = (0, react.useRef)(null);
 \t\t\tconst contentRef = (0, react.useRef)(null);
 \t\t\tconst followRef = (0, react.useRef)(true);
@@ -126,10 +135,13 @@ export function applyDshContentScrollPatch(dshModulesDir) {
 \t\t\t\tconst element = scrollRef.current;
 \t\t\t\tif (element !== null) followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
 \t\t\t}, []);
+\t\t\t(0, react.useEffect)(() => {
+\t\t\t\tsetExpanded(active);
+\t\t\t}, [active]);
 \t\t\t(0, react.useLayoutEffect)(() => {
 \t\t\t\tconst element = scrollRef.current;
 \t\t\t\tif (element !== null && followRef.current) element.scrollTop = element.scrollHeight;
-\t\t\t}, [nodeKeys.length]);
+\t\t\t}, [expanded, nodeKeys.length]);
 \t\t\t(0, react.useEffect)(() => {
 \t\t\t\tconst element = scrollRef.current;
 \t\t\t\tconst content = contentRef.current;
@@ -142,28 +154,56 @@ export function applyDshContentScrollPatch(dshModulesDir) {
 \t\t\t\t\tobserver.disconnect();
 \t\t\t\t};
 \t\t\t}, []);
-\t\t\treturn (0, react_jsx_runtime.jsx)("div", {
-\t\t\t\tref: scrollRef,
+\t\t\treturn (0, react_jsx_runtime.jsxs)("div", {
 \t\t\t\tclassName: ChatView_module_css_default.processGroup,
 \t\t\t\t"data-chat-process-group": "",
-\t\t\t\tonScroll,
-\t\t\t\tchildren: (0, react_jsx_runtime.jsx)("div", {
-\t\t\t\t\tref: contentRef,
-\t\t\t\t\tclassName: ChatView_module_css_default.processGroupContent,
-\t\t\t\t\tchildren: nodeKeys.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
-\t\t\t\t\t\tnodeKey,
-\t\t\t\t\t\tuseSession,
-\t\t\t\t\t\tselectedCallId,
-\t\t\t\t\t\tcwd,
-\t\t\t\t\t\topenFile,
-\t\t\t\t\t\tinspectCall,
-\t\t\t\t\t\tforkAt,
-\t\t\t\t\t\trenderMessageImages,
-\t\t\t\t\t\tfileMentions,
-\t\t\t\t\t\trenderSlot,
-\t\t\t\t\t\tt
-\t\t\t\t\t}, nodeKey))
-\t\t\t\t})
+\t\t\t\t"data-expanded": expanded || void 0,
+\t\t\t\t"data-running": active || void 0,
+\t\t\t\tchildren: [(0, react_jsx_runtime.jsxs)("button", {
+\t\t\t\t\ttype: "button",
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupHeader,
+\t\t\t\t\t"aria-expanded": expanded,
+\t\t\t\t\t"aria-controls": regionId,
+\t\t\t\t\tonClick: () => {
+\t\t\t\t\t\tsetExpanded((value) => !value);
+\t\t\t\t\t},
+\t\t\t\t\tchildren: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupIcon
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupLabel,
+\t\t\t\t\t\tchildren: "Process"
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupMeta,
+\t\t\t\t\t\tchildren: \`\${nodeKeys.length} \${nodeKeys.length === 1 ? "step" : "steps"}\`
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14, {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupChevron
+\t\t\t\t\t})]
+\t\t\t\t}), (0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\tref: scrollRef,
+\t\t\t\t\tid: regionId,
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupScroll,
+\t\t\t\t\trole: "region",
+\t\t\t\t\t"aria-label": "Process details",
+\t\t\t\t\thidden: !expanded,
+\t\t\t\t\tonScroll,
+\t\t\t\t\tchildren: (0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\t\tref: contentRef,
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupContent,
+\t\t\t\t\t\tchildren: nodeKeys.map((nodeKey) => (0, react_jsx_runtime.jsx)(ChatNodeSeat, {
+\t\t\t\t\t\t\tnodeKey,
+\t\t\t\t\t\t\tuseSession,
+\t\t\t\t\t\t\tselectedCallId,
+\t\t\t\t\t\t\tcwd,
+\t\t\t\t\t\t\topenFile,
+\t\t\t\t\t\t\tinspectCall,
+\t\t\t\t\t\t\tforkAt,
+\t\t\t\t\t\t\trenderMessageImages,
+\t\t\t\t\t\t\tfileMentions,
+\t\t\t\t\t\t\trenderSlot,
+\t\t\t\t\t\t\tt
+\t\t\t\t\t\t}, nodeKey))
+\t\t\t\t\t})
+\t\t\t\t})]
 \t\t\t});
 \t\t}
 \t\t/**
@@ -224,9 +264,216 @@ export function applyDshContentScrollPatch(dshModulesDir) {
     conversation = replaceOnce(
       conversation,
       '\t\t\t"openError": "Md3f7G_openError",',
-      '\t\t\t"openError": "Md3f7G_openError",\n\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",',
+      '\t\t\t"openError": "Md3f7G_openError",\n\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",\n\t\t\t"processGroupChevron": "Md3f7G_processGroupChevron",\n\t\t\t"processGroupHeader": "Md3f7G_processGroupHeader",\n\t\t\t"processGroupIcon": "Md3f7G_processGroupIcon",\n\t\t\t"processGroupLabel": "Md3f7G_processGroupLabel",\n\t\t\t"processGroupMeta": "Md3f7G_processGroupMeta",\n\t\t\t"processGroupScroll": "Md3f7G_processGroupScroll",',
       conversationClientFile,
     )
+    writeFileSync(conversationClientFile, conversation)
+  }
+
+  const patchConversationFold = !conversation.includes(CONTENT_SCROLL_FOLD_MARKER)
+  if (patchConversationFold) {
+    conversation = replaceOnce(
+      conversation,
+      `/** ${CONTENT_SCROLL_GROUP_MARKER}: intermediate assistant steps and Tool calls share one scroll boundary. */`,
+      `/** ${CONTENT_SCROLL_GROUP_MARKER}: intermediate assistant steps and Tool calls share one scroll boundary. */\n\t\t/** ${CONTENT_SCROLL_FOLD_MARKER}: process groups collapse to one disclosure row by default. */`,
+      conversationClientFile,
+    )
+    if (!patchConversationGroup) {
+      conversation = replaceOnce(
+        conversation,
+        '.Md3f7G_processGroup{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;padding-right:8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:16px;display:flex}',
+        '.Md3f7G_processGroup{min-width:0}.Md3f7G_processGroupHeader{width:100%;height:28px;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;padding:0 4px;display:flex}.Md3f7G_processGroupHeader:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.Md3f7G_processGroupHeader:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:2px}.Md3f7G_processGroupLabel{font-size:14px;line-height:24px}.Md3f7G_processGroupCount{color:var(--dsw-alias-label-caption);font-size:12px;font-variant-numeric:tabular-nums}.Md3f7G_processGroupScroll{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;margin-top:4px;padding-right:8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:16px;display:flex}',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\tfunction ProcessFlowGroup({ nodeKeys, useSession, selectedCallId, cwd, openFile, inspectCall, forkAt, renderMessageImages, fileMentions, renderSlot, t }) {\n\t\t\tconst scrollRef = (0, react.useRef)(null);',
+        '\t\tfunction ProcessFlowGroup({ nodeKeys, useSession, selectedCallId, cwd, openFile, inspectCall, forkAt, renderMessageImages, fileMentions, renderSlot, t }) {\n\t\t\tconst [expanded, setExpanded] = (0, react.useState)(false);\n\t\t\tconst scrollRef = (0, react.useRef)(null);',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(conversation, '}, [nodeKeys.length]);', '}, [expanded, nodeKeys.length]);', conversationClientFile)
+      conversation = replaceOnce(
+        conversation,
+        `\t\t\treturn (0, react_jsx_runtime.jsx)("div", {
+\t\t\t\tref: scrollRef,
+\t\t\t\tclassName: ChatView_module_css_default.processGroup,
+\t\t\t\t"data-chat-process-group": "",
+\t\t\t\tonScroll,
+\t\t\t\tchildren: (0, react_jsx_runtime.jsx)("div", {`,
+        `\t\t\treturn (0, react_jsx_runtime.jsxs)("div", {
+\t\t\t\tclassName: ChatView_module_css_default.processGroup,
+\t\t\t\t"data-chat-process-group": "",
+\t\t\t\t"data-expanded": expanded || void 0,
+\t\t\t\tchildren: [(0, react_jsx_runtime.jsxs)("button", {
+\t\t\t\t\ttype: "button",
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupHeader,
+\t\t\t\t\t"aria-expanded": expanded,
+\t\t\t\t\tonClick: () => {
+\t\t\t\t\t\tsetExpanded((value) => !value);
+\t\t\t\t\t},
+\t\t\t\t\tchildren: [expanded ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14, {}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupLabel,
+\t\t\t\t\t\tchildren: "Process"
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupCount,
+\t\t\t\t\t\tchildren: nodeKeys.length
+\t\t\t\t\t})]
+\t\t\t\t}), (0, react_jsx_runtime.jsx)("div", {
+\t\t\t\t\tref: scrollRef,
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupScroll,
+\t\t\t\t\thidden: !expanded,
+\t\t\t\t\tonScroll,
+\t\t\t\t\tchildren: (0, react_jsx_runtime.jsx)("div", {`,
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        `\t\t\t\t\t}, nodeKey))
+\t\t\t\t})
+\t\t\t});`,
+        `\t\t\t\t\t\t}, nodeKey))
+\t\t\t\t\t})
+\t\t\t\t})]
+\t\t\t});`,
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",',
+        '\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",\n\t\t\t"processGroupCount": "Md3f7G_processGroupCount",\n\t\t\t"processGroupHeader": "Md3f7G_processGroupHeader",\n\t\t\t"processGroupLabel": "Md3f7G_processGroupLabel",\n\t\t\t"processGroupScroll": "Md3f7G_processGroupScroll",',
+        conversationClientFile,
+      )
+    }
+    writeFileSync(conversationClientFile, conversation)
+  }
+
+  const patchConversationPolish = !conversation.includes(CONTENT_SCROLL_POLISH_MARKER)
+  if (patchConversationPolish) {
+    const alreadyPolished = conversation.includes('Md3f7G_processGroupMeta')
+    conversation = replaceOnce(
+      conversation,
+      `/** ${CONTENT_SCROLL_FOLD_MARKER}: process groups collapse to one disclosure row by default. */`,
+      `/** ${CONTENT_SCROLL_FOLD_MARKER}: process groups collapse to one disclosure row by default. */\n\t\t/** ${CONTENT_SCROLL_POLISH_MARKER}: compact disclosure styling and active-run behavior. */`,
+      conversationClientFile,
+    )
+    if (!alreadyPolished) {
+      conversation = replaceOnce(
+        conversation,
+        '.Md3f7G_processGroup{min-width:0}.Md3f7G_processGroupHeader{width:100%;height:28px;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;padding:0 4px;display:flex}.Md3f7G_processGroupHeader:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.Md3f7G_processGroupHeader:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:2px}.Md3f7G_processGroupLabel{font-size:14px;line-height:24px}.Md3f7G_processGroupCount{color:var(--dsw-alias-label-caption);font-size:12px;font-variant-numeric:tabular-nums}.Md3f7G_processGroupScroll{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;margin-top:4px;padding-right:8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:16px;display:flex}',
+        '.Md3f7G_processGroup{min-width:0;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-base) 92%,var(--dsw-alias-interactive-bg-hover));border-radius:10px;transition:border-color .12s,background-color .12s;overflow:hidden}.Md3f7G_processGroup[data-expanded]{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.Md3f7G_processGroup[data-running]{border-color:var(--dsw-alias-state-business-secondary)}.Md3f7G_processGroupHeader{width:100%;height:36px;color:var(--dsw-alias-label-secondary);font:inherit;text-align:left;cursor:pointer;background:0 0;border:none;align-items:center;gap:8px;padding:0 10px;display:flex}.Md3f7G_processGroupHeader:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.Md3f7G_processGroupHeader:active{background:var(--dsw-alias-interactive-bg-hover-solid)}.Md3f7G_processGroupHeader:focus-visible{outline:1.5px solid var(--dsw-alias-button-info-fill);outline-offset:-2px}.Md3f7G_processGroupIcon{color:var(--dsw-alias-label-tertiary);flex:none}.Md3f7G_processGroupLabel{color:var(--dsw-alias-label-primary-dimmed);font-size:14px;line-height:24px}.Md3f7G_processGroupMeta{color:var(--dsw-alias-label-caption);font-size:12px;font-variant-numeric:tabular-nums;line-height:18px}.Md3f7G_processGroupChevron{color:var(--dsw-alias-label-secondary);flex:none;margin-left:auto;transition:transform .12s cubic-bezier(.16,1,.3,1)}.Md3f7G_processGroup[data-expanded] .Md3f7G_processGroupChevron{transform:rotate(90deg)}.Md3f7G_processGroupScroll{max-height:min(46vh,520px);scrollbar-gutter:stable;overscroll-behavior:contain;border-top:1px solid var(--dsw-alias-border-l1);padding:10px 10px 12px 8px;overflow-y:auto}.Md3f7G_processGroupContent{flex-direction:column;gap:12px;display:flex}@media (prefers-reduced-motion:reduce){.Md3f7G_processGroup,.Md3f7G_processGroupChevron{transition:none}}',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\tconst [expanded, setExpanded] = (0, react.useState)(false);\n\t\t\tconst scrollRef = (0, react.useRef)(null);',
+        '\t\t\tconst active = useSession((snapshot) => nodeKeys.some((nodeKey) => {\n\t\t\t\tconst node = snapshot.chat.nodes.get(nodeKey);\n\t\t\t\treturn node?.kind === "assistant-step" && node.data.status === "running" || node?.kind === "tool-call" && isRunningTool(node.data.root);\n\t\t\t}));\n\t\t\tconst [expanded, setExpanded] = (0, react.useState)(active);\n\t\t\tconst regionId = (0, react.useId)();\n\t\t\tconst scrollRef = (0, react.useRef)(null);',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        `\t\t\tconst onScroll = (0, react.useCallback)(() => {
+\t\t\t\tconst element = scrollRef.current;
+\t\t\t\tif (element !== null) followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
+\t\t\t}, []);`,
+        `\t\t\tconst onScroll = (0, react.useCallback)(() => {
+\t\t\t\tconst element = scrollRef.current;
+\t\t\t\tif (element !== null) followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
+\t\t\t}, []);
+\t\t\t(0, react.useEffect)(() => {
+\t\t\t\tsetExpanded(active);
+\t\t\t}, [active]);`,
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\t\t"data-expanded": expanded || void 0,',
+        '\t\t\t\t"data-expanded": expanded || void 0,\n\t\t\t\t"data-running": active || void 0,',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        `\t\t\t\t\tclassName: ChatView_module_css_default.processGroupHeader,
+\t\t\t\t\t"aria-expanded": expanded,
+\t\t\t\t\tonClick: () => {
+\t\t\t\t\t\tsetExpanded((value) => !value);
+\t\t\t\t\t},
+\t\t\t\t\tchildren: [expanded ? (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {}) : (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14, {}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupLabel,
+\t\t\t\t\t\tchildren: "Process"
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupCount,
+\t\t\t\t\t\tchildren: nodeKeys.length
+\t\t\t\t\t})]`,
+        `\t\t\t\t\tclassName: ChatView_module_css_default.processGroupHeader,
+\t\t\t\t\t"aria-expanded": expanded,
+\t\t\t\t\t"aria-controls": regionId,
+\t\t\t\t\tonClick: () => {
+\t\t\t\t\t\tsetExpanded((value) => !value);
+\t\t\t\t\t},
+\t\t\t\t\tchildren: [(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconApiOutline14, {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupIcon
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupLabel,
+\t\t\t\t\t\tchildren: "Process"
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)("span", {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupMeta,
+\t\t\t\t\t\tchildren: \`\${nodeKeys.length} \${nodeKeys.length === 1 ? "step" : "steps"}\`
+\t\t\t\t\t}), (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronRightOutline14, {
+\t\t\t\t\t\tclassName: ChatView_module_css_default.processGroupChevron
+\t\t\t\t\t})]`,
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        `\t\t\t\t\tref: scrollRef,
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupScroll,
+\t\t\t\t\thidden: !expanded,`,
+        `\t\t\t\t\tref: scrollRef,
+\t\t\t\t\tid: regionId,
+\t\t\t\t\tclassName: ChatView_module_css_default.processGroupScroll,
+\t\t\t\t\trole: "region",
+\t\t\t\t\t"aria-label": "Process details",
+\t\t\t\t\thidden: !expanded,`,
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",\n\t\t\t"processGroupCount": "Md3f7G_processGroupCount",\n\t\t\t"processGroupHeader": "Md3f7G_processGroupHeader",\n\t\t\t"processGroupLabel": "Md3f7G_processGroupLabel",\n\t\t\t"processGroupScroll": "Md3f7G_processGroupScroll",',
+        '\t\t\t"processGroup": "Md3f7G_processGroup",\n\t\t\t"processGroupContent": "Md3f7G_processGroupContent",\n\t\t\t"processGroupChevron": "Md3f7G_processGroupChevron",\n\t\t\t"processGroupHeader": "Md3f7G_processGroupHeader",\n\t\t\t"processGroupIcon": "Md3f7G_processGroupIcon",\n\t\t\t"processGroupLabel": "Md3f7G_processGroupLabel",\n\t\t\t"processGroupMeta": "Md3f7G_processGroupMeta",\n\t\t\t"processGroupScroll": "Md3f7G_processGroupScroll",',
+        conversationClientFile,
+      )
+    }
+    writeFileSync(conversationClientFile, conversation)
+  }
+
+  const patchConversationLifecycle = !conversation.includes(CONTENT_SCROLL_LIFECYCLE_MARKER)
+  if (patchConversationLifecycle) {
+    conversation = replaceOnce(
+      conversation,
+      `/** ${CONTENT_SCROLL_POLISH_MARKER}: compact disclosure styling and active-run behavior. */`,
+      `/** ${CONTENT_SCROLL_POLISH_MARKER}: compact disclosure styling and active-run behavior. */\n\t\t/** ${CONTENT_SCROLL_LIFECYCLE_MARKER}: open while generating and collapse when the run settles. */`,
+      conversationClientFile,
+    )
+    if (conversation.includes('\t\t\tconst touchedRef = (0, react.useRef)(false);')) {
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\tconst touchedRef = (0, react.useRef)(false);\n',
+        '',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\t\tif (active && !touchedRef.current) setExpanded(true);',
+        '\t\t\t\tsetExpanded(active);',
+        conversationClientFile,
+      )
+      conversation = replaceOnce(
+        conversation,
+        '\t\t\t\t\t\ttouchedRef.current = true;\n',
+        '',
+        conversationClientFile,
+      )
+    }
     writeFileSync(conversationClientFile, conversation)
   }
 
@@ -275,5 +522,5 @@ export function applyDshContentScrollPatch(dshModulesDir) {
   }
   if (patchTool || patchToolFlex) writeFileSync(toolClientFile, tool)
 
-  return { conversation: patchConversation || patchConversationGroup, tool: patchTool || patchToolFlex }
+  return { conversation: patchConversation || patchConversationGroup || patchConversationFold || patchConversationPolish || patchConversationLifecycle, tool: patchTool || patchToolFlex }
 }

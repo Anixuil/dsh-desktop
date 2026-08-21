@@ -566,6 +566,7 @@ console.log('empty usage render ok');
     { id: 'dsh-desktop-session-manager', version: '0.1.0', source: 'desktop', enabled: true },
     { id: 'dsh-desktop-change-history', version: '0.1.0', source: 'desktop', enabled: true },
     { id: 'dsh-desktop-file-upload', version: '0.2.0', source: 'desktop', enabled: true },
+    { id: 'dsh-desktop-conversation-navigator', version: '0.1.0', source: 'desktop', enabled: true },
     { id: 'dsh-vision-any', version: '0.1.0', source: 'bundledThirdParty', enabled: true },
     { id: 'dshmarket', version: '1.15.0', source: 'user', enabled: false },
   ];
@@ -581,12 +582,12 @@ console.log('empty usage render ok');
     onCancel: noop,
     onApply: noop,
   }));
-  const clean = renderBuiltin(plugins.slice(0, 5).map((plugin) => plugin.id));
+  const clean = renderBuiltin(plugins.slice(0, 6).map((plugin) => plugin.id));
   for (const marker of ['builtinPlugins.title', 'builtinPlugins.group.desktop', 'builtinPlugins.group.services', 'dshmarket', 'v1.15.0']) {
     if (!clean.includes(marker)) throw new Error(`built-in plugin view missing ${marker}\n${clean}`);
   }
   if (clean.includes('builtinPlugins.apply')) throw new Error(`clean built-in plugin state should not show apply action\n${clean}`);
-  const dirty = renderBuiltin(plugins.slice(0, 4).map((plugin) => plugin.id), plugins.slice(0, 5).map((plugin) => plugin.id));
+  const dirty = renderBuiltin(plugins.slice(0, 5).map((plugin) => plugin.id), plugins.slice(0, 6).map((plugin) => plugin.id));
   if (!dirty.includes('builtinPlugins.apply') || !dirty.includes('builtinPlugins.pending')) throw new Error(`dirty built-in plugin state missing actions\n${dirty}`);
   console.log('built-in plugin settings render ok');
 }

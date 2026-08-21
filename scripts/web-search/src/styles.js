@@ -13,6 +13,7 @@ const css = `
 .dws_sourceTitle{margin:0;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}
 .dws_sourceDescription{max-width:610px;margin:2px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dws_sourceBody{display:flex;flex-direction:column;gap:12px;padding:0 16px 16px 52px}
+.dws_sourceBodyCompact{padding-top:0}
 .dws_grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
 .dws_field,.dws_timeout{display:flex;flex-direction:column;gap:6px}
 .dws_label{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}
@@ -24,6 +25,13 @@ const css = `
 .dws_keySet{background:var(--dsw-alias-state-success-secondary);color:var(--dsw-alias-state-success-primary)}
 .dws_keyMissing{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-caption)}
 .dws_inlineActions{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.dws_testRow{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px}
+.dws_testCopy{min-width:0;display:flex;flex-direction:column;gap:2px}
+.dws_testLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}
+.dws_testHint,.dws_testResult{overflow-wrap:anywhere;color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}
+.dws_testResultOk{color:var(--dsw-alias-state-success-primary)}
+.dws_testResultErr{color:var(--dsw-alias-state-error-primary)}
+.dws_testButton{flex:none;white-space:nowrap}
 .dws_switch{position:relative;flex:none;width:36px;height:22px;margin-top:1px;cursor:pointer}
 .dws_switch input{position:absolute;width:1px;height:1px;opacity:0}
 .dws_switchTrack{position:absolute;inset:0;border-radius:11px;background:var(--dsw-alias-border-l3);transition:background-color .16s ease}
@@ -53,7 +61,7 @@ const css = `
 .dws_messageRoot{position:fixed;z-index:10000;top:20px;left:50%;width:min(420px,calc(100vw - 32px));pointer-events:none;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px}
 .dws_message{box-sizing:border-box;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:0 8px 24px rgba(0,0,0,.14);font-size:13px;line-height:20px}
 @keyframes dws-pulse{from{opacity:.5}to{opacity:1}}
-@media (width<=640px){.dws_grid{grid-template-columns:minmax(0,1fr)}.dws_sourceHeader{padding:12px}.dws_sourceBody{padding:0 12px 14px 48px}.dws_actions{flex-wrap:wrap}.dws_status,.dws_notice{width:100%;margin-right:0}.dws_secondary,.dws_primary{flex:1;justify-content:center}.dws_timeout,.dws_timeoutSelect{width:100%}}
+@media (width<=640px){.dws_grid{grid-template-columns:minmax(0,1fr)}.dws_sourceHeader{padding:12px}.dws_sourceBody{padding:0 12px 14px 48px}.dws_testRow{align-items:stretch;flex-direction:column;gap:8px}.dws_testButton{width:100%}.dws_actions{flex-wrap:wrap}.dws_status,.dws_notice{width:100%;margin-right:0}.dws_actions .dws_primary{width:100%}.dws_timeout,.dws_timeoutSelect{width:100%}}
 @media (prefers-reduced-motion:reduce){.dws_switchTrack,.dws_switchTrack:after,.dws_primary,.dws_secondary,.dws_textButton{transition:none}.dws_skeleton span{animation:none}}
 `
 

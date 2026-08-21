@@ -174,13 +174,15 @@ export async function resolveCredential(ctx, ref) {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
-export async function searchCustom(ctx, config, request, signal) {
+export async function searchCustom(ctx, config, request, signal, options = {}) {
   const provider = config.customProvider
   if (!provider || provider === 'none') {
     throw new WebError('custom search is disabled', 'WEB_PROVIDER_CONFIGURED_UNAVAILABLE')
   }
   const keyRef = config.customApiKeyEnv || 'DSH_WEB_SEARCH_API_KEY'
-  const apiKey = await resolveCredential(ctx, keyRef)
+  const apiKey = typeof options.apiKey === 'string' && options.apiKey.trim().length > 0
+    ? options.apiKey.trim()
+    : await resolveCredential(ctx, keyRef)
   if (!apiKey) throw new WebError(`custom search credential "${keyRef}" is not configured`, 'WEB_PROVIDER_CREDENTIAL_MISSING')
   const endpoint = cleanBase(config.customBaseURL) || DEFAULT_ENDPOINTS[provider]
   if (!endpoint) throw new WebError('custom search Base URL is required', 'WEB_PROVIDER_CONFIGURED_UNAVAILABLE')

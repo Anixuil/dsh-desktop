@@ -46,6 +46,24 @@ const plugin = await import('./bridge/index.js')
     },
   }
   const emit = (event, ...args) => (handlers[event] ?? []).forEach((fn) => fn(...args))
+  registerTurnNotifier(ctx, { post: (payload) => posts.push(payload) })
+  emit('agent/status', { agent: { id: 'legacy', title: 'Legacy task' }, status: 'running' })
+  emit('agent/status', { agent: { id: 'legacy' }, status: 'idle' })
+  if (posts.length !== 1 || posts[0].turnKey !== 'legacy:1') {
+    throw new Error(`status-only fallback failed: ${JSON.stringify(posts)}`)
+  }
+}
+
+{
+  const handlers = {}
+  const posts = []
+  const ctx = {
+    on: (event, fn) => {
+      (handlers[event] = handlers[event] ?? []).push(fn)
+      return () => {}
+    },
+  }
+  const emit = (event, ...args) => (handlers[event] ?? []).forEach((fn) => fn(...args))
   const notifier = registerTurnNotifier(ctx, { post: (payload) => posts.push(payload) })
   notifier.setFocused('s1')
 
@@ -60,12 +78,23 @@ const plugin = await import('./bridge/index.js')
     throw new Error(`exact completion dedupe failed: ${JSON.stringify(posts)}`)
   }
 
-  // Consecutive exact turns receive distinct keys. A second session can run
-  // in parallel, and a status-only runtime still receives one fallback event.
+  // Once exact events are observed, coarse agent lifecycle changes are not
+  // conversation turns. In particular, balance/maintenance activity must not
+  // reuse the previous title and create another completion notification.
+  const beforeBalance = posts.length
+  emit('agent/status', { agent: { id: 's1', title: 'Focused task' }, status: 'running' })
+  emit('agent/status', { agent: { id: 's1' }, status: 'idle' })
+  emit('agent/status', { agent: { id: 'balance-worker' }, status: 'running' })
+  emit('agent/status', { agent: { id: 'balance-worker' }, status: 'idle' })
+  if (posts.length !== beforeBalance) {
+    throw new Error(`balance lifecycle emitted a completion: ${JSON.stringify(posts)}`)
+  }
+
+  // Consecutive exact turns receive distinct keys and parallel sessions stay
+  // isolated. agent/status is deliberately ignored on this runtime.
   emit('session/event', { id: 's1', title: 'Second turn' }, { type: 'turn/start', data: {} })
-  emit('agent/status', { agent: { id: 's2', title: 'Background task' }, status: 'running' })
+  emit('session/event', { id: 's2', title: 'Background task' }, { type: 'turn/start', data: {} })
   emit('session/event', { id: 's1' }, { type: 'turn/end', data: {} })
-  emit('agent/status', { agent: { id: 's2' }, status: 'idle' })
   emit('session/event', { id: 's2' }, { type: 'turn/end', data: {} })
   if (posts.length !== 3 || posts[1].turnKey !== 's1:2' || posts[2].turnKey !== 's2:1') {
     throw new Error(`consecutive/parallel completion failed: ${JSON.stringify(posts)}`)

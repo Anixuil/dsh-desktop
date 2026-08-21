@@ -51,18 +51,20 @@ const MIN_REFRESH_INTERVAL_SECS: u64 = 3;
 /// Desktop plugin packages deployed from `runtime/plugins-src` into both the
 /// dsh module tree (update restore) and the boot-time profile tree
 /// (`ensure_runtime_files`). Each name doubles as its `--patch` row id.
-const DESKTOP_PLUGINS: [&str; 5] = [
+const DESKTOP_PLUGINS: [&str; 6] = [
     "dsh-desktop-bridge",
     "dsh-desktop-session-manager",
     "dsh-desktop-change-history",
     "dsh-desktop-file-upload",
+    "dsh-desktop-conversation-navigator",
     "dsh-desktop-web-search",
 ];
-const BUILTIN_PLUGINS: [&str; 6] = [
+const BUILTIN_PLUGINS: [&str; 7] = [
     "dsh-desktop-bridge",
     "dsh-desktop-session-manager",
     "dsh-desktop-change-history",
     "dsh-desktop-file-upload",
+    "dsh-desktop-conversation-navigator",
     "dsh-vision-any",
     "dshmarket",
 ];

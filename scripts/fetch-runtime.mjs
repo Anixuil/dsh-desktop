@@ -127,6 +127,7 @@ const desktopPlugins = [
   { name: 'dsh-desktop-session-manager', dir: 'session-manager' },
   { name: 'dsh-desktop-change-history', dir: 'change-history' },
   { name: 'dsh-desktop-file-upload', dir: 'file-upload' },
+  { name: 'dsh-desktop-conversation-navigator', dir: 'conversation-navigator' },
   { name: 'dsh-desktop-web-search', dir: 'web-search' },
 ];
 const pluginStore = path.join(runtimeDir, 'plugins-src');
