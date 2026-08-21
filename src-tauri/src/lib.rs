@@ -19,14 +19,19 @@ use std::{
 };
 
 use flate2::read::GzDecoder;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use tauri::{
     menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_updater::UpdaterExt;
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_notification::NotificationExt;
 
 // ---------------------------------------------------------------------------
 // constants
@@ -36,20 +41,30 @@ const DSH_WEB_PORT_DEFAULT: u16 = 3080;
 /// Loopback status port of the relay-client companion process.
 const RELAY_CLIENT_STATUS_PORT: u16 = 38659;
 const CREDENTIAL_NAME: &str = "DEEPSEEK_API_KEY";
-/// Default GitHub repo (`owner/repo`) for shell update checks — this very
-/// codebase. Overridable through config `update_repo` or the
-/// `DSH_DESKTOP_UPDATE_REPO` env var.
+/// Official repository used for release links. Signed production updates use
+/// the immutable updater endpoint/public key compiled into tauri.conf.json;
+/// legacy update_repo configuration is intentionally not trusted for installs.
 const DEFAULT_UPDATE_REPO: &str = "Anixuil/dsh-desktop";
 const BRIDGE_PATCH_YML: &str = include_str!("../../scripts/bridge.patch.yml");
+const WEB_SEARCH_PATCH_YML: &str = include_str!("../../scripts/web-search.patch.yml");
 const MIN_REFRESH_INTERVAL_SECS: u64 = 3;
 /// Desktop plugin packages deployed from `runtime/plugins-src` into both the
 /// dsh module tree (update restore) and the boot-time profile tree
 /// (`ensure_runtime_files`). Each name doubles as its `--patch` row id.
-const DESKTOP_PLUGINS: [&str; 4] = [
+const DESKTOP_PLUGINS: [&str; 5] = [
     "dsh-desktop-bridge",
     "dsh-desktop-session-manager",
     "dsh-desktop-change-history",
     "dsh-desktop-file-upload",
+    "dsh-desktop-web-search",
+];
+const BUILTIN_PLUGINS: [&str; 6] = [
+    "dsh-desktop-bridge",
+    "dsh-desktop-session-manager",
+    "dsh-desktop-change-history",
+    "dsh-desktop-file-upload",
+    "dsh-vision-any",
+    "dshmarket",
 ];
 /// Bundled third-party plugin (github.com/tianmingwan/dsh-vision-any). Ships in
 /// `runtime/plugins-src` and mounts through the web profile's `bundles` list —
@@ -82,7 +97,8 @@ const INIT_SCRIPT: &str =
     r#"window.addEventListener('contextmenu', (e) => e.preventDefault(), true);"#;
 
 /// Initialization script that publishes the persisted motion intensity as
-/// `window.__DSH_MOTION__` ("quiet" | "rich") on every document of a window —
+/// `window.__DSH_MOTION__` ("default" | "quiet" | "rich") on every document
+/// of a window —
 /// including the remote dsh web UI. Page scripts read it before first paint,
 /// so the splash/settings/injected transitions never flash the wrong mode.
 /// Live changes ride the `motion-updated` event.
@@ -102,9 +118,134 @@ const SETTINGS_SHELL_BUNDLE: [&str; 6] = [
     "lib",
     "client.js",
 ];
+/// Models settings client bundle. DSH intentionally keeps credentials in its
+/// write-only credential service; the desktop adds account-level provider
+/// credentials here so platforms such as Volcengine can expose billing data
+/// without creating a second settings owner.
+const SETTINGS_MODELS_BUNDLE: [&str; 6] = [
+    "dsh",
+    "node_modules",
+    "@deepseek-ai",
+    "dsh-client-ui-settings-models",
+    "lib",
+    "client.js",
+];
+const SETTINGS_MODELS_CREDENTIALS_MARKER: &str =
+    "dsh-desktop-provider-account-credentials-v1";
+const SETTINGS_MODELS_COMPONENT_ANCHOR: &str = "\t\tfunction ProviderEditor(props) {";
+const SETTINGS_MODELS_RENDER_ANCHOR: &str = "\t\t\t\t}), props.credentialOnly === true ? null : (0, react_jsx_runtime.jsxs)(\"details\", {";
+const SETTINGS_MODELS_RENDER_REPLACEMENT: &str = "\t\t\t\t}), props.credentialOnly === true ? null : (0, react_jsx_runtime.jsx)(ProviderAccountCredentials, { provider: props.provider, baseURL: probeBaseURL, api }), props.credentialOnly === true ? null : (0, react_jsx_runtime.jsxs)(\"details\", {";
+const SETTINGS_MODELS_COMPONENT_INSERT: &str = r#"		/* dsh-desktop-provider-account-credentials-v1: account-level credentials for provider control planes. */
+		function ProviderAccountCredentials({ provider, baseURL, api }) {
+			const identity = `${provider ?? ""} ${baseURL ?? ""}`.toLowerCase();
+			const isVolcengine = /(volc|doubao|ark\.|火山|豆包)/i.test(identity);
+			const zh = (() => {
+				try { return document.documentElement.lang.toLowerCase().startsWith("zh") || navigator.language.toLowerCase().startsWith("zh"); }
+				catch { return true; }
+			})();
+			const copy = zh ? {
+				title: "火山引擎账户凭据",
+				hint: "用于费用中心余额查询，与模型调用所需的 Ark API Key 不同。凭据仅写入本机 DSH 凭据库，不会在页面中回显。",
+				access: "AccessKey ID",
+				secret: "Secret Access Key",
+				stored: "已配置，输入新值可替换",
+				empty: "请输入 AccessKey ID 和 Secret Access Key",
+				invalid: "凭据只能包含可打印 ASCII 字符，请检查输入。",
+				readOnly: "该凭据由启动环境提供，当前为只读。",
+				save: "保存账户凭据",
+				saving: "保存中...",
+				saved: "账户凭据已保存。",
+				loadFailed: "无法读取账户凭据状态。"
+			} : {
+				title: "Volcengine account credentials",
+				hint: "Used for Billing Center balance queries. These differ from the Ark API key used for model calls. Values are write-only and stored in the local DSH credential store.",
+				access: "AccessKey ID",
+				secret: "Secret Access Key",
+				stored: "Configured, enter a new value to replace",
+				empty: "Enter both the AccessKey ID and Secret Access Key",
+				invalid: "Credentials may contain printable ASCII characters only.",
+				readOnly: "This credential comes from the launch environment and is read-only.",
+				save: "Save account credentials",
+				saving: "Saving...",
+				saved: "Account credentials saved.",
+				loadFailed: "Could not load account credential status."
+			};
+			const refs = ["VOLC_ACCESS_KEY", "VOLC_SECRET_KEY"];
+			const [drafts, setDrafts] = (0, react.useState)(["", ""]);
+			const [states, setStates] = (0, react.useState)([void 0, void 0]);
+			const [loading, setLoading] = (0, react.useState)(true);
+			const [busy, setBusy] = (0, react.useState)(false);
+			const [failure, setFailure] = (0, react.useState)(void 0);
+			const [saved, setSaved] = (0, react.useState)(false);
+			const refresh = async () => {
+				const response = await api.credentials.describe({ refs });
+				if (!response.result.ok) throw new Error(response.result.error.message);
+				const values = response.result.value.credentials;
+				setStates(refs.map((ref) => values[ref]));
+			};
+			(0, react.useEffect)(() => {
+				let stale = false;
+				if (!isVolcengine) { setLoading(false); return () => { stale = true; }; }
+				setLoading(true);
+				api.credentials.describe({ refs }).then((response) => {
+					if (stale) return;
+					if (!response.result.ok) throw new Error(response.result.error.message);
+					const values = response.result.value.credentials;
+					setStates(refs.map((ref) => values[ref]));
+					setFailure(void 0);
+				}).catch(() => { if (!stale) setFailure(copy.loadFailed); }).finally(() => { if (!stale) setLoading(false); });
+				return () => { stale = true; };
+			}, [api.credentials, isVolcengine]);
+			const values = drafts.map((value) => value.trim());
+			const invalid = drafts.some((value) => value.length > 0 && apiKeyFailure(value) !== void 0);
+			const missing = states.some((state, index) => state?.configured !== true && values[index].length === 0);
+			const locked = states.some((state) => state?.writable === false);
+			const submit = async () => {
+				setFailure(void 0);
+				setSaved(false);
+				if (invalid) { setFailure(copy.invalid); return; }
+				if (missing) { setFailure(copy.empty); return; }
+				setBusy(true);
+				try {
+					for (let index = 0; index < refs.length; index += 1) {
+						if (values[index].length === 0) continue;
+						const response = await api.credentials.set({ ref: refs[index], value: values[index] });
+						if (!response.result.ok) throw new Error(response.result.error.message);
+					}
+					setDrafts(["", ""]);
+					await refresh();
+					setSaved(true);
+				} catch (error) {
+					setFailure(messageOf(error));
+				} finally {
+					setBusy(false);
+				}
+			};
+			if (!isVolcengine) return null;
+			return (0, react_jsx_runtime.jsxs)("div", {
+				className: ModelsSection_module_css_default["modelCatalog"],
+				children: [
+					(0, react_jsx_runtime.jsxs)("div", { className: ModelsSection_module_css_default["modelCatalogHeading"], children: [
+						(0, react_jsx_runtime.jsx)("span", { className: ModelsSection_module_css_default["modelCatalogTitle"], children: copy.title }),
+						(0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["modelCatalogMeta"], children: copy.hint })
+					] }),
+					...refs.map((ref, index) => (0, react_jsx_runtime.jsxs)("label", { className: ModelsSection_module_css_default["field"], children: [
+						(0, react_jsx_runtime.jsx)("span", { className: ModelsSection_module_css_default["fieldLabel"], children: index === 0 ? copy.access : copy.secret }),
+						(0, react_jsx_runtime.jsx)("input", { className: ModelsSection_module_css_default["input"], type: "password", autoComplete: "off", value: drafts[index], placeholder: states[index]?.configured === true ? copy.stored : "", disabled: loading || busy || states[index]?.writable === false, "aria-invalid": failure !== void 0, onChange: (event) => { const next = [...drafts]; next[index] = event.target.value; setDrafts(next); setSaved(false); } })
+					] }, ref)),
+					locked ? (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["advancedHint"], children: copy.readOnly }) : null,
+					failure !== void 0 ? (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["error"], role: "alert", children: failure }) : null,
+					saved ? (0, react_jsx_runtime.jsx)("p", { className: ModelsSection_module_css_default["savedNotice"], role: "status", children: copy.saved }) : null,
+					(0, react_jsx_runtime.jsx)("div", { className: ModelsSection_module_css_default["editorActions"], children: (0, react_jsx_runtime.jsx)("button", { type: "button", className: ModelsSection_module_css_default["secondaryButton"], disabled: loading || busy || locked || values.every((value) => value.length === 0), onClick: submit, children: busy ? copy.saving : copy.save }) })
+				]
+			});
+		}
+"#;
 /// Marker comment injected by the settings-nav-icon patch; its presence means
 /// the bundle is already patched (idempotence across boots and dsh updates).
 const SETTINGS_NAV_ICONS_MARKER: &str = "dsh-desktop-settings-nav-icons-v2";
+const SETTINGS_NAV_WEB_SEARCH_MARKER: &str = "dsh-desktop-settings-nav-web-search-v1";
+const SETTINGS_NAV_MODEL_BEHAVIOR_MARKER: &str = "dsh-desktop-settings-nav-model-behavior-v1";
 /// The shell's fallback nav-glyph branch (gear icon) — the exact insertion
 /// point for the desktop section branches. Matched verbatim against the
 /// upstream bundle; a future dsh build that reshapes `navIcon` loses the match
@@ -157,6 +298,18 @@ const SETTINGS_NAV_ICONS_INSERT: &str = r#"			/* dsh-desktop-settings-nav-icons-
 				size: 16
 			});
 "#;
+const SETTINGS_NAV_WEB_SEARCH_INSERT: &str = r#"			/* dsh-desktop-settings-nav-web-search-v1 */
+			if (id === "web-search") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconSearchOutline16, {
+				className: SettingsRoot_module_css_default.navIcon,
+				size: 16
+			});
+"#;
+const SETTINGS_NAV_MODEL_BEHAVIOR_INSERT: &str = r#"			/* dsh-desktop-settings-nav-model-behavior-v1 */
+			if (id === "model-behavior") return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPersonalizationOutline16, {
+				className: SettingsRoot_module_css_default.navIcon,
+				size: 16
+			});
+"#;
 
 /// Injected on every document of the main window. On the remote dsh web UI it
 /// draws the desktop shell's custom title bar (the window is undecorated, see
@@ -190,8 +343,11 @@ const TITLEBAR_SCRIPT: &str = r#"
   // is injected by the shell before document scripts run; live changes arrive
   // through the `motion-updated` event.
   var MOTION_ATTR = 'data-dsh-motion';
+  function normalizeMotion(m) {
+    return m === 'default' || m === 'quiet' || m === 'rich' ? m : 'rich';
+  }
   function motionValue() {
-    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+    try { return normalizeMotion(window.__DSH_MOTION__); } catch (e) { return 'rich'; }
   }
   function applyMotionAttr(m) {
     try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
@@ -201,7 +357,7 @@ const TITLEBAR_SCRIPT: &str = r#"
     if (window.__TAURI__ && window.__TAURI__.event) {
       window.__TAURI__.event.listen('motion-updated', function (e) {
         var m = e && e.payload && e.payload.motion;
-        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
+        applyMotionAttr(normalizeMotion(m));
       });
     }
   } catch (e) {}
@@ -346,25 +502,29 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
   }
 
   // Motion intensity: rich plays the full ocean transition (waves + whale
-  // glide); quiet flips instantly like reduced-motion. The persisted value is
-  // injected as `window.__DSH_MOTION__` before page scripts and updates live
-  // through the `motion-updated` event.
+  // glide); quiet flips instantly like reduced-motion; default passes through
+  // to DSH's native theme behavior. The persisted value is injected as
+  // `window.__DSH_MOTION__` before page scripts and updates live through the
+  // `motion-updated` event.
   var MOTION_ATTR = 'data-dsh-motion';
   function applyMotionAttr(m) {
     try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
   }
   function isQuiet() {
-    return prefersReduced() || document.documentElement.getAttribute(MOTION_ATTR) === 'quiet';
+    return prefersReduced() || document.documentElement.getAttribute(MOTION_ATTR) !== 'rich';
+  }
+  function normalizeMotion(m) {
+    return m === 'default' || m === 'quiet' || m === 'rich' ? m : 'rich';
   }
   function motionValue() {
-    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+    try { return normalizeMotion(window.__DSH_MOTION__); } catch (e) { return 'rich'; }
   }
   applyMotionAttr(motionValue());
   try {
     if (window.__TAURI__ && window.__TAURI__.event) {
       window.__TAURI__.event.listen('motion-updated', function (e) {
         var m = e && e.payload && e.payload.motion;
-        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
+        applyMotionAttr(normalizeMotion(m));
       });
     }
   } catch (e) {}
@@ -522,8 +682,9 @@ const THEME_TRANSITION_SCRIPT: &str = r#"
 /// - A pointer-transparent ambient layer adds living ocean motion over both
 ///   themes: two counter-drifting wave bands at the bottom, rising bubbles,
 ///   and two slowly breathing glows. Transform/opacity only; gated by the
-///   persisted motion intensity (`rich` animates, `quiet` hides waves and
-///   bubbles and freezes glows) and by prefers-reduced-motion.
+///   persisted appearance preset (`rich` animates, `quiet` hides waves and
+///   bubbles and freezes glows, `default` removes the entire skin) and by
+///   prefers-reduced-motion.
 /// - Everything follows the app's live `data-ds-dark-theme` flips (the
 ///   THEME_TRANSITION_SCRIPT above owns the transition itself).
 ///
@@ -552,8 +713,11 @@ const OCEAN_THEME_SCRIPT: &str = r#"
 
   // Motion intensity — defensively, the title bar script already set the attr
   var MOTION_ATTR = 'data-dsh-motion';
+  function normalizeMotion(m) {
+    return m === 'default' || m === 'quiet' || m === 'rich' ? m : 'rich';
+  }
   function motionValue() {
-    try { return window.__DSH_MOTION__ === 'quiet' ? 'quiet' : 'rich'; } catch (e) { return 'rich'; }
+    try { return normalizeMotion(window.__DSH_MOTION__); } catch (e) { return 'rich'; }
   }
   function applyMotionAttr(m) {
     try { document.documentElement.setAttribute(MOTION_ATTR, m); } catch (e) {}
@@ -563,8 +727,13 @@ const OCEAN_THEME_SCRIPT: &str = r#"
     if (window.__TAURI__ && window.__TAURI__.event) {
       window.__TAURI__.event.listen('motion-updated', function (e) {
         var m = e && e.payload && e.payload.motion;
-        applyMotionAttr(m === 'quiet' ? 'quiet' : 'rich');
-        syncEngine();
+        var next = normalizeMotion(m);
+        applyMotionAttr(next);
+        if (next === 'default') teardown();
+        else {
+          mount();
+          syncEngine();
+        }
       });
     }
   } catch (e) {}
@@ -866,7 +1035,7 @@ const OCEAN_THEME_SCRIPT: &str = r#"
     } catch (e) { return false; }
   }
   function motionIsRich() {
-    return document.documentElement.getAttribute(MOTION_ATTR) !== 'quiet';
+    return document.documentElement.getAttribute(MOTION_ATTR) === 'rich';
   }
   function syncEngine() {
     if (motionIsRich() && !prefersReducedMotion()) waveEngine.start();
@@ -943,7 +1112,24 @@ const OCEAN_THEME_SCRIPT: &str = r#"
     }
   } catch (e) {}
 
+  function teardown() {
+    try { if (waveEngine) waveEngine.stop(); } catch (e) {}
+    try {
+      var ambient = document.getElementById(AMBIENT_ID);
+      if (ambient && ambient.parentNode) ambient.parentNode.removeChild(ambient);
+    } catch (e) {}
+    try {
+      var style = document.getElementById(STYLE_ID);
+      if (style && style.parentNode) style.parentNode.removeChild(style);
+    } catch (e) {}
+    report('native', 'DSH default appearance active');
+  }
+
   function mount() {
+    if (document.documentElement.getAttribute(MOTION_ATTR) === 'default') {
+      teardown();
+      return true;
+    }
     if (!document.head) return false;
     var ok = true;
     try {
@@ -987,6 +1173,7 @@ const OCEAN_THEME_SCRIPT: &str = r#"
   // slow re-arm: if the dsh app wipes/replaces the DOM, mount again
   setInterval(function () {
     if (!document.head) return;
+    if (document.documentElement.getAttribute(MOTION_ATTR) === 'default') return;
     if (!document.getElementById(STYLE_ID) || (document.body && !document.getElementById(AMBIENT_ID))) {
       mount();
     }
@@ -1038,6 +1225,28 @@ pub struct ProviderUsage {
     pub has_payment_method: Option<bool>,
 }
 
+/// One prepaid package or subscription exposed by a provider control plane.
+/// Amounts intentionally remain numeric and carry their source unit so token,
+/// request, image, and currency packages can share the same UI contract.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct ProviderPlan {
+    pub id: String,
+    pub name: String,
+    pub product: Option<String>,
+    pub total: Option<f64>,
+    pub used: Option<f64>,
+    pub remaining: Option<f64>,
+    pub unit: Option<String>,
+    pub status: Option<String>,
+    pub effective_at: Option<String>,
+    pub expires_at: Option<String>,
+    /// Usage deducted during the provider-specific reporting window.
+    pub period_usage: Option<f64>,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+}
+
 /// One platform's account status. `kind` is "balance" (prepaid providers with
 /// a native balance endpoint), "usage" (bill-by-usage gateways with a billing
 /// endpoint), or "unsupported" (no key-accessible balance/billing API).
@@ -1052,6 +1261,9 @@ pub struct ProviderStatus {
     pub configured: bool,
     pub balance: Option<Balance>,
     pub usage: Option<ProviderUsage>,
+    #[serde(default)]
+    pub plans: Vec<ProviderPlan>,
+    pub plans_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -1087,16 +1299,27 @@ enum Adapter {
     Probe,
 }
 
-/// Motion intensity of the desktop UI. `Rich` keeps the full ocean ambient
-/// animation set (drifting glows, wave bands, bubbles, the whale theme-switch
-/// transition); `Quiet` keeps only essential micro-interactions, entrances and
-/// feedback, with shorter durations. Serializes to lowercase strings
-/// ("quiet" | "rich") for config.json and the JS bridge.
+/// Appearance and motion preset of the desktop UI. `Default` leaves DSH's
+/// native design tokens and interactions untouched. `Rich` keeps the full
+/// ocean ambient animation set (drifting glows, wave bands, bubbles, the whale
+/// theme-switch transition); `Quiet` keeps the ocean skin with only essential
+/// micro-interactions and feedback. Serializes to lowercase strings
+/// ("default" | "quiet" | "rich") for config.json and the JS bridge.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MotionIntensity {
+    Default,
     Quiet,
     Rich,
+}
+
+/// Controls when a completed DSH task becomes a native system notification.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotificationMode {
+    Off,
+    Unfocused,
+    Always,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1116,6 +1339,10 @@ pub struct AppConfig {
     /// config.json files (without the field) loading as `Rich`.
     #[serde(default = "default_motion")]
     pub motion: MotionIntensity,
+    /// Native task-completion notifications. Existing config files default to
+    /// the low-interruption behavior used by Codex: notify only when needed.
+    #[serde(default = "default_task_notification_mode")]
+    pub task_notification_mode: TaskNotificationMode,
     /// Remote access via the public relay: the relay-client companion process
     /// connects out to `remote_relay_url` as `remote_device_id` and lets a
     /// phone reach the local dsh web through it. All fields default off/empty
@@ -1149,6 +1376,11 @@ pub struct AppConfig {
     /// Total timeout for one market package operation, in minutes.
     #[serde(default = "default_plugin_install_timeout_minutes")]
     pub plugin_install_timeout_minutes: u16,
+    /// Built-in packages that should stay installed but not be mounted into
+    /// the active web profile. Missing on older configs means every built-in
+    /// plugin remains enabled.
+    #[serde(default)]
+    pub disabled_builtin_plugins: HashSet<String>,
 }
 
 fn default_remote_max_concurrent() -> u16 {
@@ -1157,6 +1389,10 @@ fn default_remote_max_concurrent() -> u16 {
 
 fn default_motion() -> MotionIntensity {
     MotionIntensity::Rich
+}
+
+fn default_task_notification_mode() -> TaskNotificationMode {
+    TaskNotificationMode::Unfocused
 }
 
 fn default_plugin_install_timeout_minutes() -> u16 {
@@ -1175,6 +1411,7 @@ impl Default for AppConfig {
             update_repo: None,
             key_registered_at: None,
             motion: MotionIntensity::Rich,
+            task_notification_mode: TaskNotificationMode::Unfocused,
             remote_enabled: false,
             remote_relay_url: None,
             remote_secret: None,
@@ -1185,6 +1422,7 @@ impl Default for AppConfig {
             plugin_network_proxy: None,
             plugin_npm_registry: None,
             plugin_install_timeout_minutes: default_plugin_install_timeout_minutes(),
+            disabled_builtin_plugins: HashSet::new(),
         }
     }
 }
@@ -1276,8 +1514,15 @@ pub struct AppState {
     /// "unsupported") so probe providers don't re-probe every refresh.
     adapters: Mutex<HashMap<String, String>>,
     config: Mutex<AppConfig>,
+    /// Defensive shell-side duplicate guard for repeated local /turn-end
+    /// requests. The bridge already deduplicates by session turn.
+    recent_task_notifications: Mutex<HashMap<String, Instant>>,
     last_refresh: Mutex<Option<Instant>>,
     last_update_check: Mutex<Option<Instant>>,
+    /// Process-wide update gates. Backend checks are authoritative; UI button
+    /// disabling is only presentation and cannot bypass these locks.
+    core_update_in_progress: AtomicBool,
+    shell_update_in_progress: AtomicBool,
     tray_balance_item: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
     tray_autostart_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     /// `Instant` of the most recent dsh child spawn (bootstrap or restart) —
@@ -1740,6 +1985,91 @@ fn plugin_network_snapshot(config: &AppConfig) -> serde_json::Value {
     })
 }
 
+fn builtin_plugin_version(paths: &Paths, name: &str) -> Option<String> {
+    let package = paths
+        .bundled_runtime_dir
+        .join("plugins-src")
+        .join(name)
+        .join("package.json");
+    fs::read_to_string(package)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.get("version")?.as_str().map(String::from))
+}
+
+fn builtin_plugins_snapshot(paths: &Paths, config: &AppConfig) -> serde_json::Value {
+    let managed = read_bundled_third_party_plugins(paths);
+    let profile_modules = paths.dsh_home.join("profiles").join("node_modules");
+    let plugins = BUILTIN_PLUGINS
+        .iter()
+        .map(|name| {
+            let source = if DESKTOP_PLUGINS.contains(name) {
+                "desktop"
+            } else if profile_modules.join(name).exists() && !managed.contains(*name) {
+                "user"
+            } else {
+                "bundledThirdParty"
+            };
+            serde_json::json!({
+                "id": name,
+                "version": builtin_plugin_version(paths, name),
+                "source": source,
+                "enabled": !config.disabled_builtin_plugins.contains(*name),
+                "controlPlaneRetained": *name == "dsh-desktop-bridge",
+                "requiresRestart": true,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "ok": true, "plugins": plugins })
+}
+
+fn restart_dsh_after_builtin_change(
+    app: AppHandle,
+    paths: Paths,
+    next: AppConfig,
+    previous: AppConfig,
+) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(750));
+        let state = app.state::<AppState>();
+        state.runtime_ready.store(false, Ordering::SeqCst);
+        ensure_runtime_files(&paths);
+        let spawn_result = {
+            let mut dsh = state.dsh.lock().unwrap();
+            if let Some(mut child) = dsh.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            spawn_dsh(&paths, &next).map(|child| {
+                dsh.child = Some(child);
+            })
+        };
+        if let Err(error) = spawn_result {
+            log_line(
+                &paths.log_file,
+                &format!("built-in plugin restart failed, rolling back: {error}"),
+            );
+            save_config(&paths.config_file, &previous);
+            *state.config.lock().unwrap() = previous.clone();
+            ensure_runtime_files(&paths);
+            let mut dsh = state.dsh.lock().unwrap();
+            match spawn_dsh(&paths, &previous) {
+                Ok(child) => dsh.child = Some(child),
+                Err(rollback_error) => log_line(
+                    &paths.log_file,
+                    &format!("built-in plugin rollback restart failed: {rollback_error}"),
+                ),
+            }
+        } else {
+            log_line(
+                &paths.log_file,
+                "built-in plugin settings applied; DSH restarted",
+            );
+        }
+        state.runtime_ready.store(true, Ordering::SeqCst);
+    });
+}
+
 async fn probe_plugin_network(config: &AppConfig) -> serde_json::Value {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(12));
     if let Some(proxy) = config.plugin_network_proxy.as_deref() {
@@ -1797,11 +2127,11 @@ async fn probe_plugin_network(config: &AppConfig) -> serde_json::Value {
 /// (standalone `dsh web` setups); duplicating their loader entry ids crashes
 /// profile boot, so the overlay emits ONLY the rows the home layer does not
 /// already mount — empty when every desktop plugin is already mounted.
-fn desktop_patch_overlay(dsh_home: &Path) -> String {
-    const EMPTY_OVERLAY: &str =
-        "# dsh-desktop bridge rows — home layer already mounts every desktop plugin;\n\
-# keep this overlay empty so loader entry ids never duplicate.\n\
-- insert: []\n";
+fn desktop_patch_overlay(dsh_home: &Path, disabled: &HashSet<String>) -> String {
+    let empty_overlay = format!(
+        "# dsh-desktop search route + bridge rows — home layer already mounts every desktop plugin.\n{}- insert: []\n",
+        WEB_SEARCH_PATCH_YML
+    );
     let home_layer = dsh_home.join("cordis.patch.yml");
     let content = fs::read_to_string(&home_layer).unwrap_or_default();
 
@@ -1830,23 +2160,28 @@ fn desktop_patch_overlay(dsh_home: &Path) -> String {
         rows.push(row);
     }
 
-    // Keep only the rows whose plugin id the home layer does not already mount.
+    // Keep only enabled rows whose plugin id the home layer does not already
+    // mount. The bridge row is the non-disableable control plane for this
+    // settings page; its user-facing features are gated by the client bundle.
     let missing: Vec<&str> = rows
         .iter()
         .filter(|row| {
             !DESKTOP_PLUGINS.iter().any(|name| {
-                content.contains(&format!("id: {name}")) && row.contains(&format!("id: {name}"))
+                row.contains(&format!("id: {name}"))
+                    && ((*name != "dsh-desktop-bridge" && disabled.contains(*name))
+                        || content.contains(&format!("id: {name}")))
             })
         })
         .map(|row| row.as_str())
         .collect();
 
     if missing.is_empty() {
-        EMPTY_OVERLAY.to_string()
+        empty_overlay
     } else {
         format!(
-            "# dsh-desktop bridge rows — gap-fill overlay (managed by DSH Desktop).\n- insert:\n{}",
-            missing.concat()
+            "# dsh-desktop search route + bridge rows — gap-fill overlay (managed by DSH Desktop).\n{}- insert:\n{}",
+            WEB_SEARCH_PATCH_YML,
+            missing.concat(),
         )
     }
 }
@@ -1867,7 +2202,12 @@ fn write_if_different(path: &Path, content: &str) {
 
 fn ensure_runtime_files(paths: &Paths) {
     let _ = fs::create_dir_all(&paths.logs_dir);
-    write_if_different(&paths.patch_file, &desktop_patch_overlay(&paths.dsh_home));
+    let config = load_config(&paths.config_file);
+    let disabled = &config.disabled_builtin_plugins;
+    write_if_different(
+        &paths.patch_file,
+        &desktop_patch_overlay(&paths.dsh_home, disabled),
+    );
     // The loader resolves plugin entries from the profile's module tree
     // ($DSH_HOME/profiles/node_modules), not from runtime/dsh — deploy the
     // desktop plugin packages there so each `--patch` row can import it.
@@ -1897,7 +2237,8 @@ fn ensure_runtime_files(paths: &Paths) {
             &profile_modules,
             VISION_PLUGIN,
             &mut managed,
-        ) {
+        ) && !disabled.contains(VISION_PLUGIN)
+        {
             web_bundles.push(VISION_PLUGIN);
         }
         if deploy_bundled_third_party_plugin(
@@ -1907,7 +2248,9 @@ fn ensure_runtime_files(paths: &Paths) {
             MARKET_PLUGIN,
             &mut managed,
         ) {
-            web_bundles.push(MARKET_PLUGIN);
+            if !disabled.contains(MARKET_PLUGIN) {
+                web_bundles.push(MARKET_PLUGIN);
+            }
             if managed.contains(MARKET_PLUGIN) {
                 // Keep market-only dependencies below the plugin package. This
                 // avoids overwriting a user's top-level copies of common packages.
@@ -1927,9 +2270,7 @@ fn ensure_runtime_files(paths: &Paths) {
     }
     // Mount bundle plugins only when their packages actually deployed — an
     // old runtime without one must never leave a dangling profile entry.
-    if !web_bundles.is_empty() {
-        ensure_web_profile_bundles(paths, &web_bundles);
-    }
+    reconcile_web_profile_bundles(paths, &web_bundles, disabled);
     // Deploy the relay-client companion process (not a cordis plugin): ships
     // under the bundled runtime's relay-client/ directory, or scripts/
     // relay-client in a dev checkout. The extracted tree must hold a copy so
@@ -1950,6 +2291,9 @@ fn ensure_runtime_files(paths: &Paths) {
     // 会话管理 / 变更历史 / 关于) their dedicated nav glyphs in the served
     // settings-shell bundle.
     patch_settings_nav_icons(paths);
+    // Extend the existing Models editor with write-only account credentials
+    // required by provider control planes (currently Volcengine billing).
+    patch_settings_models_credentials(paths);
 }
 
 fn bundled_third_party_state_path(paths: &Paths) -> PathBuf {
@@ -2011,8 +2355,8 @@ fn deploy_bundled_third_party_plugin(
 }
 
 /// Settings-shell nav-icon patch for the desktop-owned settings sections
-/// (外观与动效 `appearance`, 视觉模型 `vision-any`, 会话管理
-/// `session-manager`, 变更历史 `change-history`, 关于 `about`). The shell
+/// (联网搜索 `web-search`, 模型行为 `model-behavior`, 外观与动效 `appearance`, 视觉模型 `vision-any`,
+/// 会话管理 `session-manager`, 变更历史 `change-history`, 关于 `about`). The shell
 /// hard-codes nav glyphs per section id and falls back to the settings gear
 /// for unknown ids; this inserts dedicated branches into its served client
 /// bundle. Idempotent (marker-checked). When the upstream bundle no longer
@@ -2039,7 +2383,10 @@ fn patch_settings_nav_icons(paths: &Paths) {
             return;
         }
     };
-    if raw.contains(SETTINGS_NAV_ICONS_MARKER) {
+    let needs_existing = !raw.contains(SETTINGS_NAV_ICONS_MARKER);
+    let needs_web_search = !raw.contains(SETTINGS_NAV_WEB_SEARCH_MARKER);
+    let needs_model_behavior = !raw.contains(SETTINGS_NAV_MODEL_BEHAVIOR_MARKER);
+    if !needs_existing && !needs_web_search && !needs_model_behavior {
         return; // already patched
     }
     if !raw.contains(SETTINGS_NAV_ICONS_ANCHOR) {
@@ -2049,15 +2396,82 @@ fn patch_settings_nav_icons(paths: &Paths) {
         );
         return;
     }
-    let patched = raw.replacen(
-        SETTINGS_NAV_ICONS_ANCHOR,
-        &format!("{SETTINGS_NAV_ICONS_INSERT}{SETTINGS_NAV_ICONS_ANCHOR}"),
+    let mut patched = raw;
+    if needs_existing {
+        patched = patched.replacen(
+            SETTINGS_NAV_ICONS_ANCHOR,
+            &format!("{SETTINGS_NAV_ICONS_INSERT}{SETTINGS_NAV_ICONS_ANCHOR}"),
+            1,
+        );
+    }
+    if needs_web_search {
+        patched = patched.replacen(
+            SETTINGS_NAV_ICONS_ANCHOR,
+            &format!("{SETTINGS_NAV_WEB_SEARCH_INSERT}{SETTINGS_NAV_ICONS_ANCHOR}"),
+            1,
+        );
+    }
+    if needs_model_behavior {
+        patched = patched.replacen(
+            SETTINGS_NAV_ICONS_ANCHOR,
+            &format!("{SETTINGS_NAV_MODEL_BEHAVIOR_INSERT}{SETTINGS_NAV_ICONS_ANCHOR}"),
+            1,
+        );
+    }
+    write_if_different(&bundle, &patched);
+    log_line(
+        &paths.log_file,
+        "settings shell nav icons patched (web search + model behavior + appearance + vision + session)",
+    );
+}
+
+/// Add account-level credential fields to the existing Models provider card.
+/// The patch is deliberately narrow and marker-guarded: when an upstream DSH
+/// update changes either anchor, the unmodified Models page remains usable and
+/// the desktop log records the degraded integration.
+fn patch_settings_models_credentials(paths: &Paths) {
+    let bundle = SETTINGS_MODELS_BUNDLE
+        .iter()
+        .fold(paths.runtime_dir.clone(), |path, part| path.join(part));
+    let raw = match fs::read_to_string(&bundle) {
+        Ok(raw) => raw,
+        Err(error) => {
+            if !bundle.exists() && !paths.node_exe.exists() {
+                return;
+            }
+            log_line(
+                &paths.log_file,
+                &format!("models settings bundle unreadable; provider credentials unpatched: {error}"),
+            );
+            return;
+        }
+    };
+    if raw.contains(SETTINGS_MODELS_CREDENTIALS_MARKER) {
+        return;
+    }
+    if !raw.contains(SETTINGS_MODELS_COMPONENT_ANCHOR)
+        || !raw.contains(SETTINGS_MODELS_RENDER_ANCHOR)
+    {
+        log_line(
+            &paths.log_file,
+            "models settings credential anchors not found; provider credentials unpatched (upstream bundle changed?)",
+        );
+        return;
+    }
+    let with_component = raw.replacen(
+        SETTINGS_MODELS_COMPONENT_ANCHOR,
+        &format!("{SETTINGS_MODELS_COMPONENT_INSERT}{SETTINGS_MODELS_COMPONENT_ANCHOR}"),
+        1,
+    );
+    let patched = with_component.replacen(
+        SETTINGS_MODELS_RENDER_ANCHOR,
+        SETTINGS_MODELS_RENDER_REPLACEMENT,
         1,
     );
     write_if_different(&bundle, &patched);
     log_line(
         &paths.log_file,
-        "settings shell nav icons patched (appearance wave + vision eye + session list)",
+        "models settings provider account credentials patched (Volcengine AK/SK)",
     );
 }
 
@@ -2068,7 +2482,19 @@ fn patch_settings_nav_icons(paths: &Paths) {
 /// plugins pre-listed; an existing profile keeps its own bundle order and gets
 /// the entry appended only when absent. Never clobbers anything else, and
 /// treats an unreadable/invalid manifest as a skip (log, not crash).
+#[cfg(test)]
 fn ensure_web_profile_bundles(paths: &Paths, bundled_plugins: &[&str]) {
+    reconcile_web_profile_bundles(paths, bundled_plugins, &HashSet::new());
+}
+
+/// Reconcile the two bundle-style built-ins without touching package files or
+/// unrelated profile entries. Disabled names are removed wherever they sit;
+/// enabled names are appended only when absent.
+fn reconcile_web_profile_bundles(
+    paths: &Paths,
+    bundled_plugins: &[&str],
+    disabled_plugins: &HashSet<String>,
+) {
     let web_dir = paths.dsh_home.join("profiles").join("web");
     let manifest_path = web_dir.join("package.json");
     let _ = fs::create_dir_all(&web_dir);
@@ -2134,7 +2560,25 @@ fn ensure_web_profile_bundles(paths: &Paths, bundled_plugins: &[&str]) {
             return;
         }
     };
-    if !append_web_profile_bundles(&mut manifest, bundled_plugins) {
+    let mut changed = false;
+    if let Some(bundles) = manifest
+        .get_mut("dsh")
+        .and_then(|value| value.get_mut("profile"))
+        .and_then(|value| value.get_mut("bundles"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let before = bundles.len();
+        bundles.retain(|value| {
+            value
+                .as_str()
+                .is_none_or(|name| !disabled_plugins.contains(name))
+        });
+        changed = bundles.len() != before;
+    }
+    if append_web_profile_bundles(&mut manifest, bundled_plugins) {
+        changed = true;
+    }
+    if !changed {
         return; // already mounted, or the manifest shape is not ours to touch
     }
     match fs::write(
@@ -2374,6 +2818,7 @@ fn extract_tarball(
 /// First-run bootstrap: unpack `runtime/runtime-archive.tar.gz` into the
 /// runtime dir when the extracted tree is missing (fresh install).
 fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String> {
+    recover_interrupted_update(&paths.runtime_dir, &paths.log_file)?;
     let archive = paths.bundled_runtime_dir.join("runtime-archive.tar.gz");
     if !runtime_preparation_needed(paths) {
         return Ok(());
@@ -2436,8 +2881,28 @@ fn extract_runtime_archive(app: &AppHandle, paths: &Paths) -> Result<(), String>
     if !runtime_tree_usable(&staging) {
         return Err("运行时解压不完整".to_string());
     }
+    let installed_dsh_version = dsh_manifest_version(&paths.runtime_dir.join("dsh"));
+    let shipped_dsh_version = dsh_manifest_version(&staging.join("dsh"));
+    let preserve_newer_dsh = should_preserve_installed_dsh(
+        installed_dsh_version.as_deref(),
+        shipped_dsh_version.as_deref(),
+    );
+    if preserve_newer_dsh {
+        log_line(
+            &paths.log_file,
+            &format!(
+                "preserving newer installed dsh {} over bundled {} during shell upgrade",
+                installed_dsh_version.as_deref().unwrap_or("?"),
+                shipped_dsh_version.as_deref().unwrap_or("?")
+            ),
+        );
+    }
     create_dir_all_retry(&paths.runtime_dir).map_err(|e| format!("创建运行时目录失败: {e}"))?;
     for name in ["node", "dsh"] {
+        if name == "dsh" && preserve_newer_dsh {
+            let _ = fs::remove_dir_all(staging.join("dsh"));
+            continue;
+        }
         let target = paths.runtime_dir.join(name);
         if target.exists() {
             fs::remove_dir_all(&target)
@@ -3866,22 +4331,32 @@ fn volc_field(result: &serde_json::Value, names: &[&str]) -> Option<String> {
     None
 }
 
+fn volc_number(result: &serde_json::Value, names: &[&str]) -> Option<f64> {
+    volc_field(result, names).and_then(|value| value.parse::<f64>().ok())
+}
+
+fn volc_result<'a>(value: &'a serde_json::Value, action: &str) -> Result<&'a serde_json::Value, String> {
+    if let Some(error) = value.pointer("/ResponseMetadata/Error") {
+        let code = error.get("Code").and_then(|value| value.as_str()).unwrap_or("UnknownError");
+        let message = error
+            .get("Message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("火山引擎未返回错误详情");
+        return Err(format!("火山引擎 {action} 失败: {code}: {message}"));
+    }
+    value
+        .get("Result")
+        .or_else(|| value.get("result"))
+        .ok_or_else(|| format!("火山引擎 {action} 未返回 Result"))
+}
+
 /// Map a `billing.QueryBalanceAcct` response into the DeepSeek-schema
 /// `Balance` the panel/badge already render. Missing amounts fall back to
-/// "0.00"; OpenAPI errors are surfaced separately in `fetch_volcengine_balance`.
+/// "0.00"; OpenAPI errors are surfaced separately by the shared billing caller.
 fn parse_volc_balance(text: &str) -> Result<Balance, String> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("解析火山引擎余额响应失败: {e}"))?;
-    let result = v.get("Result").or_else(|| v.get("result"));
-    let Some(result) = result else {
-        if let Some(msg) = v
-            .pointer("/ResponseMetadata/Error/Message")
-            .and_then(|m| m.as_str())
-        {
-            return Err(format!("火山引擎余额查询失败: {msg}"));
-        }
-        return Err("火山引擎余额接口未返回 Result".to_string());
-    };
+    let result = volc_result(&v, "QueryBalanceAcct")?;
     let available = volc_field(
         result,
         &["AvailableBalance", "availableBalance", "available_balance"],
@@ -3900,24 +4375,30 @@ fn parse_volc_balance(text: &str) -> Result<Balance, String> {
     })
 }
 
-/// Query the Volcengine account balance via the signed OpenAPI. The region is
-/// `cn-north-1` unless `VOLC_REGION` overrides it.
-async fn fetch_volcengine_balance(volc: &VolcCredentials) -> Result<Balance, String> {
+/// Execute one signed Volcengine OpenAPI action. Billing and Ark use the same
+/// account AK/SK signing algorithm, but have different service scopes,
+/// versions, query parameters, and signed-header order.
+async fn fetch_volcengine_openapi_request(
+    volc: &VolcCredentials,
+    action: &str,
+    service: &str,
+    version: &str,
+    region: &str,
+    include_region: bool,
+    body: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let (Some(access_key), Some(secret_key)) = (&volc.access_key, &volc.secret_key) else {
         return Err(format!(
-            "{UNSUPPORTED_NOTE}（火山引擎余额查询需配置 VOLC_ACCESS_KEY / VOLC_SECRET_KEY，即账户 AccessKey/SecretKey，而非 Ark API Key）"
+            "{UNSUPPORTED_NOTE}（请在设置 → 模型中打开火山引擎提供方，配置账户 AccessKey ID 和 Secret Access Key；它们与 Ark API Key 不同）"
         ));
     };
 
-    let region = std::env::var("VOLC_REGION")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "cn-north-1".to_string());
-    let service = "billing";
     let host = "open.volcengineapi.com";
-    let action = "QueryBalanceAcct";
-    let version = "2022-01-01";
-    let body = "{}";
+    let body = body
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| format!("序列化火山引擎请求失败: {e}"))?
+        .unwrap_or_default();
 
     let now = chrono::Utc::now();
     let date_short = now.format("%Y%m%d").to_string();
@@ -3925,11 +4406,26 @@ async fn fetch_volcengine_balance(volc: &VolcCredentials) -> Result<Balance, Str
     let payload_hash = sha256_hex(body.as_bytes());
 
     // Canonical request (the query parameters are part of the signed scope).
-    let canonical_query = format!("Action={action}&Version={version}");
-    let signed_headers = "content-type;host;x-content-sha256;x-date";
-    let canonical_headers = format!(
-        "content-type:application/json\nhost:{host}\nx-content-sha256:{payload_hash}\nx-date:{date_long}\n"
-    );
+    let canonical_query = if include_region {
+        format!("Action={action}&Region={region}&Version={version}")
+    } else {
+        format!("Action={action}&Version={version}")
+    };
+    let (signed_headers, canonical_headers) = if service == "ark" {
+        (
+            "host;x-date;x-content-sha256;content-type",
+            format!(
+                "host:{host}\nx-date:{date_long}\nx-content-sha256:{payload_hash}\ncontent-type:application/json\n"
+            ),
+        )
+    } else {
+        (
+            "content-type;host;x-content-sha256;x-date",
+            format!(
+                "content-type:application/json\nhost:{host}\nx-content-sha256:{payload_hash}\nx-date:{date_long}\n"
+            ),
+        )
+    };
     let canonical_request = format!(
         "POST\n/\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
     );
@@ -3967,18 +4463,398 @@ async fn fetch_volcengine_balance(volc: &VolcCredentials) -> Result<Balance, Str
 
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
+    let value = serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|e| format!("解析火山引擎 {action} 响应失败: {e}"))?;
     if status != 200 {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(msg) = v
-                .pointer("/ResponseMetadata/Error/Message")
-                .and_then(|m| m.as_str())
-            {
-                return Err(format!("火山引擎余额接口返回状态码 {status}: {msg}"));
+        if let Some(message) = value
+            .pointer("/ResponseMetadata/Error/Message")
+            .and_then(|value| value.as_str())
+        {
+            return Err(format!("火山引擎 {action} 返回状态码 {status}: {message}"));
+        }
+        return Err(format!("火山引擎 {action} 返回状态码 {status}"));
+    }
+    // Volcengine may return HTTP 200 with a structured OpenAPI error.
+    let _ = volc_result(&value, action)?;
+    Ok(value)
+}
+
+/// Billing Center operations use a JSON body and do not include Region in
+/// the canonical query.
+async fn fetch_volcengine_openapi(
+    volc: &VolcCredentials,
+    action: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let region = std::env::var("VOLC_REGION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "cn-beijing".to_string());
+    fetch_volcengine_openapi_request(
+        volc,
+        action,
+        "billing",
+        "2022-01-01",
+        &region,
+        false,
+        Some(body),
+    )
+    .await
+}
+
+/// Ark Agent/Coding Plan usage operations use an empty body and sign Region
+/// as part of the query. This is the control-plane API used by CC Switch.
+async fn fetch_volcengine_ark_usage(
+    volc: &VolcCredentials,
+    action: &str,
+    region: &str,
+) -> Result<serde_json::Value, String> {
+    fetch_volcengine_openapi_request(
+        volc,
+        action,
+        "ark",
+        "2024-01-01",
+        region,
+        true,
+        None,
+    )
+    .await
+}
+
+fn parse_volc_plans(value: &serde_json::Value) -> Result<Vec<ProviderPlan>, String> {
+    let result = volc_result(value, "ListResourcePackages")?;
+    let rows = result
+        .get("List")
+        .or_else(|| result.get("list"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "火山引擎资源包接口未返回 List".to_string())?;
+    let mut plans = rows
+        .iter()
+        .map(|row| {
+            let id = volc_field(row, &["InstanceNo", "instanceNo", "instance_no"])
+                .unwrap_or_else(|| "unknown".to_string());
+            let name = volc_field(
+                row,
+                &["ConfigurationName", "configurationName", "InstanceName", "instanceName"],
+            )
+            .or_else(|| volc_field(row, &["ProductName", "productName"]))
+            .unwrap_or_else(|| "资源包".to_string());
+            let product = volc_field(row, &["ProductName", "productName"])
+                .or_else(|| volc_field(row, &["Product", "product"]));
+            let total = volc_number(row, &["TotalAmount", "totalAmount", "total_amount"]);
+            let remaining = volc_number(
+                row,
+                &["AvailableAmount", "availableAmount", "available_amount"],
+            );
+            ProviderPlan {
+                id,
+                name,
+                product,
+                total,
+                used: total.zip(remaining).map(|(total, remaining)| (total - remaining).max(0.0)),
+                remaining,
+                unit: volc_field(row, &["Unit", "unit", "SpecificationUnit", "specificationUnit"]),
+                status: volc_field(row, &["Status", "status"]),
+                effective_at: volc_field(row, &["EffectiveTime", "effectiveTime"]),
+                expires_at: volc_field(row, &["ExpiryTime", "expiryTime"]),
+                period_usage: None,
+                period_start: None,
+                period_end: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    plans.sort_by(|left, right| left.expires_at.cmp(&right.expires_at));
+    Ok(plans)
+}
+
+fn volc_next_token(value: &serde_json::Value, action: &str) -> Option<String> {
+    let result = volc_result(value, action).ok()?;
+    volc_field(result, &["NextToken", "nextToken", "next_token"])
+        .filter(|token| !token.is_empty())
+}
+
+fn collect_volc_usage_details(
+    value: &serde_json::Value,
+    totals: &mut HashMap<String, f64>,
+) -> Result<(), String> {
+    let result = volc_result(value, "ListPackageUsageDetails")?;
+    let rows = result
+        .get("List")
+        .or_else(|| result.get("list"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "火山引擎资源包用量接口未返回 List".to_string())?;
+    for row in rows {
+        let Some(id) = volc_field(row, &["InstanceNo", "instanceNo", "instance_no"]) else {
+            continue;
+        };
+        if let Some(amount) = volc_number(
+            row,
+            &["DeductionAmount", "deductionAmount", "deduction_amount"],
+        ) {
+            *totals.entry(id).or_default() += amount;
+        }
+    }
+    Ok(())
+}
+
+async fn fetch_volcengine_plans(volc: &VolcCredentials) -> Result<Vec<ProviderPlan>, String> {
+    let mut plans = Vec::new();
+    let mut next_token = String::new();
+    for _ in 0..5 {
+        let value = fetch_volcengine_openapi(
+            volc,
+            "ListResourcePackages",
+            &serde_json::json!({
+                "ResourceType": "Package",
+                "MaxResults": "20",
+                "NextToken": next_token,
+            }),
+        )
+        .await?;
+        plans.extend(parse_volc_plans(&value)?);
+        let Some(next) = volc_next_token(&value, "ListResourcePackages") else {
+            break;
+        };
+        if next == next_token {
+            break;
+        }
+        next_token = next;
+    }
+    Ok(plans)
+}
+
+async fn attach_volcengine_period_usage(
+    volc: &VolcCredentials,
+    plans: &mut [ProviderPlan],
+) -> Result<(), String> {
+    if plans.is_empty() {
+        return Ok(());
+    }
+    let period_end = chrono::Utc::now();
+    let period_start = period_end - chrono::Duration::days(30);
+    let period_start_text = period_start.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let period_end_text = period_end.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut next_token = String::new();
+    let mut totals = HashMap::<String, f64>::new();
+    for _ in 0..5 {
+        let value = fetch_volcengine_openapi(
+            volc,
+            "ListPackageUsageDetails",
+            &serde_json::json!({
+                "ResourceType": "Package",
+                "DeductBeginTime": period_start_text,
+                "DeductEndTime": period_end_text,
+                "MaxResults": "50",
+                "NextToken": next_token,
+            }),
+        )
+        .await?;
+        collect_volc_usage_details(&value, &mut totals)?;
+        let Some(next) = volc_next_token(&value, "ListPackageUsageDetails") else {
+            break;
+        };
+        if next == next_token {
+            break;
+        }
+        next_token = next;
+    }
+    for plan in plans {
+        plan.period_usage = Some(totals.get(&plan.id).copied().unwrap_or(0.0));
+        plan.period_start = Some(period_start_text.clone());
+        plan.period_end = Some(period_end_text.clone());
+    }
+    Ok(())
+}
+
+fn volcengine_region(base: &str) -> String {
+    base.split(['.', '/'])
+        .find(|part| part.starts_with("cn-") && part.len() > 3)
+        .map(str::to_string)
+        .or_else(|| std::env::var("VOLC_REGION").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "cn-beijing".to_string())
+}
+
+fn volc_reset_time(value: Option<&serde_json::Value>) -> Option<String> {
+    let timestamp = value.and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+    })?;
+    if timestamp <= 0 {
+        return None;
+    }
+    let seconds = if timestamp >= 1_000_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
+    };
+    chrono::DateTime::from_timestamp(seconds, 0).map(|time| time.to_rfc3339())
+}
+
+fn volc_quota_plan(
+    source: &str,
+    level: &str,
+    percent: f64,
+    reset_at: Option<String>,
+    status: Option<String>,
+    product: &str,
+) -> ProviderPlan {
+    let name = match level {
+        "session" => "5 小时额度",
+        "weekly" => "7 天额度",
+        "monthly" => "每月额度",
+        _ => level,
+    };
+    let used = percent.clamp(0.0, 100.0);
+    ProviderPlan {
+        id: format!("volc-{source}-{level}"),
+        name: name.to_string(),
+        product: Some(product.to_string()),
+        total: Some(100.0),
+        used: Some(used),
+        remaining: Some((100.0 - used).max(0.0)),
+        unit: Some("%".to_string()),
+        status,
+        effective_at: None,
+        expires_at: reset_at,
+        period_usage: None,
+        period_start: None,
+        period_end: None,
+    }
+}
+
+fn parse_volc_coding_plan(value: &serde_json::Value) -> Result<Vec<ProviderPlan>, String> {
+    let result = volc_result(value, "GetCodingPlanUsage")?;
+    let status = volc_field(result, &["Status", "status"]);
+    let rows = result
+        .get("QuotaUsage")
+        .or_else(|| result.get("quotaUsage"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "火山方舟 Coding Plan 未返回 QuotaUsage".to_string())?;
+    let mut plans = Vec::new();
+    for row in rows {
+        let level = row
+            .get("Level")
+            .or_else(|| row.get("level"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if !matches!(level, "session" | "weekly" | "monthly") {
+            continue;
+        }
+        let Some(percent) = volc_number(row, &["Percent", "percent"]) else {
+            continue;
+        };
+        plans.push(volc_quota_plan(
+            "coding",
+            level,
+            percent,
+            volc_reset_time(row.get("ResetTimestamp").or_else(|| row.get("resetTimestamp"))),
+            status.clone(),
+            "方舟 Coding Plan",
+        ));
+    }
+    Ok(plans)
+}
+
+fn parse_volc_afp_plan(value: &serde_json::Value) -> Result<Vec<ProviderPlan>, String> {
+    let result = volc_result(value, "GetAFPUsage")?;
+    let plan_type = volc_field(result, &["PlanType", "planType"])
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "方舟 Agent Plan".to_string());
+    let windows = [
+        ("session", "AFPFiveHour"),
+        ("weekly", "AFPWeekly"),
+        ("monthly", "AFPMonthly"),
+    ];
+    let mut plans = Vec::new();
+    for (level, field) in windows {
+        let Some(window) = result.get(field) else {
+            continue;
+        };
+        let quota = volc_number(window, &["Quota", "quota"]).unwrap_or(0.0);
+        if quota <= 0.0 {
+            continue;
+        }
+        let used = volc_number(window, &["Used", "used"]).unwrap_or(0.0);
+        plans.push(volc_quota_plan(
+            "agent",
+            level,
+            used / quota * 100.0,
+            volc_reset_time(window.get("ResetTime").or_else(|| window.get("resetTime"))),
+            Some("Running".to_string()),
+            &plan_type,
+        ));
+    }
+    Ok(plans)
+}
+
+async fn fetch_volcengine_plan_usage(
+    volc: &VolcCredentials,
+    base: &str,
+) -> Result<Vec<ProviderPlan>, String> {
+    let region = volcengine_region(base);
+    let afp_result = fetch_volcengine_ark_usage(volc, "GetAFPUsage", &region).await;
+    if let Ok(value) = &afp_result {
+        let plans = parse_volc_afp_plan(value)?;
+        if !plans.is_empty() {
+            return Ok(plans);
+        }
+    }
+
+    let coding_result = fetch_volcengine_ark_usage(volc, "GetCodingPlanUsage", &region).await;
+    match coding_result {
+        Ok(value) => {
+            let plans = parse_volc_coding_plan(&value)?;
+            if plans.is_empty() {
+                Err("火山方舟未返回可识别的 Coding Plan 用量窗口".to_string())
+            } else {
+                Ok(plans)
             }
         }
-        return Err(format!("火山引擎余额接口返回状态码 {status}"));
+        Err(coding_error) => Err(match afp_result {
+            Ok(_) => coding_error,
+            Err(afp_error) => format!(
+                "Agent Plan 查询失败: {afp_error}；Coding Plan 查询失败: {coding_error}"
+            ),
+        }),
     }
-    parse_volc_balance(&text)
+}
+
+async fn fetch_volcengine_account(
+    volc: &VolcCredentials,
+    base: &str,
+) -> Result<(Option<Balance>, Vec<ProviderPlan>, Option<String>), String> {
+    let balance_result = fetch_volcengine_openapi(volc, "QueryBalanceAcct", &serde_json::json!({}))
+        .await
+        .and_then(|value| parse_volc_balance(&value.to_string()));
+    let coding_result = fetch_volcengine_plan_usage(volc, base).await;
+
+    if let Ok(plans) = coding_result {
+        return Ok((balance_result.ok(), plans, None));
+    }
+    let coding_error = coding_result.expect_err("checked above");
+
+    let mut packages = fetch_volcengine_plans(volc).await.unwrap_or_default();
+    let package_error = if packages.is_empty() {
+        None
+    } else {
+        attach_volcengine_period_usage(volc, &mut packages).await.err()
+    };
+    match balance_result {
+        Ok(balance) => Ok((
+            Some(balance),
+            packages,
+            Some(package_error.unwrap_or(coding_error)),
+        )),
+        Err(_balance_error) if !packages.is_empty() => Ok((
+            None,
+            packages,
+            Some(package_error.unwrap_or(coding_error)),
+        )),
+        Err(balance_error) => Err(format!(
+            "火山账户余额查询失败: {balance_error}；套餐用量查询失败: {coding_error}"
+        )),
+    }
 }
 
 fn adapter_key(adapter: Adapter) -> &'static str {
@@ -4003,12 +4879,12 @@ fn adapter_from_cache(cached: Option<&str>) -> Option<Adapter> {
 async fn attempt_openai_usage(
     base: &str,
     key: &str,
-) -> Result<(String, Option<Balance>, Option<ProviderUsage>), String> {
+) -> Result<(String, Option<Balance>, Option<ProviderUsage>, Vec<ProviderPlan>, Option<String>), String> {
     match fetch_generic_usage(base, key).await {
-        Ok(u) => Ok(("openai".to_string(), None, Some(u))),
+        Ok(u) => Ok(("openai".to_string(), None, Some(u), Vec::new(), None)),
         Err(generic_err) => fetch_openai_usage(base, key)
             .await
-            .map(|u| ("openai".to_string(), None, Some(u)))
+            .map(|u| ("openai".to_string(), None, Some(u), Vec::new(), None))
             .map_err(|billing_err| {
                 format!("通用用量接口失败: {generic_err}；账单接口失败: {billing_err}")
             }),
@@ -4023,21 +4899,23 @@ async fn attempt_adapter(
     base: &str,
     key: &str,
     volc: &VolcCredentials,
-) -> Result<(String, Option<Balance>, Option<ProviderUsage>), String> {
+) -> Result<(String, Option<Balance>, Option<ProviderUsage>, Vec<ProviderPlan>, Option<String>), String> {
     match adapter {
         Adapter::DeepSeek => fetch_deepseek_balance(base, key)
             .await
-            .map(|b| ("deepseek".to_string(), Some(b), None)),
+            .map(|b| ("deepseek".to_string(), Some(b), None, Vec::new(), None)),
         Adapter::OpenAIBilling => attempt_openai_usage(base, key).await,
-        Adapter::Volcengine => fetch_volcengine_balance(volc)
+        Adapter::Volcengine => fetch_volcengine_account(volc, base)
             .await
-            .map(|b| ("volcengine".to_string(), Some(b), None)),
+            .map(|(balance, plans, plans_error)| {
+                ("volcengine".to_string(), balance, None, plans, plans_error)
+            }),
         Adapter::Unsupported => Err(UNSUPPORTED_NOTE.to_string()),
         Adapter::Probe => {
             match attempt_openai_usage(base, key).await {
                 Ok(result) => Ok(result),
                 Err(openai_err) => match fetch_deepseek_balance(base, key).await {
-                    Ok(b) => Ok(("deepseek".to_string(), Some(b), None)),
+                    Ok(b) => Ok(("deepseek".to_string(), Some(b), None, Vec::new(), None)),
                     Err(deepseek_err) => Err(format!(
                         "{UNSUPPORTED_NOTE}（openai 风格失败: {openai_err}；deepseek 风格失败: {deepseek_err}）"
                     )),
@@ -4068,6 +4946,8 @@ async fn fetch_one_provider(
         configured: false,
         balance: None,
         usage: None,
+        plans: Vec::new(),
+        plans_error: None,
         error: None,
     };
     let Some(key) = key else {
@@ -4083,9 +4963,16 @@ async fn fetch_one_provider(
         attempt = attempt_adapter(resolved, &provider.base_url, &key, &volc).await;
     }
 
-    let (key2, balance, usage, error) = match attempt {
-        Ok((k, b, u)) => (k, b, u, None),
-        Err(e) => (adapter_key(resolved).to_string(), None, None, Some(e)),
+    let (key2, balance, usage, plans, plans_error, error) = match attempt {
+        Ok((k, b, u, plans, plans_error)) => (k, b, u, plans, plans_error, None),
+        Err(e) => (
+            adapter_key(resolved).to_string(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            Some(e),
+        ),
     };
     let kind = if balance.is_some() {
         "balance"
@@ -4105,6 +4992,8 @@ async fn fetch_one_provider(
             configured: true,
             balance,
             usage,
+            plans,
+            plans_error,
             error,
         },
     )
@@ -4159,6 +5048,8 @@ async fn fetch_provider_statuses(
                 configured: false,
                 balance: None,
                 usage: None,
+                plans: Vec::new(),
+                plans_error: None,
                 error: Some(format!("后台任务失败: {e}")),
             }),
         }
@@ -4257,11 +5148,7 @@ async fn periodic_loop(app: AppHandle) {
         if update_due {
             let config = state.config.lock().unwrap().clone();
             let paths = resolve_paths(&app, &config);
-            match reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-            {
-                Ok(client) => match fetch_update_status(&client, &paths, &config).await {
+            match check_update_impl(&app, &state).await {
                     Ok(status) => {
                         log_line(
                             &paths.log_file,
@@ -4292,8 +5179,6 @@ async fn periodic_loop(app: AppHandle) {
                         }
                     }
                     Err(e) => log_line(&paths.log_file, &format!("update check failed: {e}")),
-                },
-                Err(e) => log_line(&paths.log_file, &format!("update check client failed: {e}")),
             }
         }
     }
@@ -4317,6 +5202,187 @@ fn json_response(
             )
             .unwrap(),
         )
+}
+
+const TURN_END_BODY_LIMIT: usize = 8 * 1024;
+const TURN_END_DEDUPE_WINDOW: Duration = Duration::from_secs(5);
+#[cfg(target_os = "windows")]
+const DSH_NOTIFICATION_APP_ID: &str = "com.anixuil.dshdesktop";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnEndPayload {
+    session_id: String,
+    title: Option<String>,
+    turn_key: String,
+    #[serde(default)]
+    is_focused_session: bool,
+}
+
+fn read_limited_json<T: serde::de::DeserializeOwned>(
+    req: &mut tiny_http::Request,
+    limit: usize,
+) -> Result<T, String> {
+    let mut bytes = Vec::new();
+    req.as_reader()
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("无法读取请求: {error}"))?;
+    if bytes.len() > limit {
+        return Err("请求内容过大".to_string());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "请求 JSON 无效".to_string())
+}
+
+fn normalize_task_title(title: Option<&str>) -> Option<String> {
+    let value = title?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.chars().take(80).collect())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TaskNotificationCopy {
+    title: String,
+    context: String,
+    status: String,
+}
+
+fn task_notification_copy(title: Option<&str>) -> TaskNotificationCopy {
+    TaskNotificationCopy {
+        title: "DSH Desktop · 任务完成".to_string(),
+        context: match normalize_task_title(title) {
+            Some(title) => format!("会话：{title}"),
+            None => "会话：未命名任务".to_string(),
+        },
+        status: "状态：已完成，可以回来查看结果".to_string(),
+    }
+}
+
+fn test_notification_copy() -> TaskNotificationCopy {
+    TaskNotificationCopy {
+        title: "DSH Desktop · 通知测试".to_string(),
+        context: "来源：DSH Desktop".to_string(),
+        status: "内容：任务完成通知已正确启用".to_string(),
+    }
+}
+
+fn should_send_task_notification(
+    mode: TaskNotificationMode,
+    visible: bool,
+    focused: bool,
+    minimized: bool,
+    is_focused_session: bool,
+) -> bool {
+    match mode {
+        TaskNotificationMode::Off => false,
+        TaskNotificationMode::Always => true,
+        TaskNotificationMode::Unfocused => !visible || minimized || !focused || !is_focused_session,
+    }
+}
+
+fn main_window_state(app: &AppHandle) -> (bool, bool, bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return (false, false, false);
+    };
+    (
+        window.is_visible().unwrap_or(false),
+        window.is_focused().unwrap_or(false),
+        window.is_minimized().unwrap_or(false),
+    )
+}
+
+fn reserve_task_notification(
+    recent: &Mutex<HashMap<String, Instant>>,
+    turn_key: &str,
+    now: Instant,
+) -> bool {
+    let mut recent = recent.lock().unwrap();
+    recent.retain(|_, at| now.saturating_duration_since(*at) < TURN_END_DEDUPE_WINDOW);
+    if recent.contains_key(turn_key) {
+        return false;
+    }
+    recent.insert(turn_key.to_string(), now);
+    true
+}
+
+fn parse_task_notification_mode(value: &str) -> Option<TaskNotificationMode> {
+    match value {
+        "off" => Some(TaskNotificationMode::Off),
+        "unfocused" => Some(TaskNotificationMode::Unfocused),
+        "always" => Some(TaskNotificationMode::Always),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_task_notification(copy: &TaskNotificationCopy) -> Result<(), String> {
+    use tauri_winrt_notification::Toast;
+
+    let show = |app_id: &str| {
+        Toast::new(app_id)
+            .title(&copy.title)
+            .text1(&copy.context)
+            .text2(&copy.status)
+            .show()
+    };
+
+    // The NSIS shortcut registers this AUMID, giving installed notifications
+    // the DSH Desktop name and icon in Windows. Unpacked debug/release builds
+    // have no registered shortcut, so retain a reliable PowerShell fallback;
+    // the toast title still identifies DSH Desktop explicitly in that case.
+    match show(DSH_NOTIFICATION_APP_ID) {
+        Ok(()) => Ok(()),
+        Err(primary_error) => show(Toast::POWERSHELL_APP_ID).map_err(|fallback_error| {
+            format!(
+                "DSH Desktop 通知身份不可用: {primary_error}; PowerShell 回退失败: {fallback_error}"
+            )
+        }),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_task_notification(app: &AppHandle, copy: &TaskNotificationCopy) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(&copy.title)
+        .body(format!("{}\n{}", copy.context, copy.status))
+        .show()
+        .map_err(|error| error.to_string())
+}
+
+fn send_task_notification(app: &AppHandle, title: Option<&str>) -> Result<(), String> {
+    let copy = task_notification_copy(title);
+    #[cfg(target_os = "windows")]
+    let _ = app;
+    #[cfg(target_os = "windows")]
+    return show_task_notification(&copy);
+    #[cfg(not(target_os = "windows"))]
+    show_task_notification(app, &copy)
+}
+
+fn send_test_notification(app: &AppHandle) -> Result<(), String> {
+    let copy = test_notification_copy();
+    #[cfg(target_os = "windows")]
+    let _ = app;
+    #[cfg(target_os = "windows")]
+    return show_task_notification(&copy);
+    #[cfg(not(target_os = "windows"))]
+    show_task_notification(app, &copy)
+}
+
+fn persist_task_notification_mode(
+    app: &AppHandle,
+    mode: TaskNotificationMode,
+) -> TaskNotificationMode {
+    let state = app.state::<AppState>();
+    let mut config = state.config.lock().unwrap().clone();
+    let paths = resolve_paths(app, &config);
+    config.task_notification_mode = mode;
+    save_config(&paths.config_file, &config);
+    *state.config.lock().unwrap() = config;
+    mode
 }
 
 fn start_bridge_listener(app: AppHandle, port: u16) {
@@ -4361,8 +5427,63 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                 let path = url.split('?').next().unwrap_or("").to_string();
                 match (method.as_str(), path.as_str()) {
                     ("POST", "/turn-end") => {
-                        let _ = req
-                            .respond(tiny_http::Response::from_string("ok").with_status_code(200));
+                        let payload = match read_limited_json::<TurnEndPayload>(
+                            &mut req,
+                            TURN_END_BODY_LIMIT,
+                        ) {
+                            Ok(payload)
+                                if !payload.session_id.trim().is_empty()
+                                    && payload.session_id.len() <= 256
+                                    && !payload.turn_key.trim().is_empty()
+                                    && payload.turn_key.len() <= 512 =>
+                            {
+                                payload
+                            }
+                            Ok(_) => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": "任务完成事件字段无效" }),
+                                ));
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": error }),
+                                ));
+                                return;
+                            }
+                        };
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let (visible, focused, minimized) = main_window_state(&app2);
+                        let should_notify = should_send_task_notification(
+                            config.task_notification_mode,
+                            visible,
+                            focused,
+                            minimized,
+                            payload.is_focused_session,
+                        );
+                        let reserved = should_notify
+                            && reserve_task_notification(
+                                &state2.recent_task_notifications,
+                                payload.turn_key.trim(),
+                                Instant::now(),
+                            );
+                        let mut notified = false;
+                        if reserved {
+                            match send_task_notification(&app2, payload.title.as_deref()) {
+                                Ok(()) => notified = true,
+                                Err(error) => log_line(
+                                    &log_file2,
+                                    &format!("task notification failed: {error}"),
+                                ),
+                            }
+                        }
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({ "ok": true, "notified": notified }),
+                        ));
                         let app3 = app2.clone();
                         tauri::async_runtime::spawn(async move {
                             let state2 = app3.state::<AppState>();
@@ -4432,12 +5553,13 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             })
                             .unwrap_or_default();
                         let parsed = match motion.as_str() {
+                            "default" => MotionIntensity::Default,
                             "quiet" => MotionIntensity::Quiet,
                             "rich" => MotionIntensity::Rich,
                             _ => {
                                 let _ = req.respond(json_response(
                                     400,
-                                    serde_json::json!({ "ok": false, "error": "无效的动效强度" }),
+                                    serde_json::json!({ "ok": false, "error": "无效的外观与动效预设" }),
                                 ));
                                 return;
                             }
@@ -4448,6 +5570,61 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             serde_json::json!({ "ok": true, "motion": parsed }),
                         ));
                     }
+                    ("GET", "/notifications") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "mode": config.task_notification_mode,
+                            }),
+                        ));
+                    }
+                    ("POST", "/notifications-save") => {
+                        let payload = match read_limited_json::<serde_json::Value>(&mut req, 4096) {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": error }),
+                                ));
+                                return;
+                            }
+                        };
+                        let mode = match payload
+                            .get("mode")
+                            .and_then(|value| value.as_str())
+                            .and_then(parse_task_notification_mode)
+                        {
+                            Some(mode) => mode,
+                            None => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": "无效的任务通知模式" }),
+                                ));
+                                return;
+                            }
+                        };
+                        let saved = persist_task_notification_mode(&app2, mode);
+                        let _ = req.respond(json_response(
+                            200,
+                            serde_json::json!({ "ok": true, "mode": saved }),
+                        ));
+                    }
+                    ("POST", "/notifications-test") => match send_test_notification(&app2) {
+                        Ok(()) => {
+                            let _ =
+                                req.respond(json_response(200, serde_json::json!({ "ok": true })));
+                        }
+                        Err(error) => {
+                            log_line(&log_file2, &format!("test notification failed: {error}"));
+                            let _ = req.respond(json_response(
+                                500,
+                                serde_json::json!({ "ok": false, "error": format!("系统通知发送失败: {error}") }),
+                            ));
+                        }
+                    },
                     ("GET", "/plugin-network") => {
                         let state2 = app2.state::<AppState>();
                         let config = state2.config.lock().unwrap().clone();
@@ -4455,6 +5632,75 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             200,
                             serde_json::json!({ "ok": true, "config": plugin_network_snapshot(&config) }),
                         ));
+                    }
+                    ("GET", "/builtin-plugins") => {
+                        let state2 = app2.state::<AppState>();
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        let _ = req.respond(json_response(
+                            200,
+                            builtin_plugins_snapshot(&paths2, &config),
+                        ));
+                    }
+                    ("POST", "/builtin-plugins-apply") => {
+                        let state2 = app2.state::<AppState>();
+                        if state2.adopted.load(Ordering::SeqCst) {
+                            let _ = req.respond(json_response(
+                                409,
+                                serde_json::json!({
+                                    "ok": false,
+                                    "error": "当前正在接入外部 DSH 实例，无法由桌面端重启并更改插件",
+                                }),
+                            ));
+                            return;
+                        }
+                        let mut body = String::new();
+                        let _ = req.as_reader().read_to_string(&mut body);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                        let Some(enabled) =
+                            payload.get("enabled").and_then(|value| value.as_array())
+                        else {
+                            let _ = req.respond(json_response(
+                                400,
+                                serde_json::json!({ "ok": false, "error": "enabled 必须是插件 ID 数组" }),
+                            ));
+                            return;
+                        };
+                        let mut enabled_ids = HashSet::new();
+                        for value in enabled {
+                            let Some(id) = value.as_str() else {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": "插件 ID 必须是字符串" }),
+                                ));
+                                return;
+                            };
+                            if !BUILTIN_PLUGINS.contains(&id) {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": format!("未知的内置插件: {id}") }),
+                                ));
+                                return;
+                            }
+                            enabled_ids.insert(id.to_string());
+                        }
+                        let previous = state2.config.lock().unwrap().clone();
+                        let mut config = previous.clone();
+                        config.disabled_builtin_plugins = BUILTIN_PLUGINS
+                            .iter()
+                            .filter(|name| !enabled_ids.contains(**name))
+                            .map(|name| (*name).to_string())
+                            .collect();
+                        let paths2 = resolve_paths(&app2, &config);
+                        save_config(&paths2.config_file, &config);
+                        *state2.config.lock().unwrap() = config.clone();
+                        let response = builtin_plugins_snapshot(&paths2, &config);
+                        let mut response = response.as_object().cloned().unwrap_or_default();
+                        response.insert("restartPending".into(), serde_json::json!(true));
+                        let _ =
+                            req.respond(json_response(200, serde_json::Value::Object(response)));
+                        restart_dsh_after_builtin_change(app2.clone(), paths2, config, previous);
                     }
                     ("POST", "/plugin-network-save") => {
                         let mut body = String::new();
@@ -4876,15 +6122,7 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         let (tx, rx) = std::sync::mpsc::channel();
                         tauri::async_runtime::spawn(async move {
                             let state2 = app3.state::<AppState>();
-                            let config = state2.config.lock().unwrap().clone();
-                            let paths2 = resolve_paths(&app3, &config);
-                            let result = match reqwest::Client::builder()
-                                .timeout(Duration::from_secs(15))
-                                .build()
-                            {
-                                Ok(client) => fetch_update_status(&client, &paths2, &config).await,
-                                Err(e) => Err(format!("HTTP 客户端失败: {e}")),
-                            };
+                            let result = check_update_impl(&app3, &state2).await;
                             let _ = tx.send(result);
                         });
                         match rx.recv_timeout(Duration::from_secs(20)) {
@@ -5463,26 +6701,68 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
 // updates: dsh runtime (npm registry) + shell (GitHub Releases, optional repo)
 // ---------------------------------------------------------------------------
 
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentUpdateStatus {
+    pub current: Option<String>,
+    pub latest: Option<String>,
+    pub update_available: bool,
+    pub release_url: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReadiness {
+    pub ready: bool,
+    pub reason: Option<String>,
+    pub core_ready: bool,
+    pub shell_ready: bool,
+    pub core_reason: Option<String>,
+    pub shell_reason: Option<String>,
+    pub task_running: bool,
+    pub adopted: bool,
+    pub core_update_in_progress: bool,
+    pub shell_update_in_progress: bool,
+    pub pending_verification: bool,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
+    pub core: ComponentUpdateStatus,
+    pub shell: ComponentUpdateStatus,
+    pub readiness: UpdateReadiness,
+    // Compatibility fields for the bundled 0.2.0 bridge UI. New code reads
+    // core/shell/readiness, but keeping these avoids breaking an old runtime
+    // during the one-time 0.2.0 -> 0.2.1 bootstrap installation.
     pub dsh_current: Option<String>,
     pub dsh_latest: Option<String>,
-    pub dsh_tarball: Option<String>,
     pub dsh_update_available: bool,
     pub app_current: String,
     pub app_latest: Option<String>,
     pub app_update_available: bool,
     pub app_url: Option<String>,
-    pub app_asset: Option<String>,
     pub app_repo: Option<String>,
+}
+
+fn parse_version(value: &str) -> Option<Version> {
+    Version::parse(value.trim().trim_start_matches('v')).ok()
+}
+
+fn version_is_newer(current: &str, latest: &str) -> bool {
+    matches!((parse_version(current), parse_version(latest)), (Some(c), Some(l)) if l > c)
+}
+
+fn should_preserve_installed_dsh(installed: Option<&str>, shipped: Option<&str>) -> bool {
+    matches!((installed, shipped), (Some(installed), Some(shipped)) if version_is_newer(shipped, installed))
 }
 
 /// Shared update-status query: npm registry (dsh core) + optional GitHub repo (shell).
 async fn fetch_update_status(
     client: &reqwest::Client,
     paths: &Paths,
-    config: &AppConfig,
+    _config: &AppConfig,
 ) -> Result<UpdateStatus, String> {
     let dsh_current = fs::read_to_string(paths.runtime_dir.join("version.json"))
         .ok()
@@ -5490,7 +6770,6 @@ async fn fetch_update_status(
         .and_then(|v| v.get("dsh").and_then(|v| v.as_str()).map(String::from));
 
     let mut dsh_latest = None;
-    let mut dsh_tarball = None;
     match client
         .get("https://registry.npmjs.org/@deepseek-ai/dsh/latest")
         .header("Accept", "application/json")
@@ -5500,25 +6779,17 @@ async fn fetch_update_status(
         Ok(resp) if resp.status().is_success() => {
             if let Ok(v) = resp.json::<serde_json::Value>().await {
                 dsh_latest = v.get("version").and_then(|v| v.as_str()).map(String::from);
-                dsh_tarball = v
-                    .pointer("/dist/tarball")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
             }
         }
         Ok(resp) => return Err(format!("npm registry 返回 {}", resp.status())),
         Err(e) => return Err(format!("查询 dsh 最新版本失败: {e}")),
     }
 
-    let repo = config
-        .update_repo
-        .clone()
-        .or_else(|| std::env::var("DSH_DESKTOP_UPDATE_REPO").ok())
-        .filter(|r| !r.trim().is_empty())
-        .or_else(|| Some(DEFAULT_UPDATE_REPO.to_string()));
+    // update_repo is retained in AppConfig for backwards-compatible parsing,
+    // but production installs always check the official signed release line.
+    let repo = Some(DEFAULT_UPDATE_REPO.to_string());
     let mut app_latest = None;
     let mut app_url = None;
-    let mut app_asset = None;
     if let Some(repo) = &repo {
         let url = format!("https://api.github.com/repos/{repo}/releases/latest");
         match client
@@ -5535,13 +6806,6 @@ async fn fetch_update_status(
                         .and_then(|t| t.as_str())
                         .map(|t| t.trim_start_matches('v').to_string());
                     app_url = v.get("html_url").and_then(|u| u.as_str()).map(String::from);
-                    if let Some(assets) = v.get("assets").and_then(|a| a.as_array()) {
-                        app_asset = assets
-                            .iter()
-                            .filter_map(|a| a.get("browser_download_url").and_then(|u| u.as_str()))
-                            .find(|u| u.ends_with(".exe") || u.ends_with(".msi"))
-                            .map(String::from);
-                    }
                 }
             }
             Ok(resp) => return Err(format!("GitHub API 返回 {}（仓库 {repo}）", resp.status())),
@@ -5550,49 +6814,228 @@ async fn fetch_update_status(
     }
 
     let app_current = env!("CARGO_PKG_VERSION").to_string();
+    let dsh_update_available = matches!((&dsh_latest, &dsh_current), (Some(l), Some(c)) if version_is_newer(c, l));
+    let app_update_available = matches!(&app_latest, Some(l) if version_is_newer(&app_current, l));
     Ok(UpdateStatus {
-        dsh_update_available: matches!((&dsh_latest, &dsh_current), (Some(l), Some(c)) if l != c),
-        app_update_available: matches!(&app_latest, Some(l) if l != &app_current),
+        core: ComponentUpdateStatus {
+            current: dsh_current.clone(),
+            latest: dsh_latest.clone(),
+            update_available: dsh_update_available,
+            release_url: None,
+            notes: None,
+        },
+        shell: ComponentUpdateStatus {
+            current: Some(app_current.clone()),
+            latest: app_latest.clone(),
+            update_available: app_update_available,
+            release_url: app_url.clone(),
+            notes: None,
+        },
+        readiness: UpdateReadiness::default(),
+        dsh_update_available,
+        app_update_available,
         dsh_current,
         dsh_latest,
-        dsh_tarball,
         app_current,
         app_latest,
         app_url,
-        app_asset,
         app_repo: repo,
     })
 }
 
 #[tauri::command]
 async fn check_update(app: AppHandle, state: State<'_, AppState>) -> Result<UpdateStatus, String> {
+    check_update_impl(&app, &state).await
+}
+
+async fn check_update_impl(app: &AppHandle, state: &AppState) -> Result<UpdateStatus, String> {
     let config = state.config.lock().unwrap().clone();
-    let paths = resolve_paths(&app, &config);
+    let paths = resolve_paths(app, &config);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
-    fetch_update_status(&client, &paths, &config).await
+    let mut status = fetch_update_status(&client, &paths, &config).await?;
+    // A signed updater manifest is authoritative when available. The GitHub
+    // release query above remains a bootstrap fallback for 0.2.0 installs and
+    // development environments before latest.json has been published.
+    if let Ok(updater) = app.updater() {
+        if let Ok(update) = updater.check().await {
+            match update {
+                Some(update) => {
+                    status.shell.latest = Some(update.version.clone());
+                    status.shell.notes = update.body.clone();
+                    status.shell.update_available = version_is_newer(&status.app_current, &update.version);
+                    status.app_latest = Some(update.version);
+                    status.app_update_available = status.shell.update_available;
+                }
+                None => {
+                    status.shell.update_available = false;
+                    status.app_update_available = false;
+                }
+            }
+        }
+    }
+    status.readiness = update_readiness(state, &paths, &config).await;
+    Ok(status)
+}
+
+async fn dsh_task_running(config: &AppConfig) -> bool {
+    let url = format!("{}desktop/status", dsh_web_url(dsh_port(config)));
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    match client.get(url).send().await {
+        Ok(response) => response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|value| value.get("running").and_then(|running| running.as_bool()))
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+async fn update_readiness(state: &AppState, paths: &Paths, config: &AppConfig) -> UpdateReadiness {
+    let task_running = dsh_task_running(config).await;
+    let adopted = state.adopted.load(Ordering::SeqCst);
+    let core_update_in_progress = state.core_update_in_progress.load(Ordering::SeqCst);
+    let shell_update_in_progress = state.shell_update_in_progress.load(Ordering::SeqCst);
+    let pending_verification = read_pending_update(&paths.runtime_dir).is_some();
+    readiness_from_flags(
+        task_running,
+        adopted,
+        core_update_in_progress,
+        shell_update_in_progress,
+        pending_verification,
+    )
+}
+
+fn readiness_from_flags(
+    task_running: bool,
+    adopted: bool,
+    core_update_in_progress: bool,
+    shell_update_in_progress: bool,
+    pending_verification: bool,
+) -> UpdateReadiness {
+    let reason = if core_update_in_progress {
+        Some("dsh 内核更新正在进行".to_string())
+    } else if shell_update_in_progress {
+        Some("桌面应用更新正在进行".to_string())
+    } else if pending_verification {
+        Some("dsh 内核更新仍在验证，请等待验证完成".to_string())
+    } else if task_running {
+        Some("当前任务结束后可更新".to_string())
+    } else {
+        None
+    };
+    let common_ready = reason.is_none();
+    let core_reason = if adopted {
+        Some("当前正在接管外部 DSH 实例，请停止外部实例后再更新内核".to_string())
+    } else {
+        reason.clone()
+    };
+    UpdateReadiness {
+        ready: common_ready,
+        reason: reason.clone(),
+        core_ready: common_ready && !adopted,
+        shell_ready: common_ready,
+        core_reason,
+        shell_reason: reason,
+        task_running,
+        adopted,
+        core_update_in_progress,
+        shell_update_in_progress,
+        pending_verification,
+    }
+}
+
+#[tauri::command]
+async fn get_update_readiness(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UpdateReadiness, String> {
+    let config = state.config.lock().unwrap().clone();
+    let paths = resolve_paths(&app, &config);
+    Ok(update_readiness(&state, &paths, &config).await)
 }
 
 /// Stage, verify, swap, and roll back a dsh runtime update from an npm
 /// tarball. Pure filesystem logic — unit-tested below.
 /// Pending-update verification record: survives app restarts so a broken
 /// update is always verified (and rolled back) on the next boot too.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum UpdatePhase {
+    Prepared,
+    OldMoved,
+    Swapped,
+}
+
+impl Default for UpdatePhase {
+    // 0.2.0 records were written only after the swap, so a missing phase in a
+    // legacy record means the new runtime is awaiting verification.
+    fn default() -> Self {
+        Self::Swapped
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct UpdateBackupInfo {
     backup: String,
     previous_version: String,
+    #[serde(default)]
+    new_version: String,
+    #[serde(default)]
+    phase: UpdatePhase,
+    #[serde(default)]
+    stage: String,
 }
 
 fn update_backup_file(runtime: &Path) -> PathBuf {
     runtime.join(".update-backup.json")
 }
 
-fn write_pending_update(runtime: &Path, info: &UpdateBackupInfo) {
-    if let Ok(s) = serde_json::to_string(info) {
-        let _ = fs::write(update_backup_file(runtime), s);
+fn write_pending_update(runtime: &Path, info: &UpdateBackupInfo) -> Result<(), String> {
+    let target = update_backup_file(runtime);
+    let temp = runtime.join(".update-backup.tmp");
+    let bytes = serde_json::to_vec_pretty(info).map_err(|e| format!("序列化更新事务失败: {e}"))?;
+    write_file_atomically(&target, &temp, &bytes).map_err(|e| format!("提交更新事务失败: {e}"))
+}
+
+fn write_file_atomically(target: &Path, temp: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(temp, bytes)?;
+    atomic_replace_file(temp, target)
+}
+
+#[cfg(target_os = "windows")]
+fn atomic_replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    if !target.exists() {
+        return fs::rename(source, target);
     }
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            source_wide.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn atomic_replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
 }
 
 fn read_pending_update(runtime: &Path) -> Option<UpdateBackupInfo> {
@@ -5603,6 +7046,76 @@ fn read_pending_update(runtime: &Path) -> Option<UpdateBackupInfo> {
 
 fn clear_pending_update(runtime: &Path) {
     let _ = fs::remove_file(update_backup_file(runtime));
+    let _ = fs::remove_file(runtime.join(".update-backup.tmp"));
+}
+
+fn dsh_manifest_version(dsh_dir: &Path) -> Option<String> {
+    fs::read_to_string(
+        dsh_dir
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("package.json"),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    .and_then(|value| value.get("version").and_then(|value| value.as_str()).map(str::to_owned))
+}
+
+/// Repair a process crash in the small window between transaction journal
+/// writes and directory renames. This runs before runtime extraction/spawn.
+fn recover_interrupted_update(runtime: &Path, log: &Path) -> Result<(), String> {
+    let Some(info) = read_pending_update(runtime) else {
+        return Ok(());
+    };
+    let dsh = runtime.join("dsh");
+    let backup = PathBuf::from(&info.backup);
+    match info.phase {
+        UpdatePhase::Prepared => {
+            if !dsh.exists() && backup.exists() {
+                fs::rename(&backup, &dsh).map_err(|e| format!("恢复更新前内核失败: {e}"))?;
+            }
+            if dsh_manifest_version(&dsh).as_deref() == Some(info.new_version.as_str())
+                && backup.exists()
+            {
+                let mut swapped = info.clone();
+                swapped.phase = UpdatePhase::Swapped;
+                write_pending_update(runtime, &swapped)?;
+                return Ok(());
+            }
+            if !info.stage.is_empty() {
+                let _ = fs::remove_dir_all(&info.stage);
+            }
+            clear_pending_update(runtime);
+            log_line(log, "recovered prepared dsh update transaction");
+        }
+        UpdatePhase::OldMoved => {
+            if !dsh.exists() && backup.exists() {
+                fs::rename(&backup, &dsh).map_err(|e| format!("恢复中断的内核更新失败: {e}"))?;
+                if !info.stage.is_empty() {
+                    let _ = fs::remove_dir_all(&info.stage);
+                }
+                clear_pending_update(runtime);
+                log_line(log, "restored dsh after interrupted directory swap");
+            } else if dsh_manifest_version(&dsh).as_deref() == Some(info.new_version.as_str()) {
+                let mut swapped = info;
+                swapped.phase = UpdatePhase::Swapped;
+                write_pending_update(runtime, &swapped)?;
+            }
+        }
+        UpdatePhase::Swapped => {
+            if !dsh.exists() && backup.exists() {
+                fs::rename(&backup, &dsh).map_err(|e| format!("恢复待验证内核失败: {e}"))?;
+                clear_pending_update(runtime);
+                log_line(log, "restored missing dsh from pending verification backup");
+            } else if !backup.exists() {
+                // A crash after successful backup cleanup but before journal
+                // cleanup is already committed; remove the stale record.
+                clear_pending_update(runtime);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn apply_dsh_tarball_bytes(
@@ -5782,29 +7295,43 @@ fn apply_dsh_tarball_bytes(
     // can boot — verify_update_rollback deletes it on success and restores it
     // on failure (including across app restarts).
     let dsh_dir = runtime.join("dsh");
-    let previous_version = fs::read_to_string(
-        dsh_dir
-            .join("node_modules")
-            .join("@deepseek-ai")
-            .join("dsh")
-            .join("package.json"),
-    )
-    .ok()
-    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-    .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(String::from))
-    .unwrap_or_else(|| "unknown".to_string());
+    let previous_version = dsh_manifest_version(&dsh_dir)
+        .ok_or("当前 dsh 运行时缺少有效版本，已取消更新")?;
 
     let backup = runtime.join(format!(
         "dsh-old-{}",
         chrono::Local::now().format("%Y%m%d%H%M%S")
     ));
-    if dsh_dir.exists() {
-        fs::rename(&dsh_dir, &backup).map_err(|e| format!("备份旧版本失败: {e}"))?;
+    let mut transaction = UpdateBackupInfo {
+        backup: backup.to_string_lossy().to_string(),
+        previous_version: previous_version.clone(),
+        new_version: installed_version.clone(),
+        phase: UpdatePhase::Prepared,
+        stage: stage.to_string_lossy().to_string(),
+    };
+    write_pending_update(runtime, &transaction)?;
+    fs::rename(&dsh_dir, &backup).map_err(|e| {
+        clear_pending_update(runtime);
+        format!("备份旧版本失败: {e}")
+    })?;
+    transaction.phase = UpdatePhase::OldMoved;
+    if let Err(error) = write_pending_update(runtime, &transaction) {
+        let _ = fs::rename(&backup, &dsh_dir);
+        clear_pending_update(runtime);
+        return Err(error);
     }
     if let Err(e) = fs::rename(&dsh_new, &dsh_dir) {
         let _ = fs::rename(&backup, &dsh_dir);
         let _ = fs::remove_dir_all(&stage);
+        clear_pending_update(runtime);
         return Err(format!("替换失败，已回滚: {e}"));
+    }
+    transaction.phase = UpdatePhase::Swapped;
+    if let Err(error) = write_pending_update(runtime, &transaction) {
+        let _ = fs::remove_dir_all(&dsh_dir);
+        let _ = fs::rename(&backup, &dsh_dir);
+        clear_pending_update(runtime);
+        return Err(error);
     }
 
     // bump version.json
@@ -5814,19 +7341,18 @@ fn apply_dsh_tarball_bytes(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({}));
     vjson["dsh"] = serde_json::Value::String(installed_version.clone());
-    let _ = fs::write(
+    let version_bytes = serde_json::to_vec_pretty(&vjson)
+        .map_err(|e| format!("序列化运行时版本失败: {e}"))?;
+    if let Err(error) = write_file_atomically(
         &version_file,
-        serde_json::to_string_pretty(&vjson).unwrap_or_default(),
-    );
-
-    // record the pending-verification backup
-    write_pending_update(
-        runtime,
-        &UpdateBackupInfo {
-            backup: backup.to_string_lossy().to_string(),
-            previous_version: previous_version.clone(),
-        },
-    );
+        &runtime.join(".version-update.tmp"),
+        &version_bytes,
+    ) {
+        let _ = fs::remove_dir_all(&dsh_dir);
+        let _ = fs::rename(&backup, &dsh_dir);
+        clear_pending_update(runtime);
+        return Err(format!("写入运行时版本失败，已回滚: {error}"));
+    }
     let _ = fs::remove_dir_all(&stage);
     log_line(
         log,
@@ -5850,7 +7376,7 @@ async fn verify_update_rollback(app: AppHandle) {
     if read_pending_update(&paths.runtime_dir).is_none() {
         return;
     }
-    let url = dsh_web_url(dsh_port(&config));
+    let url = format!("{}desktop/status", dsh_web_url(dsh_port(&config)));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -5861,21 +7387,31 @@ async fn verify_update_rollback(app: AppHandle) {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut healthy_ever = false;
+    let mut healthy_streak = 0u8;
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let healthy = client
             .get(&url)
             .send()
             .await
-            .map(|r| r.status().is_success() || r.status().is_server_error())
+            .map(|r| r.status().is_success())
             .unwrap_or(false);
-        if healthy {
+        let expected_version = read_pending_update(&paths.runtime_dir)
+            .map(|info| info.new_version)
+            .unwrap_or_default();
+        let version_matches = !expected_version.is_empty()
+            && dsh_manifest_version(&paths.runtime_dir.join("dsh")).as_deref()
+                == Some(expected_version.as_str());
+        if healthy && version_matches {
             healthy_ever = true;
+            healthy_streak = healthy_streak.saturating_add(1);
+        } else {
+            healthy_streak = 0;
         }
         let own_child = state.dsh.lock().unwrap().child.is_some();
         let adopted = state.adopted.load(Ordering::SeqCst);
 
-        if healthy && own_child && !adopted {
+        if healthy_streak >= 2 && own_child && !adopted {
             // success: our child runs the new runtime
             let info = read_pending_update(&paths.runtime_dir);
             if let Some(info) = info {
@@ -5944,22 +7480,56 @@ async fn verify_update_rollback(app: AppHandle) {
             let _ = fs::remove_dir_all(&broken);
             // restore the recorded version
             let version_file = paths.runtime_dir.join("version.json");
-            if let Ok(s) = fs::read_to_string(&version_file) {
-                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&s) {
-                    v["dsh"] = serde_json::Value::String(info.previous_version.clone());
-                    let _ = fs::write(
+            let version_restored = fs::read_to_string(&version_file)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|mut value| {
+                    value["dsh"] = serde_json::Value::String(info.previous_version.clone());
+                    serde_json::to_vec_pretty(&value).ok()
+                })
+                .ok_or_else(|| "无法生成回滚版本记录".to_string())
+                .and_then(|bytes| {
+                    write_file_atomically(
                         &version_file,
-                        serde_json::to_string_pretty(&v).unwrap_or_default(),
-                    );
+                        &paths.runtime_dir.join(".version-rollback.tmp"),
+                        &bytes,
+                    )
+                    .map_err(|error| format!("恢复版本记录失败: {error}"))
+                });
+            if let Err(error) = version_restored {
+                log_line(&paths.log_file, &format!("ROLLBACK VERSION WRITE FAILED: {error}"));
+                let _ = app.emit(
+                    "update-rollback",
+                    format!("内核目录已回滚，但版本记录恢复失败：{error}"),
+                );
+                return;
+            }
+            ensure_runtime_files(&paths);
+            let restart_result = spawn_dsh(&paths, &config);
+            {
+                let mut dsh = state.dsh.lock().unwrap();
+                match restart_result {
+                    Ok(c) => dsh.child = Some(c),
+                    Err(e) => log_line(&paths.log_file, &format!("rollback restart failed: {e}")),
+                }
+            }
+            let mut rollback_healthy = false;
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let responding = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map(|response| response.status().is_success())
+                    .unwrap_or(false);
+                let version_matches = dsh_manifest_version(&paths.runtime_dir.join("dsh")).as_deref()
+                    == Some(info.previous_version.as_str());
+                if responding && version_matches && state.dsh.lock().unwrap().child.is_some() {
+                    rollback_healthy = true;
+                    break;
                 }
             }
             clear_pending_update(&paths.runtime_dir);
-            ensure_runtime_files(&paths);
-            let mut dsh = state.dsh.lock().unwrap();
-            match spawn_dsh(&paths, &config) {
-                Ok(c) => dsh.child = Some(c),
-                Err(e) => log_line(&paths.log_file, &format!("rollback restart failed: {e}")),
-            }
             log_line(
                 &paths.log_file,
                 &format!(
@@ -5967,13 +7537,12 @@ async fn verify_update_rollback(app: AppHandle) {
                     info.previous_version
                 ),
             );
-            let _ = app.emit(
-                "update-rollback",
-                format!(
-                    "新版 dsh 无法启动，已自动回滚到 {} 并重启服务。",
-                    info.previous_version
-                ),
-            );
+            let detail = if rollback_healthy {
+                format!("新版 dsh 无法启动，已自动回滚到 {}，服务已恢复。", info.previous_version)
+            } else {
+                format!("已回滚到 {}，但回滚后验证失败，服务仍不可访问，请查看日志。", info.previous_version)
+            };
+            let _ = app.emit("update-rollback", detail);
         }
         Err(e) => {
             log_line(&paths.log_file, &format!("ROLLBACK FAILED: {e}"));
@@ -5982,42 +7551,181 @@ async fn verify_update_rollback(app: AppHandle) {
     }
 }
 
+struct AtomicFlagGuard<'a>(&'a AtomicBool);
+
+impl Drop for AtomicFlagGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
+struct NpmUpdatePackage {
+    version: String,
+    tarball: String,
+    integrity: String,
+}
+
+fn parse_npm_update_metadata(
+    value: &serde_json::Value,
+    current_version: &str,
+) -> Result<NpmUpdatePackage, String> {
+    if value.get("name").and_then(|value| value.as_str()) != Some("@deepseek-ai/dsh") {
+        return Err("npm metadata 包名不匹配".to_string());
+    }
+    let version = value
+        .get("version")
+        .and_then(|value| value.as_str())
+        .ok_or("npm metadata 缺少版本")?;
+    if !version_is_newer(current_version, version) {
+        return Err(format!("拒绝安装非升级版本: {current_version} -> {version}"));
+    }
+    let tarball = value
+        .pointer("/dist/tarball")
+        .and_then(|value| value.as_str())
+        .ok_or("npm metadata 缺少 tarball")?;
+    if !tarball.starts_with("https://registry.npmjs.org/@deepseek-ai/dsh/-/")
+        || !tarball.ends_with(".tgz")
+    {
+        return Err("npm tarball 地址不受信任".to_string());
+    }
+    let integrity = value
+        .pointer("/dist/integrity")
+        .and_then(|value| value.as_str())
+        .ok_or("npm metadata 缺少 dist.integrity")?;
+    if !integrity.starts_with("sha512-") {
+        return Err("npm 更新包必须提供 SHA-512 integrity".to_string());
+    }
+    Ok(NpmUpdatePackage {
+        version: version.to_string(),
+        tarball: tarball.to_string(),
+        integrity: integrity.to_string(),
+    })
+}
+
+fn verify_npm_integrity(bytes: &[u8], integrity: &str) -> Result<(), String> {
+    let encoded = integrity
+        .strip_prefix("sha512-")
+        .ok_or("不支持的 npm integrity 算法")?;
+    let expected = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| "npm integrity 编码无效".to_string())?;
+    let actual = Sha512::digest(bytes);
+    if actual.as_slice() != expected.as_slice() {
+        return Err("dsh 更新包完整性校验失败".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn apply_shell_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .shell_update_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "桌面应用更新正在进行".to_string())?;
+    let _gate = AtomicFlagGuard(&state.shell_update_in_progress);
+    let config = state.config.lock().unwrap().clone();
+    let paths = resolve_paths(&app, &config);
+    if state.core_update_in_progress.load(Ordering::SeqCst) {
+        return Err("dsh 内核更新正在进行".to_string());
+    }
+    if read_pending_update(&paths.runtime_dir).is_some() {
+        return Err("dsh 内核更新仍在验证，请等待验证完成".to_string());
+    }
+    if dsh_task_running(&config).await {
+        return Err("当前任务结束后可更新".to_string());
+    }
+    let update = app
+        .updater()
+        .map_err(|error| format!("初始化签名更新器失败: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("检查签名更新失败: {error}"))?
+        .ok_or("桌面应用已是最新版本")?;
+    if !version_is_newer(env!("CARGO_PKG_VERSION"), &update.version) {
+        return Err("拒绝安装非升级版本".to_string());
+    }
+    let progress_app = app.clone();
+    let finish_app = app.clone();
+    let mut downloaded = 0u64;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                let _ = progress_app.emit(
+                    "shell-update-progress",
+                    serde_json::json!({
+                        "stage": "download",
+                        "downloaded": downloaded,
+                        "total": total,
+                        "detail": "正在下载并校验桌面应用更新…"
+                    }),
+                );
+            },
+            move || {
+                let _ = finish_app.emit(
+                    "shell-update-progress",
+                    serde_json::json!({
+                        "stage": "install",
+                        "detail": "签名校验通过，正在安装并重启…"
+                    }),
+                );
+            },
+        )
+        .await
+        .map_err(|error| format!("安装桌面应用更新失败: {error}"))?;
+    app.restart();
+}
+
 #[tauri::command]
 async fn apply_dsh_update(
     app: AppHandle,
     state: State<'_, AppState>,
-    tarball: Option<String>,
 ) -> Result<String, String> {
+    state
+        .core_update_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "dsh 内核更新正在进行".to_string())?;
+    let _gate = AtomicFlagGuard(&state.core_update_in_progress);
     let config = state.config.lock().unwrap().clone();
     let paths = resolve_paths(&app, &config);
     let runtime = paths.runtime_dir.clone();
     let log = paths.log_file.clone();
+    if state.shell_update_in_progress.load(Ordering::SeqCst) {
+        return Err("桌面应用更新正在进行".to_string());
+    }
+    if state.adopted.load(Ordering::SeqCst) {
+        return Err("当前正在接管外部 DSH 实例，请先停止外部实例再更新内核".to_string());
+    }
+    if read_pending_update(&runtime).is_some() {
+        return Err("上一次 dsh 更新仍在验证，请等待完成".to_string());
+    }
+    if dsh_task_running(&config).await {
+        return Err("当前任务结束后可更新".to_string());
+    }
+    let current_version = fs::read_to_string(runtime.join("version.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| value.get("dsh").and_then(|value| value.as_str()).map(str::to_owned))
+        .ok_or("无法读取当前 dsh 版本")?;
+    let metadata_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let metadata = metadata_client
+        .get("https://registry.npmjs.org/@deepseek-ai/dsh/latest")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("查询 dsh 更新失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("查询 dsh 更新失败: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("解析 dsh 更新信息失败: {e}"))?;
+    let package = parse_npm_update_metadata(&metadata, &current_version)?;
 
-    let tarball = match tarball {
-        Some(t) => t,
-        None => {
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-                .map_err(|e| e.to_string())?;
-            let body = client
-                .get("https://registry.npmjs.org/@deepseek-ai/dsh/latest")
-                .header("Accept", "application/json")
-                .send()
-                .await
-                .map_err(|e| format!("网络错误: {e}"))?
-                .text()
-                .await
-                .map_err(|e| e.to_string())?;
-            let v = serde_json::from_str::<serde_json::Value>(&body).map_err(|e| e.to_string())?;
-            v.pointer("/dist/tarball")
-                .and_then(|v| v.as_str())
-                .ok_or("无法确定 dsh 下载地址")?
-                .to_string()
-        }
-    };
-
-    log_line(&log, &format!("applying dsh update: {tarball}"));
+    log_line(&log, &format!("applying verified dsh update: {}", package.version));
     let _ = app.emit(
         "update-progress",
         serde_json::json!({ "stage": "download", "detail": "正在下载 dsh 更新包…" }),
@@ -6027,14 +7735,32 @@ async fn apply_dsh_update(
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())?;
-    let bytes = client
-        .get(&tarball)
+    let mut response = client
+        .get(&package.tarball)
         .send()
         .await
         .map_err(|e| format!("下载失败: {e}"))?
-        .bytes()
+        .error_for_status()
+        .map_err(|e| format!("下载失败: {e}"))?;
+    let total = response.content_length();
+    let mut bytes = Vec::with_capacity(total.unwrap_or(0).min(usize::MAX as u64) as usize);
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("下载失败: {e}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        let _ = app.emit(
+            "update-progress",
+            serde_json::json!({
+                "stage": "download",
+                "downloaded": bytes.len(),
+                "total": total,
+                "detail": "正在下载并校验 dsh 更新包…"
+            }),
+        );
+    }
+    verify_npm_integrity(&bytes, &package.integrity)?;
     log_line(
         &log,
         &format!("downloaded dsh update archive ({} bytes)", bytes.len()),
@@ -6054,38 +7780,37 @@ async fn apply_dsh_update(
     // redeploy bridge/patch into DSH_HOME so the next boot picks everything up
     ensure_runtime_files(&paths);
 
-    // restart the child on the new runtime so the update takes effect now
-    {
-        let state2 = app.state::<AppState>();
-        let old_child = {
+    // Return the invoke response before killing DSH, otherwise the bridge hop
+    // carrying this response is severed and the UI reports Failed to fetch.
+    let app2 = app.clone();
+    let paths2 = paths.clone();
+    let config2 = config.clone();
+    let log2 = log.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        {
+            let state2 = app2.state::<AppState>();
             let mut dsh = state2.dsh.lock().unwrap();
             dsh.restarts = 0;
-            dsh.child.take()
-        };
-        if let Some(mut child) = old_child {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Some(mut child) = dsh.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            match spawn_dsh(&paths2, &config2) {
+                Ok(child) => dsh.child = Some(child),
+                Err(error) => log_line(&log2, &format!("restart after update failed: {error}")),
+            }
         }
-        let mut dsh = state2.dsh.lock().unwrap();
-        match spawn_dsh(&paths, &config) {
-            Ok(c) => dsh.child = Some(c),
-            Err(e) => log_line(&log, &format!("restart after update failed: {e}")),
-        }
-    }
-    log_line(&log, "dsh child restarted on the updated runtime");
-    let _ = app.emit(
-        "update-progress",
-        serde_json::json!({ "stage": "verify", "detail": "更新已安装，正在验证服务…" }),
-    );
-
-    // verify the new runtime can actually serve; roll back automatically if not
-    let app2 = app.clone();
-    tauri::async_runtime::spawn(async move {
-        verify_update_rollback(app2).await;
+        log_line(&log2, "dsh child restarted on the updated runtime");
+        let _ = app2.emit(
+            "update-progress",
+            serde_json::json!({ "stage": "verify", "detail": "更新已安装，正在验证服务…" }),
+        );
+        verify_update_rollback(app2.clone()).await;
     });
 
     Ok(format!(
-        "{result} 已重启内置服务；新内核将在 60 秒内完成健康验证，失败会自动回滚。"
+        "{result} 即将重启内置服务；新内核将在 60 秒内完成健康验证，失败会自动回滚。"
     ))
 }
 
@@ -6227,6 +7952,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             dsh: Mutex::new(DshProcess {
                 child: None,
@@ -6242,8 +7969,11 @@ pub fn run() {
             providers: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
             config: Mutex::new(AppConfig::default()),
+            recent_task_notifications: Mutex::new(HashMap::new()),
             last_refresh: Mutex::new(None),
             last_update_check: Mutex::new(None),
+            core_update_in_progress: AtomicBool::new(false),
+            shell_update_in_progress: AtomicBool::new(false),
             tray_balance_item: Mutex::new(None),
             tray_autostart_item: Mutex::new(None),
             spawned_at: Mutex::new(None),
@@ -6265,7 +7995,9 @@ pub fn run() {
             open_external,
             open_settings_window,
             check_update,
+            get_update_readiness,
             apply_dsh_update,
+            apply_shell_update,
             get_autostart,
             set_autostart,
             set_motion_intensity,
@@ -6708,6 +8440,114 @@ mod tests {
     }
 
     #[test]
+    fn semver_update_comparison_is_strict() {
+        assert!(version_is_newer("0.2.0", "0.2.1"));
+        assert!(version_is_newer("0.2.1-rc.1", "0.2.1"));
+        assert!(version_is_newer("0.2.1-beta.2", "0.2.1-beta.10"));
+        assert!(!version_is_newer("0.2.1", "0.2.1"));
+        assert!(!version_is_newer("0.2.1", "0.2.0"));
+        assert!(!version_is_newer("not-a-version", "0.2.2"));
+        assert!(!version_is_newer("0.2.1", "latest"));
+    }
+
+    #[test]
+    fn npm_update_metadata_requires_official_matching_upgrade() {
+        let valid = serde_json::json!({
+            "name": "@deepseek-ai/dsh",
+            "version": "0.2.2",
+            "dist": {
+                "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2.tgz",
+                "integrity": "sha512-AA=="
+            }
+        });
+        let parsed = parse_npm_update_metadata(&valid, "0.2.1").unwrap();
+        assert_eq!(parsed.version, "0.2.2");
+
+        let mut wrong_name = valid.clone();
+        wrong_name["name"] = serde_json::json!("dsh");
+        assert!(parse_npm_update_metadata(&wrong_name, "0.2.1").is_err());
+        let mut http = valid.clone();
+        http["dist"]["tarball"] = serde_json::json!("http://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2.tgz");
+        assert!(parse_npm_update_metadata(&http, "0.2.1").is_err());
+        let mut same = valid.clone();
+        same["version"] = serde_json::json!("0.2.1");
+        assert!(parse_npm_update_metadata(&same, "0.2.1").is_err());
+        let mut downgrade = valid;
+        downgrade["version"] = serde_json::json!("0.2.0");
+        assert!(parse_npm_update_metadata(&downgrade, "0.2.1").is_err());
+    }
+
+    #[test]
+    fn npm_integrity_rejects_tampering() {
+        let bytes = b"verified dsh archive";
+        let integrity = format!("sha512-{}", BASE64_STANDARD.encode(Sha512::digest(bytes)));
+        assert!(verify_npm_integrity(bytes, &integrity).is_ok());
+        assert!(verify_npm_integrity(b"tampered", &integrity).is_err());
+        assert!(verify_npm_integrity(bytes, "sha256-invalid").is_err());
+    }
+
+    #[test]
+    fn readiness_blocks_each_unsafe_state() {
+        let busy = readiness_from_flags(true, false, false, false, false);
+        assert!(!busy.core_ready && !busy.shell_ready);
+        assert_eq!(busy.reason.as_deref(), Some("当前任务结束后可更新"));
+
+        let adopted = readiness_from_flags(false, true, false, false, false);
+        assert!(!adopted.core_ready && adopted.shell_ready);
+        assert!(adopted.core_reason.unwrap().contains("外部 DSH"));
+
+        let core = readiness_from_flags(false, false, true, false, false);
+        assert!(!core.core_ready && !core.shell_ready);
+        let shell = readiness_from_flags(false, false, false, true, false);
+        assert!(!shell.core_ready && !shell.shell_ready);
+        let pending = readiness_from_flags(false, false, false, false, true);
+        assert!(!pending.core_ready && !pending.shell_ready);
+    }
+
+    #[test]
+    fn shell_runtime_upgrade_preserves_only_newer_installed_dsh() {
+        assert!(should_preserve_installed_dsh(Some("0.3.0"), Some("0.2.9")));
+        assert!(!should_preserve_installed_dsh(Some("0.2.9"), Some("0.3.0")));
+        assert!(!should_preserve_installed_dsh(Some("0.3.0"), Some("0.3.0")));
+        assert!(!should_preserve_installed_dsh(None, Some("0.3.0")));
+    }
+
+    #[test]
+    fn interrupted_update_recovers_owned_paths_by_phase() {
+        for (index, phase) in [UpdatePhase::Prepared, UpdatePhase::OldMoved, UpdatePhase::Swapped]
+            .into_iter()
+            .enumerate()
+        {
+            let root = std::env::temp_dir().join(format!("dsh-recover-{}-{index}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            make_runtime(&root, "0.2.0");
+            let backup = root.join(format!("owned-backup-{index}"));
+            let stage = root.join(format!("owned-stage-{index}"));
+            let unrelated = root.join(format!("unrelated-{index}"));
+            fs::create_dir_all(&stage).unwrap();
+            fs::create_dir_all(&unrelated).unwrap();
+            fs::rename(root.join("dsh"), &backup).unwrap();
+            write_pending_update(
+                &root,
+                &UpdateBackupInfo {
+                    backup: backup.to_string_lossy().into_owned(),
+                    previous_version: "0.2.0".into(),
+                    new_version: "0.2.1".into(),
+                    phase,
+                    stage: stage.to_string_lossy().into_owned(),
+                },
+            )
+            .unwrap();
+
+            recover_interrupted_update(&root, &root.join("test.log")).unwrap();
+            assert_eq!(dsh_manifest_version(&root.join("dsh")).as_deref(), Some("0.2.0"));
+            assert!(unrelated.exists());
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
     fn update_succeeds_and_restores_bridge() {
         let root = std::env::temp_dir().join(format!("dsh-upd-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -6918,7 +8758,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
 
         // no home layer -> full rows
-        let full = desktop_patch_overlay(&root);
+        let full = desktop_patch_overlay(&root, &HashSet::new());
+        assert!(full.contains("searchProvider: desktop-priority"));
         for name in DESKTOP_PLUGINS {
             assert!(
                 full.contains(&format!("id: {name}")),
@@ -6937,7 +8778,8 @@ mod tests {
             format!("- insert:\n{all_ids}\n"),
         )
         .unwrap();
-        let empty = desktop_patch_overlay(&root);
+        let empty = desktop_patch_overlay(&root, &HashSet::new());
+        assert!(empty.contains("searchProvider: desktop-priority"));
         assert!(
             empty.contains("- insert: []"),
             "expected empty insert, got: {empty}"
@@ -6950,7 +8792,7 @@ mod tests {
             format!("- insert:\n    - id: {}\n", DESKTOP_PLUGINS[0]),
         )
         .unwrap();
-        let gap = desktop_patch_overlay(&root);
+        let gap = desktop_patch_overlay(&root, &HashSet::new());
         assert!(
             !gap.contains(&format!("id: {}", DESKTOP_PLUGINS[0])),
             "gap overlay must not duplicate the mounted bridge, got: {gap}"
@@ -6961,6 +8803,18 @@ mod tests {
                 "gap overlay missing {name}"
             );
         }
+
+        let disabled = HashSet::from([
+            "dsh-desktop-session-manager".to_string(),
+            "dsh-desktop-file-upload".to_string(),
+            "dsh-desktop-bridge".to_string(),
+        ]);
+        fs::remove_file(root.join("cordis.patch.yml")).unwrap();
+        let selective = desktop_patch_overlay(&root, &disabled);
+        assert!(selective.contains("id: dsh-desktop-bridge"));
+        assert!(!selective.contains("id: dsh-desktop-session-manager"));
+        assert!(!selective.contains("id: dsh-desktop-file-upload"));
+        assert!(selective.contains("id: dsh-desktop-change-history"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -7021,6 +8875,22 @@ mod tests {
             .join("dsh-client-ui-settings-general")
             .join("lib")
             .join("client.js")
+    }
+
+    fn settings_models_bundle(root: &Path) -> PathBuf {
+        root.join("runtime")
+            .join("dsh")
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh-client-ui-settings-models")
+            .join("lib")
+            .join("client.js")
+    }
+
+    fn settings_models_fixture() -> String {
+        format!(
+            "const react = {{ useState() {{}}, useEffect() {{}}, useMemo() {{}} }};\nconst react_jsx_runtime = {{ jsx() {{}}, jsxs() {{}}, Fragment: \"fragment\" }};\nconst ModelsSection_module_css_default = {{}};\nfunction apiKeyFailure() {{}}\nfunction messageOf(error) {{ return String(error); }}\n{SETTINGS_MODELS_COMPONENT_ANCHOR}\n\t\t\tconst probeBaseURL = \"\";\n\t\t\tconst api = props.api;\n\t\t\treturn (0, react_jsx_runtime.jsxs)(\"div\", {{ children: [(0, react_jsx_runtime.jsxs)(\"div\", {{ children: []\n{SETTINGS_MODELS_RENDER_ANCHOR}\n\t\t\t\tchildren: []\n\t\t\t}})] }});\n\t\t}}\n"
+        )
     }
 
     fn write_plugin_package(root: &Path, name: &str, marker: &str) {
@@ -7120,12 +8990,15 @@ mod tests {
         assert!(patched.contains(SETTINGS_NAV_ICONS_MARKER));
         assert!(patched.contains(r#"id === "appearance""#));
         assert!(patched.contains(r#"id === "vision-any""#));
+        assert!(patched.contains(r#"id === "web-search""#));
+        assert!(patched.contains(r#"id === "model-behavior""#));
         assert!(patched.contains(r#"id === "session-manager""#));
         assert!(patched.contains(r#"id === "about""#));
         assert!(patched.contains(r#"id === "change-history""#));
         assert!(patched.contains("IconListPenOutline16"));
         assert!(patched.contains("IconUserOutline16"));
         assert!(patched.contains("IconBranchOutline16"));
+        assert!(patched.contains("IconPersonalizationOutline16"));
         assert!(patched.contains(r#"viewBox: "0 0 16 16""#));
 
         // idempotent: second run leaves the file byte-identical
@@ -7142,6 +9015,52 @@ mod tests {
         let before = fs::read(&bundle).unwrap();
         patch_settings_nav_icons(&paths);
         assert_eq!(fs::read(&bundle).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_models_credentials_patch_applies_once_and_degrades() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-model-credentials-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let bundle = settings_models_bundle(&root);
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::write(&bundle, settings_models_fixture()).unwrap();
+
+        patch_settings_models_credentials(&paths);
+        let patched = fs::read_to_string(&bundle).unwrap();
+        assert!(patched.contains(SETTINGS_MODELS_CREDENTIALS_MARKER));
+        assert!(patched.contains("function ProviderAccountCredentials"));
+        assert!(patched.contains("VOLC_ACCESS_KEY"));
+        assert!(patched.contains("VOLC_SECRET_KEY"));
+        assert!(patched.contains("ProviderAccountCredentials, { provider: props.provider"));
+        if let Ok(output) = std::process::Command::new("node")
+            .arg("--check")
+            .arg(&bundle)
+            .output()
+        {
+            assert!(
+                output.status.success(),
+                "patched Models fixture is invalid JavaScript: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let once = fs::read(&bundle).unwrap();
+        patch_settings_models_credentials(&paths);
+        assert_eq!(fs::read(&bundle).unwrap(), once);
+
+        fs::write(&bundle, "function ProviderEditorChanged() {}\n").unwrap();
+        patch_settings_models_credentials(&paths);
+        assert_eq!(
+            fs::read_to_string(&bundle).unwrap(),
+            "function ProviderEditorChanged() {}\n"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -7238,6 +9157,42 @@ mod tests {
     }
 
     #[test]
+    fn bundled_plugin_switches_remove_only_disabled_bundle_rows() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-builtin-switch-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        let web = paths.dsh_home.join("profiles/web");
+        fs::create_dir_all(&web).unwrap();
+        let manifest_path = web.join("package.json");
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{"name":"dsh-profile-web","private":true,"dependencies":{{"some-plugin":"1.0.0"}},"dsh":{{"profile":{{"bundles":["@deepseek-ai/dsh-base","some-plugin","{VISION_PLUGIN}","{MARKET_PLUGIN}"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let disabled = HashSet::from([VISION_PLUGIN.to_string()]);
+        reconcile_web_profile_bundles(&paths, &[MARKET_PLUGIN], &disabled);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let names = manifest["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["@deepseek-ai/dsh-base", "some-plugin", MARKET_PLUGIN]
+        );
+        assert_eq!(manifest["dependencies"]["some-plugin"], "1.0.0");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vision_bundle_creates_missing_dsh_path() {
         let root =
             std::env::temp_dir().join(format!("dsh-vision-test-{}-nodsh", std::process::id()));
@@ -7295,8 +9250,12 @@ mod tests {
             &UpdateBackupInfo {
                 backup: root.join("dsh-old-20260101").to_string_lossy().to_string(),
                 previous_version: "0.1.0-rc.5".to_string(),
+                new_version: "0.1.0".to_string(),
+                phase: UpdatePhase::Swapped,
+                stage: String::new(),
             },
-        );
+        )
+        .unwrap();
         let info = read_pending_update(&root).expect("record persists");
         assert_eq!(info.previous_version, "0.1.0-rc.5");
         clear_pending_update(&root);
@@ -7534,6 +9493,109 @@ agent-default-model:
     }
 
     #[test]
+    fn volc_resource_packages_parse_amounts_and_usage_details() {
+        let packages = serde_json::json!({
+            "ResponseMetadata": { "Action": "ListResourcePackages" },
+            "Result": {
+                "List": [{
+                    "InstanceNo": "Package-1",
+                    "ConfigurationName": "方舟 Coding Plan",
+                    "ProductName": "火山方舟",
+                    "TotalAmount": "100",
+                    "AvailableAmount": "72.5",
+                    "Unit": "M Tokens",
+                    "Status": "Effective",
+                    "EffectiveTime": "2026-08-01T00:00:00Z",
+                    "ExpiryTime": "2026-09-01T00:00:00Z"
+                }]
+            }
+        });
+        let plans = parse_volc_plans(&packages).expect("resource packages must parse");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].name, "方舟 Coding Plan");
+        assert_eq!(plans[0].product.as_deref(), Some("火山方舟"));
+        assert_eq!(plans[0].total, Some(100.0));
+        assert_eq!(plans[0].remaining, Some(72.5));
+        assert_eq!(plans[0].used, Some(27.5));
+        assert_eq!(plans[0].unit.as_deref(), Some("M Tokens"));
+
+        let details = serde_json::json!({
+            "Result": {
+                "List": [
+                    { "InstanceNo": "Package-1", "DeductionAmount": "2.5" },
+                    { "InstanceNo": "Package-1", "DeductionAmount": 1.25 },
+                    { "InstanceNo": "Package-2", "DeductionAmount": "4" }
+                ]
+            }
+        });
+        let mut totals = HashMap::new();
+        collect_volc_usage_details(&details, &mut totals).expect("usage details must parse");
+        assert_eq!(totals.get("Package-1"), Some(&3.75));
+        assert_eq!(totals.get("Package-2"), Some(&4.0));
+    }
+
+    #[test]
+    fn volc_coding_plan_parses_three_usage_windows() {
+        let response = serde_json::json!({
+            "Result": {
+                "Status": "Running",
+                "UpdateTimestamp": 1782053286_i64,
+                "QuotaUsage": [
+                    { "Level": "session", "Percent": 0.0, "ResetTimestamp": -1_i64 },
+                    { "Level": "weekly", "Percent": 1.672568, "ResetTimestamp": 1782057600_i64 },
+                    { "Level": "monthly", "Percent": 0.836284, "ResetTimestamp": 1784303999_i64 }
+                ]
+            }
+        });
+        let plans = parse_volc_coding_plan(&response).expect("coding plan response must parse");
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[0].name, "5 小时额度");
+        assert_eq!(plans[0].used, Some(0.0));
+        assert_eq!(plans[0].expires_at, None);
+        assert_eq!(plans[1].name, "7 天额度");
+        assert_eq!(plans[1].used, Some(1.672568));
+        assert!(plans[1].expires_at.is_some());
+        assert_eq!(plans[2].name, "每月额度");
+        assert_eq!(plans[2].remaining, Some(99.163716));
+    }
+
+    #[test]
+    fn volc_agent_plan_ignores_unsubscribed_windows() {
+        let response = serde_json::json!({
+            "Result": {
+                "PlanType": "Agent Plan Pro",
+                "AFPFiveHour": { "Quota": 40.0, "Used": 10.0, "ResetTime": 1778806800000_i64 },
+                "AFPWeekly": { "Quota": 0.0, "Used": 0.0 }
+            }
+        });
+        let plans = parse_volc_afp_plan(&response).expect("agent plan response must parse");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].product.as_deref(), Some("Agent Plan Pro"));
+        assert_eq!(plans[0].used, Some(25.0));
+        assert_eq!(plans[0].remaining, Some(75.0));
+    }
+
+    #[test]
+    fn volc_region_comes_from_ark_base_url() {
+        assert_eq!(
+            volcengine_region("https://ark.cn-shanghai.volces.com/api/coding/v3"),
+            "cn-shanghai"
+        );
+    }
+
+    #[test]
+    fn volc_openapi_errors_are_not_treated_as_empty_packages() {
+        let denied = serde_json::json!({
+            "ResponseMetadata": {
+                "Error": { "Code": "AccessDenied", "Message": "permission denied" }
+            }
+        });
+        let error = parse_volc_plans(&denied).expect_err("access errors must be surfaced");
+        assert!(error.contains("AccessDenied"));
+        assert!(error.contains("permission denied"));
+    }
+
+    #[test]
     fn balance_parses_deepseek_api_response() {
         // Exact shape returned by GET https://api.deepseek.com/user/balance
         // (snake_case fields). A camelCase rename here would make every
@@ -7715,6 +9777,8 @@ agent-default-model:
             configured: true,
             balance: None,
             usage: None,
+            plans: Vec::new(),
+            plans_error: None,
             error: None,
         })
         .unwrap();
@@ -7737,6 +9801,26 @@ agent-default-model:
         assert_eq!(usage["total_usage_usd"], 1.0);
         assert_eq!(usage["soft_limit_usd"], 2.0);
         assert_eq!(usage["has_payment_method"], true);
+
+        let plan = serde_json::to_value(&ProviderPlan {
+            id: "package-1".to_string(),
+            name: "方舟资源包".to_string(),
+            product: Some("火山方舟".to_string()),
+            total: Some(100.0),
+            used: Some(25.0),
+            remaining: Some(75.0),
+            unit: Some("M Tokens".to_string()),
+            status: Some("Effective".to_string()),
+            effective_at: None,
+            expires_at: Some("2026-09-01T00:00:00Z".to_string()),
+            period_usage: Some(8.0),
+            period_start: None,
+            period_end: None,
+        })
+        .unwrap();
+        assert_eq!(plan["remaining"], 75.0);
+        assert_eq!(plan["period_usage"], 8.0);
+        assert_eq!(plan["expires_at"], "2026-09-01T00:00:00Z");
     }
 
     #[test]
@@ -7758,6 +9842,145 @@ agent-default-model:
         });
         let parsed: AppConfig = serde_json::from_value(legacy).unwrap();
         assert_eq!(parsed.motion, MotionIntensity::Rich);
+        assert_eq!(
+            parsed.task_notification_mode,
+            TaskNotificationMode::Unfocused
+        );
+        assert!(parsed.disabled_builtin_plugins.is_empty());
+        assert!(AppConfig::default().disabled_builtin_plugins.is_empty());
+    }
+
+    #[test]
+    fn task_notification_modes_serialize_and_default_to_unfocused() {
+        assert_eq!(
+            default_task_notification_mode(),
+            TaskNotificationMode::Unfocused
+        );
+        assert_eq!(
+            AppConfig::default().task_notification_mode,
+            TaskNotificationMode::Unfocused
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskNotificationMode::Off).unwrap(),
+            r#""off""#
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskNotificationMode::Unfocused).unwrap(),
+            r#""unfocused""#
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskNotificationMode::Always).unwrap(),
+            r#""always""#
+        );
+        assert_eq!(
+            parse_task_notification_mode("unfocused"),
+            Some(TaskNotificationMode::Unfocused)
+        );
+        assert_eq!(parse_task_notification_mode("sometimes"), None);
+    }
+
+    #[test]
+    fn task_notification_focus_policy_matches_the_settings_contract() {
+        assert!(!should_send_task_notification(
+            TaskNotificationMode::Off,
+            false,
+            false,
+            true,
+            false
+        ));
+        assert!(should_send_task_notification(
+            TaskNotificationMode::Always,
+            true,
+            true,
+            false,
+            true
+        ));
+        assert!(!should_send_task_notification(
+            TaskNotificationMode::Unfocused,
+            true,
+            true,
+            false,
+            true
+        ));
+        assert!(should_send_task_notification(
+            TaskNotificationMode::Unfocused,
+            true,
+            true,
+            false,
+            false
+        ));
+        assert!(should_send_task_notification(
+            TaskNotificationMode::Unfocused,
+            false,
+            false,
+            false,
+            true
+        ));
+        assert!(should_send_task_notification(
+            TaskNotificationMode::Unfocused,
+            true,
+            false,
+            false,
+            true
+        ));
+        assert!(should_send_task_notification(
+            TaskNotificationMode::Unfocused,
+            true,
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn task_notification_titles_and_duplicate_guard_are_bounded() {
+        let title = "鲸".repeat(100);
+        let copy = task_notification_copy(Some(&title));
+        assert_eq!(copy.title, "DSH Desktop · 任务完成");
+        assert_eq!(copy.context.chars().count(), 83);
+        assert!(copy.context.starts_with("会话："));
+        assert_eq!(copy.status, "状态：已完成，可以回来查看结果");
+        assert_eq!(task_notification_copy(None).context, "会话：未命名任务");
+        assert_eq!(
+            test_notification_copy(),
+            TaskNotificationCopy {
+                title: "DSH Desktop · 通知测试".to_string(),
+                context: "来源：DSH Desktop".to_string(),
+                status: "内容：任务完成通知已正确启用".to_string(),
+            }
+        );
+
+        let slot = Mutex::new(HashMap::new());
+        let now = Instant::now();
+        assert!(reserve_task_notification(&slot, "s1:1", now));
+        assert!(!reserve_task_notification(
+            &slot,
+            "s1:1",
+            now + Duration::from_secs(1)
+        ));
+        assert!(reserve_task_notification(
+            &slot,
+            "s1:2",
+            now + Duration::from_secs(1)
+        ));
+        assert!(reserve_task_notification(
+            &slot,
+            "s1:1",
+            now + Duration::from_secs(7)
+        ));
+    }
+
+    #[test]
+    fn dsh_default_appearance_uses_the_wire_value_and_disables_the_ocean_skin() {
+        assert_eq!(
+            serde_json::to_string(&MotionIntensity::Default).unwrap(),
+            r#""default""#
+        );
+        assert!(motion_init_script(MotionIntensity::Default)
+            .contains(r#"window.__DSH_MOTION__ = "default";"#));
+        assert!(THEME_TRANSITION_SCRIPT.contains("getAttribute(MOTION_ATTR) !== 'rich'"));
+        assert!(OCEAN_THEME_SCRIPT.contains("if (next === 'default') teardown()"));
+        assert!(OCEAN_THEME_SCRIPT.contains("DSH default appearance active"));
     }
 
     #[test]

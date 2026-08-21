@@ -34,11 +34,13 @@ npm run build   # 产出 src-tauri/target/release/bundle/nsis/*.exe
 
 ## 发布清单
 
-1. 改 `src-tauri/tauri.conf.json` 与 `package.json` 的 version（保持一致）；
-2. `node scripts/make-runtime-archive.mjs`（运行时归档必须与代码同步更新）；
-3. `npm run build`；
-4. `gh release create v<版本> "安装包路径" --repo 账号/仓库`（tag 去掉 v 后必须等于 version）；
-5. 用户端自动检测（启动后 60 秒首查 + 每 6 小时复查）。
+1. 同步修改 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 的版本。
+2. 首次配置 updater 时运行 `npx --no-install tauri signer generate -w "$env:USERPROFILE\.tauri\dsh-desktop-updater.key"`，交互输入密码；私钥与密码不得进入仓库或日志，公钥写入 `tauri.conf.json`。
+3. 在 GitHub Actions 配置 `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+4. 本地运行 `npm run verify:release -- --tag=v<版本>`、`npm run test:plugins`、`cargo test --manifest-path src-tauri/Cargo.toml` 与 `npm run check`。
+5. 创建 `v*` tag 后，Windows Release workflow 会再次校验三个版本入口、线上最新版本和 npm latest，重建运行时/插件并发布普通 setup.exe、签名 updater artifact、`.sig` 与 `latest.json`。
+
+workflow 会在工作树版本仍等于线上 latest、tag 与配置不一致，或内置 dsh 低于构建时 npm latest 时失败。`0.2.1` 是 updater 引导版本，不应从 0.2.0 内部直接安装；0.2.0 用户需要手动覆盖 setup.exe 一次。
 
 ## 运行时布局与更新机制
 
@@ -90,13 +92,15 @@ when creating dir …\runtime\node”），壳会自动改解压到
   浏览并安装社区插件；若已存在用户安装的同名包则复用且不覆盖；
 - 版本更新时改 `fetch-runtime.mjs` 中的 `MARKET_PLUGIN.version` 后重新组装运行时。
 
-dsh 内核更新流程：下载 npm tarball → 解包到暂存 → 恢复桌面插件（plugins-src/，旧装
+dsh 内核更新流程：重新读取 npm 官方 metadata，严格比较 SemVer 并校验包名、HTTPS tarball 与 SHA-512 → 下载 npm tarball → 解包到暂存 → 恢复桌面插件（plugins-src/，旧装
 为 bridge-src/ 则按旧目录恢复桥接插件）→ 校验 manifest → 旧目录改名备份（保留！）→
 新目录就位 → 写 `.update-backup.json` → 自动重启子进程 → 60 秒健康验证：
 
 - 自托管且健康 → 删除备份、清理状态；
 - 起不来 → 自动回滚旧版 + 重启（应用重启后也会继续验证）；
 - 端口被外部实例占用（接管模式）→ 保留备份，下次自托管启动再验证。
+
+桌面壳通过固定的 GitHub `latest.json` endpoint 与编译内置公钥执行签名更新。NSIS `/UPDATE` 模式保留 runtime；若用户已安装的 dsh 比安装包内置版本更新，只替换 Node、壳资源与桌面自有插件，不降级 dsh。完整卸载仍按用户选择清理安装目录 runtime 与本地 fallback。
 
 ## 桌面插件代码组织
 
@@ -157,7 +161,7 @@ scripts/<插件>/
 | `DSH_DESKTOP_WEBVIEW_DATA_DIR` | 覆盖 WebView2 数据目录 |
 | `DSH_DESKTOP_DSH_HOME` | 覆盖传给 dsh 的 `DSH_HOME` |
 | `DSH_DESKTOP_DSH_PORT` | 覆盖 dsh web 端口（默认 3080） |
-| `DSH_DESKTOP_UPDATE_REPO` | 壳更新检测的 GitHub 仓库（`账号/仓库`） |
+| `DSH_DESKTOP_UPDATE_REPO` | 已弃用，仅为旧配置兼容保留；不能改变生产签名更新源 |
 | `VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY` | 火山引擎费用中心 OpenAPI 余额查询的账户 AccessKey/SecretKey（也接受 `VOLCENGINE_*`；`VOLC_REGION` 覆盖地域默认 `cn-north-1`） |
 
 ## 验证清单（发版前）
@@ -167,6 +171,10 @@ scripts/<插件>/
 - [ ] Key 输入 → 余额显示；对话结束 → 余额刷新（自托管模式）
 - [ ] dsh 更新：一键更新 → 自动重启生效 → 健康验证通过（备份被清理）
 - [ ] 破坏性更新模拟：替换为启动即崩的内核 → 60 秒后自动回滚 → 服务恢复
+- [ ] 0.2.0 → 0.2.1 手动覆盖：配置、快捷方式和更高版本 dsh 均保留
+- [ ] 0.2.1 → 测试版 0.2.2：应用内下载、签名校验、安装、重启、版本生效
+- [ ] 活跃任务期间两类更新均不可执行，任务完成后按钮自动恢复
+- [ ] Release 含 setup.exe、签名更新包、`.sig`、`latest.json`，且存在 `windows-x86_64` 平台键
 - [ ] 托盘余额、关闭最小化、退出清理子进程
 - [ ] 启动页：垂直居中、鲸鱼动效、解压/启动两阶段进度条、失败重试
 - [ ] DSH 左下角余额组件：宽栏显示余额、窄栏显示鲸鱼图标；点击弹出

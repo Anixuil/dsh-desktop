@@ -81,6 +81,18 @@ const result = factory(sandbox.require);
 if (typeof result.apply !== 'function') throw new Error('client bundle did not export apply');
 if (!Array.isArray(result.inject) || !result.inject.includes('slots')) throw new Error('client bundle inject must include slots');
 if (typeof result.footer?.setFooterStack !== 'function') throw new Error('footer stack binding helper missing');
+if (typeof result.footer?.providerAmount !== 'function') throw new Error('provider amount helper missing');
+const planAmount = result.footer.providerAmount({
+  configured: true,
+  kind: 'balance',
+  balance: { is_available: true, balance_infos: [{ total_balance: '0.00', currency: 'CNY' }] },
+  plans: [{ remaining: 72.5, unit: 'M Tokens' }],
+});
+if (planAmount !== '72.5 M Tokens') throw new Error(`plan amount did not take priority: ${planAmount}`);
+if (result.footer.providerAmount({ configured: true, kind: 'balance', plans_error: 'console only', balance: { is_available: true, balance_infos: [{ total_balance: '0', currency: 'CNY' }] } }) !== null) {
+  throw new Error('limited plan must not expose cash balance as plan amount');
+}
+console.log('plan amount priority ok');
 const footerClasses = new Set();
 const footerNode = {
   classList: {
@@ -127,7 +139,7 @@ if (focusPosts.length !== 2 || focusPosts[1].sessionId !== 'session-7') {
 console.log('focus publisher ok:', JSON.stringify(focusPosts));
 
 console.log(`registrations: ${registrations.length}`);
-if (registrations.length !== 5) throw new Error(`expected 5 registrations, got ${registrations.length}`);
+if (registrations.length !== 7) throw new Error(`expected 7 registrations, got ${registrations.length}`);
 for (const { slotName, reg } of registrations) {
   if (slotName === 'sidebar.footer.action') {
     if (reg.name !== 'sidebar.footer.action') throw new Error(`bad reg name ${reg.name}`);
@@ -149,6 +161,10 @@ for (const { slotName, reg } of registrations) {
       throw new Error('appearance registration label/inject missing');
     }
     console.log('appearance section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
+  } else if (slotName === 'settings.section' && reg.id === 'model-behavior') {
+    if (reg.name !== 'settings.section' || reg.order !== 4) throw new Error(`bad model-behavior registration ${JSON.stringify(reg)}`);
+    if (typeof reg.label !== 'function' || typeof reg.inject !== 'function') throw new Error('model-behavior registration label/inject missing');
+    console.log('model-behavior section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
   } else if (slotName === 'settings.section' && reg.id === 'plugin-network') {
     if (reg.name !== 'settings.section') throw new Error(`bad reg name ${reg.name}`);
     if (reg.order !== 12) throw new Error(`bad plugin-network reg order ${reg.order}`);
@@ -156,6 +172,10 @@ for (const { slotName, reg } of registrations) {
       throw new Error('plugin-network registration label/inject missing');
     }
     console.log('plugin-network section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
+  } else if (slotName === 'settings.section' && reg.id === 'builtin-plugins') {
+    if (reg.name !== 'settings.section' || reg.order !== 13) throw new Error(`bad builtin-plugins registration ${JSON.stringify(reg)}`);
+    if (typeof reg.label !== 'function' || typeof reg.inject !== 'function') throw new Error('builtin-plugins registration label/inject missing');
+    console.log('builtin-plugins section registration ok:', { name: reg.name, id: reg.id, order: reg.order });
   } else if (slotName === 'settings.section') {
     if (reg.name !== 'settings.section') throw new Error(`bad reg name ${reg.name}`);
     if (reg.id !== 'about') throw new Error(`bad about reg id ${reg.id}`);

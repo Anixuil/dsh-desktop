@@ -10,11 +10,13 @@
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge, setFooterStack } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack, activeProvider, providerAmount } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
+const { ModelBehaviorSection, ModelBehaviorSectionView } = require('./model-behavior-section.js');
 const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-section.js');
+const { BuiltinPluginsSection, BuiltinPluginsSectionView } = require('./builtin-plugins-section.js');
 const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
 
@@ -28,6 +30,16 @@ const inject = ["slots", "locale", "sessions"];
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-desktop-bridge: dictionaries");
   const t = ctx.locale.bind(NS);
+
+  // The control plane stays mounted even when the desktop-integration feature
+  // switch is off, otherwise there would be no in-app path to turn it on.
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "builtin-plugins",
+    order: 13,
+    label: () => t("builtinPlugins.nav"),
+    inject: () => ({ t }),
+  }, BuiltinPluginsSection));
 
   // Publish the currently focused session to the host bridge (POST
   // /desktop/current-session) so the wave-state classifier tracks THIS
@@ -54,7 +66,8 @@ function apply(ctx) {
     return unsubscribe;
   }, "dsh-desktop-bridge: focus publisher");
 
-  ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+  const featureDisposers = [];
+  featureDisposers.push(ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "desktop-balance",
     order: BALANCE_FOOTER_ORDER,
@@ -66,48 +79,73 @@ function apply(ctx) {
       sessions: ctx.sessions ?? null,
       modelDirectories: ctx.get?.("modelDirectories") ?? null,
     })
-  }, BalanceBadge));
+  }, BalanceBadge)));
   // 远程访问 (Remote access) page in the in-app settings modal: relay-client
   // configuration (enabled switch, relay url, secret, device id) plus live
   // status and the phone entry URL.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "model-behavior",
+    order: 4,
+    label: () => t("modelBehavior.nav"),
+    inject: () => ({ t }),
+  }, ModelBehaviorSection)));
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "remote-access",
     order: 11,
     label: () => t("remote.nav"),
     inject: () => ({ t }),
-  }, RemoteSection));
+  }, RemoteSection)));
   // 外观与动效 (Appearance & motion) page in the in-app settings modal:
   // two-way motion-intensity picker persisted by the shell.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "appearance",
     order: 5,
     label: () => t("appearance.nav"),
     inject: () => ({ t }),
-  }, AppearanceSection));
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  }, AppearanceSection)));
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "plugin-network",
     order: 12,
     label: () => t("pluginNetwork.nav"),
     inject: () => ({ t }),
-  }, PluginNetworkSection));
+  }, PluginNetworkSection)));
   // 关于 (About) page in the in-app settings modal: shell identity, blog /
   // repo links into the default browser, and a shell+dsh check-update action.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "about",
     order: 30,
     label: () => t("about.nav"),
     inject: () => ({ t }),
-  }, AboutSection));
+  }, AboutSection)));
+
+  ctx.effect(() => {
+    if (typeof fetch !== 'function') return;
+    let cancelled = false;
+    fetch('/desktop/builtin-plugins')
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled) return;
+        const bridge = payload?.plugins?.find?.((plugin) => plugin.id === 'dsh-desktop-bridge');
+        if (bridge?.enabled === false) {
+          for (const dispose of featureDisposers.reverse()) {
+            if (typeof dispose === 'function') dispose();
+          }
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, 'dsh-desktop-bridge: feature gate');
 }
 
 exports.apply = apply;
 exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
-exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, PluginNetworkSectionView: NetworkSectionView, RemoteSectionView };
-exports.footer = { setFooterStack };
+exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, ModelBehaviorSectionView, PluginNetworkSectionView: NetworkSectionView, BuiltinPluginsSectionView, RemoteSectionView };
+exports.footer = { setFooterStack, activeProvider, providerAmount };
 exports.qr = require('./qr.js');

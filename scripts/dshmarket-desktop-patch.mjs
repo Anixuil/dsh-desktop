@@ -6,6 +6,7 @@ const MARKET_ORDER_PATCH_MARKER = 'dsh-desktop market order'
 const LOG_PATCH_MARKER = 'dsh-desktop persistent diagnostics'
 const SKILL_HEALTH_PATCH_MARKER = 'dsh-desktop skill health quarantine'
 const CANCEL_ROLLBACK_PATCH_MARKER = 'dsh-desktop cancelled install rollback'
+const RESIDUE_CLEANUP_PATCH_MARKER = 'dsh-desktop managed artifact cleanup'
 
 function replaceOnce(source, needle, replacement, file) {
   if (!source.includes(needle)) {
@@ -155,6 +156,123 @@ function patchCancelledInstallRollback(marketDir) {
         : `                        // ${CANCEL_ROLLBACK_PATCH_MARKER}: cancel means no durable profile mutation.\n                        const manifestBefore = readManifestDeps(config.profile, activeProfileDir);\n                        const bundlesBefore = readProfileBundles(activeProfileDir);\n                        const result = await runPlugin(config.profile, ['add', target]);\n                        const cancelled = result.cancelled;\n                        if (result.exitCode !== 0 || result.timedOut || cancelled) {\n                            const rolledBack = restoreManifestDeps(config.profile, manifestBefore, activeProfileDir, bundlesBefore);`,
       file,
     )
+    writeFileSync(file, source)
+  }
+}
+
+function patchManagedArtifactCleanup(marketDir) {
+  const templateFile = new URL('./dshmarket-residue.template.js', import.meta.url)
+  const template = readFileSync(templateFile, 'utf8')
+  for (const file of [join(marketDir, 'lib', 'managed-artifacts.js'), join(marketDir, 'src', 'managed-artifacts.ts')]) {
+    writeFileSync(file, template)
+  }
+
+  for (const file of [join(marketDir, 'lib', 'routes.js'), join(marketDir, 'src', 'routes.ts')]) {
+    if (!existsSync(file)) continue
+    let source = readFileSync(file, 'utf8')
+    if (source.includes(RESIDUE_CLEANUP_PATCH_MARKER)) continue
+    const ts = file.endsWith('.ts')
+    const extension = ts ? 'ts' : 'js'
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `import { addedSkillFailures, captureSkillFailures, clearSkillQuarantine, readSkillQuarantines, setSkillQuarantine } from './skill-health.ts' // ${SKILL_HEALTH_PATCH_MARKER}`
+        : `import { addedSkillFailures, captureSkillFailures, clearSkillQuarantine, readSkillQuarantines, setSkillQuarantine } from './skill-health.js'; // ${SKILL_HEALTH_PATCH_MARKER}`,
+      ts
+        ? `import { addedSkillFailures, captureSkillFailures, clearSkillQuarantine, readSkillQuarantines, setSkillQuarantine } from './skill-health.ts' // ${SKILL_HEALTH_PATCH_MARKER}\nimport { cleanupNewManagedArtifacts, cleanupOwnedArtifacts, recordManagedArtifacts, snapshotManagedArtifacts } from './managed-artifacts.${extension}' // ${RESIDUE_CLEANUP_PATCH_MARKER}`
+        : `import { addedSkillFailures, captureSkillFailures, clearSkillQuarantine, readSkillQuarantines, setSkillQuarantine } from './skill-health.js'; // ${SKILL_HEALTH_PATCH_MARKER}\nimport { cleanupNewManagedArtifacts, cleanupOwnedArtifacts, recordManagedArtifacts, snapshotManagedArtifacts } from './managed-artifacts.${extension}'; // ${RESIDUE_CLEANUP_PATCH_MARKER}`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `    const failuresBefore = enabled ? await captureSkillFailures(skillsLookup) : new Map()`
+        : `        const failuresBefore = enabled ? await captureSkillFailures(skillsLookup) : new Map();`,
+      ts
+        ? `    const failuresBefore = enabled ? await captureSkillFailures(skillsLookup) : new Map()\n    const managedBefore = enabled ? snapshotManagedArtifacts(dir) : null`
+        : `        const failuresBefore = enabled ? await captureSkillFailures(skillsLookup) : new Map();\n        const managedBefore = enabled ? snapshotManagedArtifacts(dir) : null;`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `        logEvent('warn', 'skill-quarantine', \`${'${name}'}: ${'${failures.map(failure => failure.message).join("; ")}'}\`)\n        return { ok: false, quarantined: true, reason: \`插件返回了无效的 Skill 元数据，已自动隔离；对话可继续使用。 / The plugin returned invalid Skill metadata and was quarantined; conversations can continue. ${'${failures[0].message}'}\` }`
+        : `                logEvent('warn', 'skill-quarantine', \`${'${name}'}: ${'${failures.map(failure => failure.message).join("; ")}'}\`);\n                return { ok: false, quarantined: true, reason: \`插件返回了无效的 Skill 元数据，已自动隔离；对话可继续使用。 / The plugin returned invalid Skill metadata and was quarantined; conversations can continue. ${'${failures[0].message}'}\` };`,
+      ts
+        ? `        logEvent('warn', 'skill-quarantine', \`${'${name}'}: ${'${failures.map(failure => failure.message).join("; ")}'}\`)\n        if (managedBefore !== null) cleanupNewManagedArtifacts(dir, managedBefore)\n        return { ok: false, quarantined: true, reason: \`插件返回了无效的 Skill 元数据，已自动隔离；对话可继续使用。 / The plugin returned invalid Skill metadata and was quarantined; conversations can continue. ${'${failures[0].message}'}\` }`
+        : `                logEvent('warn', 'skill-quarantine', \`${'${name}'}: ${'${failures.map(failure => failure.message).join("; ")}'}\`);\n                if (managedBefore !== null) cleanupNewManagedArtifacts(dir, managedBefore);\n                return { ok: false, quarantined: true, reason: \`插件返回了无效的 Skill 元数据，已自动隔离；对话可继续使用。 / The plugin returned invalid Skill metadata and was quarantined; conversations can continue. ${'${failures[0].message}'}\` };`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `      clearSkillQuarantine(dir, skillQuarantines, name)\n    }\n    writeMarketState(dir, { disabled, groups, groupOrder })`
+        : `            clearSkillQuarantine(dir, skillQuarantines, name);\n        }\n        writeMarketState(dir, { disabled, groups, groupOrder });`,
+      ts
+        ? `      clearSkillQuarantine(dir, skillQuarantines, name)\n    }\n    if (managedBefore !== null) {\n      const artifacts = ok\n        ? recordManagedArtifacts(dir, [name], managedBefore)\n        : cleanupNewManagedArtifacts(dir, managedBefore)\n      const changed = [...(artifacts.recorded ?? []), ...(artifacts.removed ?? [])]\n      if (changed.length > 0) logEvent('info', 'artifact-ownership', \`${'${name}'}: ${'${changed.join(", ")}'}\`)\n    }\n    writeMarketState(dir, { disabled, groups, groupOrder })`
+        : `            clearSkillQuarantine(dir, skillQuarantines, name);\n        }\n        if (managedBefore !== null) {\n            const artifacts = ok\n                ? recordManagedArtifacts(dir, [name], managedBefore)\n                : cleanupNewManagedArtifacts(dir, managedBefore);\n            const changed = [...(artifacts.recorded ?? []), ...(artifacts.removed ?? [])];\n            if (changed.length > 0)\n                logEvent('info', 'artifact-ownership', \`${'${name}'}: ${'${changed.join(", ")}'}\`);\n        }\n        writeMarketState(dir, { disabled, groups, groupOrder });`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `            const manifestBefore = readManifestDeps(config.profile, activeProfileDir)\n            const bundlesBefore = readProfileBundles(activeProfileDir)\n            const result = await runPlugin(config.profile, ['add', target])`
+        : `                        const manifestBefore = readManifestDeps(config.profile, activeProfileDir);\n                        const bundlesBefore = readProfileBundles(activeProfileDir);\n                        const result = await runPlugin(config.profile, ['add', target]);`,
+      ts
+        ? `            const manifestBefore = readManifestDeps(config.profile, activeProfileDir)\n            const bundlesBefore = readProfileBundles(activeProfileDir)\n            const managedBefore = snapshotManagedArtifacts(activeProfileDir)\n            const result = await runPlugin(config.profile, ['add', target])`
+        : `                        const manifestBefore = readManifestDeps(config.profile, activeProfileDir);\n                        const bundlesBefore = readProfileBundles(activeProfileDir);\n                        const managedBefore = snapshotManagedArtifacts(activeProfileDir);\n                        const result = await runPlugin(config.profile, ['add', target]);`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `            logEvent(ok || cancelled ? 'info' : 'error', 'install',`
+        : `                        logEvent(ok || cancelled ? 'info' : 'error', 'install',`,
+      ts
+        ? `            const artifactResult = ok && addedPackages.length > 0\n              ? recordManagedArtifacts(activeProfileDir, addedPackages, managedBefore)\n              : cleanupNewManagedArtifacts(activeProfileDir, managedBefore)\n            const artifactChanges = [...(artifactResult.recorded ?? []), ...(artifactResult.removed ?? [])]\n            if (artifactChanges.length > 0) logEvent('info', 'artifact-cleanup', \`${'${target}'}: ${'${artifactChanges.join(", ")}'}\`)\n            logEvent(ok || cancelled ? 'info' : 'error', 'install',`
+        : `                        const artifactResult = ok && addedPackages.length > 0\n                            ? recordManagedArtifacts(activeProfileDir, addedPackages, managedBefore)\n                            : cleanupNewManagedArtifacts(activeProfileDir, managedBefore);\n                        const artifactChanges = [...(artifactResult.recorded ?? []), ...(artifactResult.removed ?? [])];\n                        if (artifactChanges.length > 0)\n                            logEvent('info', 'artifact-cleanup', \`${'${target}'}: ${'${artifactChanges.join(", ")}'}\`);\n                        logEvent(ok || cancelled ? 'info' : 'error', 'install',`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `            let hot = false\n            if (ok) {`
+        : `                        let hot = false;\n                        if (ok) {`,
+      ts
+        ? `            let hot = false\n            let artifactCleanup = { removed: [], released: [], errors: [] }\n            if (ok) {`
+        : `                        let hot = false;\n                        let artifactCleanup = { removed: [], released: [], errors: [] };\n                        if (ok) {`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `              writeMarketState(activeProfileDir, { disabled, groups, groupOrder })\n            }\n            logEvent(ok || cancelled ? 'info' : 'error', 'uninstall',`
+        : `                            writeMarketState(activeProfileDir, { disabled, groups, groupOrder });\n                        }\n                        logEvent(ok || cancelled ? 'info' : 'error', 'uninstall',`,
+      ts
+        ? `              writeMarketState(activeProfileDir, { disabled, groups, groupOrder })\n              clearSkillQuarantine(activeProfileDir, skillQuarantines, name)\n              artifactCleanup = cleanupOwnedArtifacts(activeProfileDir, name)\n              if (artifactCleanup.removed.length > 0) logEvent('info', 'artifact-cleanup', \`${'${name}'}: removed ${'${artifactCleanup.removed.join(", ")}'}\`)\n            }\n            logEvent(ok || cancelled ? 'info' : 'error', 'uninstall',`
+        : `                            writeMarketState(activeProfileDir, { disabled, groups, groupOrder });\n                            clearSkillQuarantine(activeProfileDir, skillQuarantines, name);\n                            artifactCleanup = cleanupOwnedArtifacts(activeProfileDir, name);\n                            if (artifactCleanup.removed.length > 0)\n                                logEvent('info', 'artifact-cleanup', \`${'${name}'}: removed ${'${artifactCleanup.removed.join(", ")}'}\`);\n                        }\n                        logEvent(ok || cancelled ? 'info' : 'error', 'uninstall',`,
+      file,
+    )
+
+    source = replaceOnce(
+      source,
+      ts
+        ? `              hot,\n              partial: cancelDiff?.partial,`
+        : `                            hot,\n                            partial: cancelDiff?.partial,`,
+      ts
+        ? `              hot,\n              cleanup: artifactCleanup,\n              partial: cancelDiff?.partial,`
+        : `                            hot,\n                            cleanup: artifactCleanup,\n                            partial: cancelDiff?.partial,`,
+      file,
+    )
+
     writeFileSync(file, source)
   }
 }
@@ -440,6 +558,7 @@ export function applyDshmarketDesktopPatch(marketDir) {
     patchSkillHealth(marketDir)
     completeSkillHealthPatch(marketDir)
     patchSkillHealthClient(marketDir)
+    patchManagedArtifactCleanup(marketDir)
     return
   }
 
@@ -503,4 +622,5 @@ function shouldRetryWithoutProxy(args, result, proxy) {
   patchSkillHealth(marketDir)
   completeSkillHealthPatch(marketDir)
   patchSkillHealthClient(marketDir)
+  patchManagedArtifactCleanup(marketDir)
 }

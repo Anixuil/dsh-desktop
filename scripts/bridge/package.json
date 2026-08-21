@@ -9,6 +9,9 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "dsh": {
     "client": {
       "platform": "web",

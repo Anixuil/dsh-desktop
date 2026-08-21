@@ -3,6 +3,7 @@ const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { BalancePanel } = require('./balance-panel.js');
+const { fmtQuantity } = require('./helpers.js');
 
 const noopSub = () => () => {};
 const SELECTED_PROVIDER_KEY = "dsh-desktop:selected-balance-provider";
@@ -38,6 +39,11 @@ function activeProvider(providers, selection, selectedProviderId) {
 /** Card amount text for one provider entry, or null when unavailable. */
 function providerAmount(provider) {
   if (!provider || !provider.configured) return null;
+  const primaryPlan = Array.isArray(provider.plans) ? provider.plans[0] : null;
+  if (Number.isFinite(primaryPlan?.remaining)) {
+    return `${fmtQuantity(primaryPlan.remaining)} ${primaryPlan.unit ?? ""}`.trim();
+  }
+  if (provider.plans_error) return null;
   if (provider.kind === "balance") {
     const info = provider.balance?.balance_infos?.[0];
     if (info && provider.balance?.is_available !== false) {
@@ -186,7 +192,9 @@ function BalanceBadge(props) {
   const off = providers === null
     ? (!balance || balance.configured === false)
     : !providers.some((p) => p.configured);
-  const amountLabel = active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
+  const amountLabel = (Array.isArray(active?.plans) && active.plans.length > 0) || active?.plans_error
+    ? t("badge.plan")
+    : active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
 
   return jsxs("div", {
     ref: bindFooterItem,

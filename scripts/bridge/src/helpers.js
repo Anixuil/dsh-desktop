@@ -21,6 +21,26 @@ function fmtDate(ms) {
   const d = new Date(ms);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
+function fmtQuantity(value) {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return (value / 1e9).toFixed(2).replace(/\.00$/, "") + "B";
+  if (abs >= 1e6) return (value / 1e6).toFixed(2).replace(/\.00$/, "") + "M";
+  if (abs >= 1e3) return (value / 1e3).toFixed(2).replace(/\.00$/, "") + "K";
+  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+function fmtIsoDate(value) {
+  if (typeof value !== "string" || value.length === 0) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function fmtIsoDateTime(value) {
+  if (typeof value !== "string" || value.length === 0) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 /** Approximate cost from the DeepSeek public price list (USD / 1M tokens).
  *  The V4 series moved to peak/off-peak tiers (effective 2026-08-17, CNY per
@@ -60,4 +80,4 @@ function estimateCost(report) {
   return cost;
 }
 
-module.exports = { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost };
+module.exports = { fmtTokens, fmtMoney, fmtUsd, fmtDate, fmtQuantity, fmtIsoDate, fmtIsoDateTime, estimateCost };

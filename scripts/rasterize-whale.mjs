@@ -11,6 +11,10 @@ const svg = readFileSync(svgPath, 'utf8');
 const m = svg.match(/<path[^>]*\sd="([^"]+)"/);
 if (!m) throw new Error('path not found');
 const d = m[1];
+const fillMatch = svg.match(/<path[^>]*\sfill="#[0-9a-f]{6}"/i);
+if (!fillMatch) throw new Error('path fill not found');
+const fill = fillMatch[0].match(/#([0-9a-f]{6})/i)[1];
+const color = [0, 2, 4].map((offset) => Number.parseInt(fill.slice(offset, offset + 2), 16));
 
 // ---- parse path (uppercase M/C/Z only — the favicon uses that) ----
 const tokens = d.match(/[MZC]|-?\d*\.?\d+(?:e-?\d+)?/gi) ?? [];
@@ -65,7 +69,10 @@ for (let y = 0; y < S; y++) {
     if (inside && x1 >= x0) {
       for (let px = x0; px <= x1; px++) {
         const o = (y * S + px) * 4;
-        buf[o] = 0; buf[o + 1] = 0; buf[o + 2] = 0; buf[o + 3] = 255;
+        buf[o] = color[0];
+        buf[o + 1] = color[1];
+        buf[o + 2] = color[2];
+        buf[o + 3] = 255;
       }
     }
     inside = !inside;

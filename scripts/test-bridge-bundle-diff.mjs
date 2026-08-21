@@ -94,13 +94,15 @@ if (typeof factory !== 'function') throw new Error('client bundle never register
 const result = factory(sandbox.require);
 result.apply(mockCtx);
 
-if (registrations.length !== 5) throw new Error(`expected 5 registrations, got ${registrations.length}`);
+if (registrations.length !== 7) throw new Error(`expected 7 registrations, got ${registrations.length}`);
 const balanceReg = registrations.find((r) => r.slotName === 'sidebar.footer.action');
 const aboutReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'about');
 const remoteReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'remote-access');
 const appearanceReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'appearance');
+const modelBehaviorReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'model-behavior');
 const pluginNetworkReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'plugin-network');
-if (!balanceReg || !aboutReg || !remoteReg || !appearanceReg || !pluginNetworkReg) throw new Error(`missing bridge registrations: ${registrations.map((r) => r.slotName).join(', ')}`);
+const builtinPluginsReg = registrations.find((r) => r.slotName === 'settings.section' && r.reg.id === 'builtin-plugins');
+if (!balanceReg || !aboutReg || !remoteReg || !appearanceReg || !modelBehaviorReg || !pluginNetworkReg || !builtinPluginsReg) throw new Error(`missing bridge registrations: ${registrations.map((r) => r.slotName).join(', ')}`);
 const { reg, component } = balanceReg;
 if (reg.order !== Number.MAX_SAFE_INTEGER) {
   throw new Error(`balance must remain the final footer action, got order ${reg.order}`);
@@ -151,6 +153,10 @@ if (appearanceReg.reg.id !== 'appearance' || appearanceReg.reg.order !== 5) {
   throw new Error(`appearance registration mismatch: ${JSON.stringify(appearanceReg.reg)}`);
 }
 console.log('appearance settings.section registration ok (id=appearance, order=5)');
+if (modelBehaviorReg.reg.id !== 'model-behavior' || modelBehaviorReg.reg.order !== 4) {
+  throw new Error(`model-behavior registration mismatch: ${JSON.stringify(modelBehaviorReg.reg)}`);
+}
+console.log('model-behavior settings.section registration ok (id=model-behavior, order=4)');
 if (pluginNetworkReg.reg.id !== 'plugin-network' || pluginNetworkReg.reg.order !== 12) {
   throw new Error(`plugin-network registration mismatch: ${JSON.stringify(pluginNetworkReg.reg)}`);
 }

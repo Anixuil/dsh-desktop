@@ -1,7 +1,7 @@
 // dsh-desktop-bridge — 外观与动效 (Appearance & motion) settings section.
 //
 // Registered as a native settings page (`settings.section`, id "appearance"):
-// a two-way motion-intensity picker (安静 / 丰富) backed by the desktop
+// a three-way appearance picker (DSH 默认 / 安静 / 丰富) backed by the desktop
 // shell's persisted config. GETs /desktop/motion on mount and POSTs
 // /desktop/motion-save on change, so no cross-origin call from the remote dsh
 // page is ever made — the same bridge proxy contract used by remote-access.
@@ -22,8 +22,15 @@ async function getJson(path, init) {
 
 /** Pure render layer: props in, section markup out (no fetch, no effects). */
 function AppearanceSectionView(props) {
-  const { t, motion, loadError, busy, notice, onChange } = props;
-  const value = motion === 'quiet' ? 'quiet' : 'rich';
+  const {
+    t, motion, loadError, busy, notice, onChange,
+    notificationMode, notificationBusy, testBusy, notificationNotice,
+    onNotificationChange, onNotificationTest,
+  } = props;
+  const value = ['default', 'quiet', 'rich'].includes(motion) ? motion : 'rich';
+  const notifyValue = ['off', 'unfocused', 'always'].includes(notificationMode)
+    ? notificationMode
+    : 'unfocused';
   const segCls = (active) => 'dbb_segBtn' + (active ? ' dbb_segActive' : '');
 
   return jsxs('section', {
@@ -39,6 +46,15 @@ function AppearanceSectionView(props) {
           role: 'radiogroup',
           'aria-label': t('appearance.motionLabel'),
           children: [
+            jsx('button', {
+              type: 'button',
+              role: 'radio',
+              'aria-checked': value === 'default',
+              className: segCls(value === 'default'),
+              disabled: busy,
+              onClick: () => onChange('default'),
+              children: t('appearance.motionDefault'),
+            }),
             jsx('button', {
               type: 'button',
               role: 'radio',
@@ -67,6 +83,53 @@ function AppearanceSectionView(props) {
             })
           : null,
       ] }),
+      jsxs('div', { className: 'dbb_aboutCard', children: [
+        jsx('span', { className: 'dbb_remoteLabel', children: t('appearance.notificationLabel') }),
+        jsxs('div', {
+          className: 'dbb_seg dbb_notificationSeg',
+          role: 'radiogroup',
+          'aria-label': t('appearance.notificationLabel'),
+          children: [
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'off',
+              className: segCls(notifyValue === 'off'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('off'),
+              children: t('appearance.notificationOff'),
+            }),
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'unfocused',
+              className: segCls(notifyValue === 'unfocused'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('unfocused'),
+              children: t('appearance.notificationUnfocused'),
+            }),
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'always',
+              className: segCls(notifyValue === 'always'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('always'),
+              children: t('appearance.notificationAlways'),
+            }),
+          ],
+        }),
+        jsx('p', { className: 'dbb_note', children: t('appearance.notificationHint') }),
+        jsxs('div', { className: 'dbb_aboutActions', children: [
+          jsx('button', {
+            type: 'button',
+            className: 'dbb_aboutSecondary',
+            disabled: notificationBusy || testBusy,
+            onClick: onNotificationTest,
+            children: testBusy ? t('appearance.notificationTesting') : t('appearance.notificationTest'),
+          }),
+        ] }),
+        notificationNotice?.kind === 'ok'
+          ? jsx('p', { className: 'dbb_aboutStatus', role: 'status', children: notificationNotice.text })
+          : null,
+      ] }),
     ],
   });
 }
@@ -78,6 +141,11 @@ function AppearanceSection(props) {
   const [loadError, setLoadError] = react.useState(null);
   const [busy, setBusy] = react.useState(false);
   const [notice, setNotice] = react.useState(null);
+  const [notificationMode, setNotificationMode] = react.useState(null);
+  const [notificationBusy, setNotificationBusy] = react.useState(false);
+  const [testBusy, setTestBusy] = react.useState(false);
+  const [notificationNotice, setNotificationNotice] = react.useState(null);
+  const [notificationError, setNotificationError] = react.useState(null);
 
   react.useEffect(() => {
     ensureStyles();
@@ -85,7 +153,7 @@ function AppearanceSection(props) {
     getJson('/desktop/motion')
       .then((payload) => {
         if (cancelled) return;
-        setMotion(payload?.motion === 'quiet' ? 'quiet' : 'rich');
+        setMotion(['default', 'quiet', 'rich'].includes(payload?.motion) ? payload.motion : 'rich');
         setLoadError(null);
       })
       .catch((e) => {
@@ -94,8 +162,28 @@ function AppearanceSection(props) {
     return () => { cancelled = true; };
   }, []);
 
+  react.useEffect(() => {
+    let cancelled = false;
+    getJson('/desktop/notifications')
+      .then((payload) => {
+        if (cancelled) return;
+        setNotificationMode(['off', 'unfocused', 'always'].includes(payload?.mode) ? payload.mode : 'unfocused');
+        setNotificationError(null);
+      })
+      .catch((e) => {
+        if (!cancelled) setNotificationError(String(e?.message ?? e));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   react.useEffect(() => { if (loadError !== null) showMessage(`${t('appearance.offline')}（${loadError}）`); }, [loadError, t]);
   react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
+  react.useEffect(() => {
+    if (notificationError !== null) showMessage(`${t('appearance.notificationOffline')}（${notificationError}）`);
+  }, [notificationError, t]);
+  react.useEffect(() => {
+    if (notificationNotice?.kind === 'err') showMessage(notificationNotice.text);
+  }, [notificationNotice]);
 
   const onChange = async (next) => {
     if (busy) return;
@@ -117,6 +205,40 @@ function AppearanceSection(props) {
     }
   };
 
+  const onNotificationChange = async (next) => {
+    if (notificationBusy || testBusy) return;
+    const previous = notificationMode;
+    setNotificationMode(next);
+    setNotificationNotice(null);
+    setNotificationBusy(true);
+    try {
+      await getJson('/desktop/notifications-save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: next }),
+      });
+    } catch (e) {
+      setNotificationMode(previous);
+      setNotificationNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally {
+      setNotificationBusy(false);
+    }
+  };
+
+  const onNotificationTest = async () => {
+    if (notificationBusy || testBusy) return;
+    setNotificationNotice(null);
+    setTestBusy(true);
+    try {
+      await getJson('/desktop/notifications-test', { method: 'POST' });
+      setNotificationNotice({ kind: 'ok', text: t('appearance.notificationTestSent') });
+    } catch (e) {
+      setNotificationNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   return jsx(AppearanceSectionView, {
     t,
     motion,
@@ -124,6 +246,12 @@ function AppearanceSection(props) {
     busy,
     notice,
     onChange,
+    notificationMode,
+    notificationBusy,
+    testBusy,
+    notificationNotice,
+    onNotificationChange,
+    onNotificationTest,
   });
 }
 

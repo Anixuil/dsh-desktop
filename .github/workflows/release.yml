@@ -1,0 +1,79 @@
+name: Windows Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci --cache .npm-cache
+
+      - name: Verify tag and release version
+        run: node scripts/verify-release.mjs --tag=${{ github.ref_name }} --online
+
+      - name: Fetch latest dsh runtime
+        run: npm run fetch-runtime -- latest
+
+      - name: Rebuild bundled plugins
+        run: npm run build:plugins
+
+      - name: Verify embedded runtime
+        run: node scripts/verify-release.mjs --tag=${{ github.ref_name }} --runtime
+
+      - name: Run plugin and UI tests
+        run: npm run test:plugins
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Compile without bundling
+        run: npm run check
+
+      - name: Build runtime archive
+        run: npm run bundle-runtime
+
+      - name: Build, sign and publish Windows assets
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: DSH Desktop v__VERSION__
+          releaseBody: See the assets below to install or update DSH Desktop.
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true
+          updaterJsonKeepUniversal: false
+          args: --target x86_64-pc-windows-msvc
+
+      - name: Verify updater assets
+        shell: pwsh
+        run: |
+          $release = gh release view "${{ github.ref_name }}" --json assets | ConvertFrom-Json
+          $names = @($release.assets.name)
+          if (-not ($names -contains 'latest.json')) { throw 'latest.json is missing' }
+          if (-not ($names | Where-Object { $_ -like '*setup.exe' })) { throw 'NSIS setup.exe is missing' }
+          if (-not ($names | Where-Object { $_ -like '*.sig' })) { throw 'updater signature is missing' }
+          $manifest = Invoke-RestMethod "https://github.com/Anixuil/dsh-desktop/releases/download/${{ github.ref_name }}/latest.json"
+          if (-not $manifest.platforms.'windows-x86_64') { throw 'latest.json lacks windows-x86_64' }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -64,6 +64,18 @@ const css = `
 .dbb_balanceSub{flex-wrap:wrap;gap:4px 14px;margin-top:6px;display:flex}
 .dbb_kv{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dbb_kv b{color:var(--dsw-alias-label-secondary);font-weight:500;font-variant-numeric:tabular-nums}
+.dbb_planList{border-top:1px solid var(--dsw-alias-border-l2);margin-top:8px;padding-top:2px}
+.dbb_plan{padding:7px 0}
+.dbb_plan+.dbb_plan{border-top:1px solid var(--dsw-alias-border-l2)}
+.dbb_planHead{align-items:baseline;gap:10px;display:flex}
+.dbb_planName{color:var(--dsw-alias-label-primary);font-size:12px;font-weight:500;line-height:18px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dbb_planRemaining{color:var(--dsw-alias-state-business-primary);font-size:12px;font-weight:600;line-height:18px;font-variant-numeric:tabular-nums;white-space:nowrap;margin-left:auto}
+.dbb_planProduct{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dbb_planMetrics{flex-wrap:wrap;gap:2px 12px;margin-top:3px;display:flex}
+.dbb_planMetrics span{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;white-space:nowrap}
+.dbb_planMetrics b{color:var(--dsw-alias-label-secondary);font-weight:500;font-variant-numeric:tabular-nums}
+.dbb_planMore{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;padding:4px 0 6px}
+.dbb_planError{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:16px;margin-top:6px;overflow-wrap:anywhere}
 .dbb_badge{display:inline-flex;align-items:center;border-radius:999px;padding:1px 8px;font-size:11px;line-height:16px}
 .dbb_badgeOk{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent);color:var(--dsw-alias-state-success-primary)}
 .dbb_badgeWarn{background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent);color:var(--dsw-alias-state-warn-label)}
@@ -145,12 +157,80 @@ const css = `
 .dbb_networkName{color:var(--dsw-alias-label-secondary);font:12px/18px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-width:72px}
 .dbb_networkMeta{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+.dbb_builtin{box-sizing:border-box;width:min(720px,100%);color:var(--dsw-alias-label-primary);padding-bottom:84px;display:flex;flex-direction:column;gap:18px}
+.dbb_builtinHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+.dbb_builtinHeader>div{min-width:0}
+.dbb_builtinCount{flex:none;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover);border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
+.dbb_builtinGroup{display:flex;flex-direction:column;gap:7px}
+.dbb_builtinGroupTitle{margin:0 2px;color:var(--dsw-alias-label-caption);font-size:12px;font-weight:500;line-height:18px}
+.dbb_builtinList{overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-base)}
+.dbb_builtinRow{box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:92px;padding:14px 16px}
+.dbb_builtinRow+.dbb_builtinRow{border-top:1px solid var(--dsw-alias-border-l2)}
+.dbb_builtinCopy{min-width:0;display:flex;flex-direction:column;gap:3px}
+.dbb_builtinNameLine{display:flex;align-items:baseline;gap:8px;min-width:0}
+.dbb_builtinName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600;line-height:20px}
+.dbb_builtinVersion{color:var(--dsw-alias-label-caption);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dbb_builtinDescription{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dbb_builtinMeta{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+.dbb_builtinSwitch{position:relative;flex:none;display:grid;grid-template-columns:38px 48px;align-items:center;gap:9px;cursor:pointer}
+.dbb_builtinSwitch input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.dbb_builtinSwitchTrack{box-sizing:border-box;position:relative;width:38px;height:22px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-interactive-bg-hover-solid);transition:background .18s ease,border-color .18s ease}
+.dbb_builtinSwitchTrack:after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-base);box-shadow:0 1px 3px color-mix(in srgb,var(--dsw-alias-label-primary) 22%,transparent);transition:transform .18s ease}
+.dbb_builtinSwitch input:checked+.dbb_builtinSwitchTrack{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary)}
+.dbb_builtinSwitch input:checked+.dbb_builtinSwitchTrack:after{transform:translateX(16px)}
+.dbb_builtinSwitch input:focus-visible+.dbb_builtinSwitchTrack{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+.dbb_builtinSwitch input:disabled+.dbb_builtinSwitchTrack{opacity:.52}
+.dbb_builtinState{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;white-space:nowrap}
+.dbb_builtinFooter{position:sticky;z-index:2;bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:2px;padding:11px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 92%,transparent);box-shadow:var(--dsw-shadow-lv1);backdrop-filter:blur(14px)}
+.dbb_builtinRestartHint{min-width:0;margin:0;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+.dbb_builtinFooterVisible .dbb_builtinRestartHint{color:var(--dsw-alias-state-warn-label)}
+.dbb_builtinActions{flex:none;display:flex;align-items:center;gap:8px}
+.dbb_builtinTextButton{height:32px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-state-business-primary);font:inherit;font-size:12px;cursor:pointer}
+.dbb_builtinTextButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.dbb_builtinTextButton:disabled{opacity:.45;cursor:default}
+.dbb_builtinError{padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px}
+.dbb_builtinSkeleton{display:flex;flex-direction:column;gap:1px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:12px}
+.dbb_builtinSkeleton span{height:82px;background:var(--dsw-alias-interactive-bg-hover);opacity:.65}
+@media(max-width:640px){.dbb_builtinHeader{flex-direction:column;gap:10px}.dbb_builtinRow{align-items:flex-start;gap:12px;padding:13px 14px}.dbb_builtinSwitch{grid-template-columns:38px;justify-items:end}.dbb_builtinState{display:none}.dbb_builtinFooter{align-items:stretch;flex-direction:column}.dbb_builtinActions{justify-content:flex-end;flex-wrap:wrap}.dbb_builtinActions .dbb_aboutPrimary{white-space:nowrap}}
+@media(prefers-reduced-motion:reduce){.dbb_builtinSwitchTrack,.dbb_builtinSwitchTrack:after{transition:none}}
+
 .dbb_appearance{max-width:640px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:10px;display:flex}
 .dbb_seg{box-sizing:border-box;align-self:flex-start;gap:3px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-base);display:inline-flex}
 .dbb_segBtn{box-sizing:border-box;height:30px;font:inherit;cursor:pointer;color:var(--dsw-alias-label-secondary);background:0 0;border:none;border-radius:8px;align-items:center;gap:6px;padding:0 14px;font-size:13px;line-height:20px;display:inline-flex}
 .dbb_segBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dbb_segBtn:disabled{opacity:.5;cursor:default}
 .dbb_segBtn.dbb_segActive{background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);color:var(--dsw-alias-state-business-primary)}
+.dbb_notificationSeg{max-width:100%;flex-wrap:wrap}
+
+.dbb_modelBehavior{box-sizing:border-box;width:min(680px,100%);padding-bottom:36px;color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:12px}
+.dbb_modelCard{gap:8px}
+.dbb_modelFieldHead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dbb_modelLabel{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px}
+.dbb_modelCount{flex:none;color:var(--dsw-alias-label-caption);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.dbb_modelTextarea{box-sizing:border-box;width:100%;min-height:140px;resize:vertical;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-input-bg,var(--dsw-alias-bg-base));color:var(--dsw-alias-label-primary);font:13px/21px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dbb_modelTextarea::placeholder{color:var(--dsw-alias-label-caption)}
+.dbb_modelTextarea:focus,.dbb_modelNumber:focus{outline:2px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 24%,transparent);outline-offset:1px;border-color:var(--dsw-alias-state-business-primary)}
+.dbb_modelTemperatureHead{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.dbb_modelTemperatureHead>div{min-width:0}
+.dbb_modelSubcopy{margin:2px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dbb_modelToggle{flex:none;display:flex;align-items:center;gap:7px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:pointer}
+.dbb_modelToggle input{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}
+.dbb_modelTemperatureControls{display:grid;grid-template-columns:minmax(0,1fr) 72px;align-items:center;gap:14px;margin-top:6px}
+.dbb_modelTemperatureControls[aria-disabled=true]{opacity:.52}
+.dbb_modelRange{width:100%;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}
+.dbb_modelRange:disabled{cursor:default}
+.dbb_modelNumber{box-sizing:border-box;width:72px;height:34px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-input-bg,var(--dsw-alias-bg-base));color:var(--dsw-alias-label-primary);font:13px/20px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.dbb_modelScale{display:flex;justify-content:space-between;padding-right:86px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+.dbb_modelFooter{display:flex;align-items:center;justify-content:space-between;gap:18px;padding-top:2px}
+.dbb_modelApplyHint{max-width:420px;margin:0;color:var(--dsw-alias-label-caption);font-size:11px;line-height:17px}
+.dbb_modelFooter .dbb_aboutActions{flex:none;margin-top:0}
+.dbb_modelError{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;background:var(--dsw-alias-bg-base)}
+.dbb_modelError p{margin:0;color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px}
+.dbb_modelSkeleton{display:flex;flex-direction:column;gap:10px}
+.dbb_modelSkeleton span{height:116px;border-radius:12px;background:var(--dsw-alias-interactive-bg-hover);opacity:.7}
+.dbb_modelBehavior button:active:not(:disabled){transform:translateY(1px)}
+@media(max-width:640px){.dbb_modelTemperatureHead,.dbb_modelFooter{align-items:stretch;flex-direction:column}.dbb_modelToggle{align-self:flex-start}.dbb_modelFooter .dbb_aboutActions{justify-content:flex-end}.dbb_modelScale{padding-right:0}.dbb_modelTextarea{min-height:170px}}
+@media(prefers-reduced-motion:reduce){.dbb_modelBehavior button:active:not(:disabled){transform:none}}
 `;
 
 const TAG_ID = 'desktop-balance.css';
@@ -251,6 +331,26 @@ function fmtDate(ms) {
   const d = new Date(ms);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
+function fmtQuantity(value) {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return (value / 1e9).toFixed(2).replace(/\.00$/, "") + "B";
+  if (abs >= 1e6) return (value / 1e6).toFixed(2).replace(/\.00$/, "") + "M";
+  if (abs >= 1e3) return (value / 1e3).toFixed(2).replace(/\.00$/, "") + "K";
+  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+function fmtIsoDate(value) {
+  if (typeof value !== "string" || value.length === 0) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function fmtIsoDateTime(value) {
+  if (typeof value !== "string" || value.length === 0) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 /** Approximate cost from the DeepSeek public price list (USD / 1M tokens).
  *  The V4 series moved to peak/off-peak tiers (effective 2026-08-17, CNY per
@@ -290,7 +390,7 @@ function estimateCost(report) {
   return cost;
 }
 
-module.exports = { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost };
+module.exports = { fmtTokens, fmtMoney, fmtUsd, fmtDate, fmtQuantity, fmtIsoDate, fmtIsoDateTime, estimateCost };
 
 },
 "./locales.js": function (require, module, exports) {
@@ -299,6 +399,7 @@ module.exports = { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost };
 const zh = {
   "badge": "余额",
   "badge.usage": "消费",
+  "badge.plan": "套餐余量",
   "badge.unconfigured": "未配置 Key",
   "badge.offline": "余额组件不可用",
   "panel.title": "账户与用量",
@@ -317,6 +418,17 @@ const zh = {
   "balance.unsupported": "不支持",
   "balance.unsupportedNote": "该平台未提供可通过 API Key 查询的余额/账单接口",
   "balance.folded": "未获取到余额/账单的平台（{count}）",
+  "plan.accountBalance": "账户余额",
+  "plan.used": "已用",
+  "plan.total": "总量",
+  "plan.remaining": "剩余",
+  "plan.resets": "重置",
+  "plan.noActiveWindow": "当前无活跃窗口",
+  "plan.recentUsage": "近 30 天",
+  "plan.expires": "到期",
+  "plan.more": "另有 {count} 个生效套餐",
+  "plan.partial": "套餐信息受限",
+  "plan.limited": "受限",
   "usage.totalUsage": "累计消费",
   "usage.status": "账户状态",
   "usage.active": "可用",
@@ -353,12 +465,46 @@ const zh = {
   "session.untitled": "(未命名会话)",
   "appearance.nav": "外观与动效",
   "appearance.title": "外观与动效",
-  "appearance.intro": "控制主界面的海洋氛围动效强度，更改立即生效并保存在本机。",
-  "appearance.motionLabel": "动效强度",
+  "appearance.intro": "选择 DSH 原生外观，或启用桌面端的海洋外观与动效。更改立即生效并保存在本机。",
+  "appearance.motionLabel": "外观与动效",
+  "appearance.motionDefault": "DSH 默认",
   "appearance.motionQuiet": "安静",
   "appearance.motionRich": "丰富",
-  "appearance.hint": "安静：隐藏主界面的波浪波纹，只保留必要的过渡与交互反馈；丰富：完整的海洋氛围动效（光斑漂移、波浪、气泡、主题过渡）。",
+  "appearance.hint": "DSH 默认：使用原生配色与交互；安静：使用海洋外观，隐藏波浪与气泡，只保留必要反馈；丰富：启用完整的海洋外观与氛围动效。",
   "appearance.offline": "无法连接桌面壳服务",
+  "appearance.notificationLabel": "任务完成通知",
+  "appearance.notificationOff": "关闭",
+  "appearance.notificationUnfocused": "窗口未聚焦时",
+  "appearance.notificationAlways": "始终",
+  "appearance.notificationHint": "默认仅在你没有查看该任务时显示 Windows 系统通知。通知会显示会话标题，系统勿扰模式可能阻止通知出现。",
+  "appearance.notificationTest": "发送测试通知",
+  "appearance.notificationTesting": "正在发送...",
+  "appearance.notificationTestSent": "测试通知已发送。",
+  "appearance.notificationOffline": "无法读取任务通知设置",
+  "modelBehavior.nav": "模型行为",
+  "modelBehavior.title": "模型行为",
+  "modelBehavior.intro": "统一设置所有普通对话的全局规则和生成随机性。保存后从下一次模型调用开始生效。",
+  "modelBehavior.promptLabel": "自定义系统提示词",
+  "modelBehavior.promptPlaceholder": "例如：默认使用简体中文回答；技术术语保留英文；先给结论，再说明原因。",
+  "modelBehavior.promptHint": "内容会作为全局规则追加到 DSH 内置提示词中，不会移除工具、安全规则和运行上下文。使用完全覆盖提示词的 Agent 预设不受此项影响。",
+  "modelBehavior.promptCount": "{count} / {max}",
+  "modelBehavior.temperatureLabel": "模型温度",
+  "modelBehavior.temperatureHint": "数值越低越稳定，越高越有发散性。",
+  "modelBehavior.temperatureValue": "温度数值",
+  "modelBehavior.custom": "自定义",
+  "modelBehavior.modelDefault": "模型默认",
+  "modelBehavior.precise": "稳定 0.0",
+  "modelBehavior.balanced": "均衡 1.0",
+  "modelBehavior.creative": "发散 2.0",
+  "modelBehavior.compatibility": "部分模型会忽略温度，或不接受非默认温度。遇到模型兼容性错误时，请切回“模型默认”。",
+  "modelBehavior.applyHint": "当前正在生成的回复不会改变，后续模型调用会使用新设置。",
+  "modelBehavior.reset": "恢复默认",
+  "modelBehavior.save": "保存设置",
+  "modelBehavior.saving": "正在保存...",
+  "modelBehavior.saved": "模型行为设置已保存。",
+  "modelBehavior.loading": "正在读取模型行为设置",
+  "modelBehavior.offline": "无法读取模型行为设置",
+  "modelBehavior.retry": "重试",
   "pluginNetwork.nav": "插件下载网络",
   "pluginNetwork.title": "插件下载网络",
   "pluginNetwork.intro": "为插件市场配置稳定的下载线路。GitHub 源码插件依赖代理；npm 源只影响已发布到 npm 的插件。",
@@ -379,6 +525,40 @@ const zh = {
   "pluginNetwork.ok": "可用",
   "pluginNetwork.failed": "失败",
   "pluginNetwork.offline": "无法连接桌面壳服务",
+  "builtinPlugins.nav": "内置插件",
+  "builtinPlugins.title": "内置插件",
+  "builtinPlugins.intro": "控制桌面端随附功能。插件文件和已有数据会保留，应用修改后 DSH 服务将重启一次。",
+  "builtinPlugins.count": "已开启 {enabled} / {total}",
+  "builtinPlugins.group.desktop": "桌面增强",
+  "builtinPlugins.group.services": "扩展服务",
+  "builtinPlugins.sourceDesktop": "桌面内置",
+  "builtinPlugins.sourceThirdParty": "内置第三方",
+  "builtinPlugins.sourceUser": "复用用户版本",
+  "builtinPlugins.controlPlane": "保留基础设置连接",
+  "builtinPlugins.on": "已开启",
+  "builtinPlugins.off": "已关闭",
+  "builtinPlugins.toggle": "切换{name}",
+  "builtinPlugins.enableAll": "全部开启",
+  "builtinPlugins.cancel": "取消",
+  "builtinPlugins.apply": "应用并重启 DSH",
+  "builtinPlugins.applying": "正在应用…",
+  "builtinPlugins.restarting": "设置已保存，正在重启 DSH…",
+  "builtinPlugins.pending": "有未应用的修改。当前对话可能在重启时短暂断开。",
+  "builtinPlugins.restartHint": "修改会批量保存，只重启一次 DSH 服务。",
+  "builtinPlugins.loading": "正在读取内置插件",
+  "builtinPlugins.offline": "无法读取内置插件状态",
+  "builtinPlugins.dsh-desktop-bridge.name": "桌面集成",
+  "builtinPlugins.dsh-desktop-bridge.description": "账户用量、状态动效、远程访问和桌面设置集成。",
+  "builtinPlugins.dsh-desktop-session-manager.name": "会话管理",
+  "builtinPlugins.dsh-desktop-session-manager.description": "查看会话、恢复归档和永久删除会话。",
+  "builtinPlugins.dsh-desktop-change-history.name": "变更历史",
+  "builtinPlugins.dsh-desktop-change-history.description": "追踪文件修改，查看 diff、审批和回滚。",
+  "builtinPlugins.dsh-desktop-file-upload.name": "文件上传",
+  "builtinPlugins.dsh-desktop-file-upload.description": "对话内上传、暂存和预览文件。",
+  "builtinPlugins.dsh-vision-any.name": "视觉识别",
+  "builtinPlugins.dsh-vision-any.description": "粘贴和预览图片，并调用已配置的视觉模型。",
+  "builtinPlugins.dshmarket.name": "插件市场",
+  "builtinPlugins.dshmarket.description": "浏览、安装、更新和卸载社区插件。",
   "about.nav": "关于",
   "about.title": "关于",
   "about.intro": "DeepSeek Harness 的 Windows 桌面壳，由 Anixuil 开发维护。",
@@ -391,7 +571,7 @@ const zh = {
   "about.check": "检查更新",
   "about.checking": "正在检查更新…",
   "about.repoBtn": "访问 GitHub 仓库",
-  "about.release": "前往 Releases 下载新版本",
+  "about.release": "查看 Release 说明",
   "about.latest": "当前已是最新版本",
   "about.appUpdate": "应用有新版本 {version}",
   "about.dshUpdate": "dsh 内核有新版本 {version}",
@@ -440,6 +620,7 @@ const zh = {
 const en = {
   "badge": "Balance",
   "badge.usage": "Usage",
+  "badge.plan": "Plan remaining",
   "badge.unconfigured": "No key configured",
   "badge.offline": "Balance widget unavailable",
   "panel.title": "Account & Usage",
@@ -458,6 +639,17 @@ const en = {
   "balance.unsupported": "Unsupported",
   "balance.unsupportedNote": "This platform exposes no key-accessible balance/billing endpoint",
   "balance.folded": "Platforms with no balance/billing data ({count})",
+  "plan.accountBalance": "Account balance",
+  "plan.used": "Used",
+  "plan.total": "Total",
+  "plan.remaining": "Remaining",
+  "plan.resets": "Resets",
+  "plan.noActiveWindow": "No active window",
+  "plan.recentUsage": "Last 30 days",
+  "plan.expires": "Expires",
+  "plan.more": "{count} more active plans",
+  "plan.partial": "Plan information is limited",
+  "plan.limited": "Limited",
   "usage.totalUsage": "Total usage",
   "usage.status": "Account status",
   "usage.active": "Active",
@@ -494,12 +686,46 @@ const en = {
   "session.untitled": "(untitled session)",
   "appearance.nav": "Appearance & Motion",
   "appearance.title": "Appearance & Motion",
-  "appearance.intro": "Control the ocean ambient motion intensity of the main window. Changes apply instantly and are stored locally.",
-  "appearance.motionLabel": "Motion intensity",
+  "appearance.intro": "Use DSH's native appearance, or enable Desktop's ocean appearance and motion. Changes apply instantly and are stored locally.",
+  "appearance.motionLabel": "Appearance and motion",
+  "appearance.motionDefault": "DSH Default",
   "appearance.motionQuiet": "Quiet",
   "appearance.motionRich": "Rich",
-  "appearance.hint": "Quiet: hide the main window's waves and keep only essential transitions and interaction feedback; Rich: the full ocean ambient set (drifting glows, waves, bubbles, theme transitions).",
+  "appearance.hint": "DSH Default: native colors and interactions; Quiet: ocean appearance without waves and bubbles, keeping essential feedback; Rich: the full ocean appearance and ambient motion.",
   "appearance.offline": "Desktop shell service unavailable",
+  "appearance.notificationLabel": "Task completion notifications",
+  "appearance.notificationOff": "Off",
+  "appearance.notificationUnfocused": "When not focused",
+  "appearance.notificationAlways": "Always",
+  "appearance.notificationHint": "By default, Windows notifies you only when you are not viewing the completed task. The notification includes the session title, and system Do Not Disturb may suppress it.",
+  "appearance.notificationTest": "Send test notification",
+  "appearance.notificationTesting": "Sending...",
+  "appearance.notificationTestSent": "Test notification sent.",
+  "appearance.notificationOffline": "Task notification settings unavailable",
+  "modelBehavior.nav": "Model Behavior",
+  "modelBehavior.title": "Model Behavior",
+  "modelBehavior.intro": "Set global instructions and generation randomness for standard conversations in one place. Changes apply from the next model call.",
+  "modelBehavior.promptLabel": "Custom system prompt",
+  "modelBehavior.promptPlaceholder": "Example: Reply in Simplified Chinese by default. Keep technical terms in English. Lead with the conclusion.",
+  "modelBehavior.promptHint": "This is appended to DSH's built-in prompt. Tools, safety rules, and runtime context remain intact. Agent presets that fully replace the prompt are unaffected.",
+  "modelBehavior.promptCount": "{count} / {max}",
+  "modelBehavior.temperatureLabel": "Model temperature",
+  "modelBehavior.temperatureHint": "Lower values are more consistent. Higher values allow more variation.",
+  "modelBehavior.temperatureValue": "Temperature value",
+  "modelBehavior.custom": "Custom",
+  "modelBehavior.modelDefault": "Model default",
+  "modelBehavior.precise": "Stable 0.0",
+  "modelBehavior.balanced": "Balanced 1.0",
+  "modelBehavior.creative": "Varied 2.0",
+  "modelBehavior.compatibility": "Some models ignore temperature or reject non-default values. Switch back to Model default if the provider reports a compatibility error.",
+  "modelBehavior.applyHint": "The response currently being generated will not change. Later model calls will use the new settings.",
+  "modelBehavior.reset": "Restore defaults",
+  "modelBehavior.save": "Save settings",
+  "modelBehavior.saving": "Saving...",
+  "modelBehavior.saved": "Model behavior settings saved.",
+  "modelBehavior.loading": "Loading model behavior settings",
+  "modelBehavior.offline": "Model behavior settings unavailable",
+  "modelBehavior.retry": "Retry",
   "pluginNetwork.nav": "Plugin download network",
   "pluginNetwork.title": "Plugin download network",
   "pluginNetwork.intro": "Configure a reliable route for the plugin market. GitHub-source plugins need a proxy; the npm registry only affects packages published to npm.",
@@ -520,6 +746,40 @@ const en = {
   "pluginNetwork.ok": "Ready",
   "pluginNetwork.failed": "Failed",
   "pluginNetwork.offline": "Desktop shell service unavailable",
+  "builtinPlugins.nav": "Built-in plugins",
+  "builtinPlugins.title": "Built-in plugins",
+  "builtinPlugins.intro": "Control the features bundled with Desktop. Plugin files and existing data are preserved, and DSH restarts once after changes are applied.",
+  "builtinPlugins.count": "{enabled} of {total} enabled",
+  "builtinPlugins.group.desktop": "Desktop enhancements",
+  "builtinPlugins.group.services": "Extension services",
+  "builtinPlugins.sourceDesktop": "Desktop built-in",
+  "builtinPlugins.sourceThirdParty": "Bundled third-party",
+  "builtinPlugins.sourceUser": "Using your version",
+  "builtinPlugins.controlPlane": "Basic settings connection retained",
+  "builtinPlugins.on": "Enabled",
+  "builtinPlugins.off": "Disabled",
+  "builtinPlugins.toggle": "Toggle {name}",
+  "builtinPlugins.enableAll": "Enable all",
+  "builtinPlugins.cancel": "Cancel",
+  "builtinPlugins.apply": "Apply and restart DSH",
+  "builtinPlugins.applying": "Applying…",
+  "builtinPlugins.restarting": "Settings saved. Restarting DSH…",
+  "builtinPlugins.pending": "You have unapplied changes. The current conversation may disconnect briefly during restart.",
+  "builtinPlugins.restartHint": "Changes are saved together and restart DSH only once.",
+  "builtinPlugins.loading": "Loading built-in plugins",
+  "builtinPlugins.offline": "Built-in plugin status is unavailable",
+  "builtinPlugins.dsh-desktop-bridge.name": "Desktop integration",
+  "builtinPlugins.dsh-desktop-bridge.description": "Account usage, status motion, remote access, and desktop settings integration.",
+  "builtinPlugins.dsh-desktop-session-manager.name": "Session manager",
+  "builtinPlugins.dsh-desktop-session-manager.description": "View sessions, restore archives, and permanently delete sessions.",
+  "builtinPlugins.dsh-desktop-change-history.name": "Change history",
+  "builtinPlugins.dsh-desktop-change-history.description": "Track file changes, inspect diffs, approve, and roll back.",
+  "builtinPlugins.dsh-desktop-file-upload.name": "File upload",
+  "builtinPlugins.dsh-desktop-file-upload.description": "Upload, stage, and preview files in conversations.",
+  "builtinPlugins.dsh-vision-any.name": "Vision",
+  "builtinPlugins.dsh-vision-any.description": "Paste and preview images, then use the configured vision model.",
+  "builtinPlugins.dshmarket.name": "Plugin market",
+  "builtinPlugins.dshmarket.description": "Browse, install, update, and remove community plugins.",
   "about.nav": "About",
   "about.title": "About",
   "about.intro": "The Windows desktop shell for DeepSeek Harness, built and maintained by Anixuil.",
@@ -532,7 +792,7 @@ const en = {
   "about.check": "Check for updates",
   "about.checking": "Checking for updates…",
   "about.repoBtn": "Open GitHub repository",
-  "about.release": "Download from Releases",
+  "about.release": "View Release notes",
   "about.latest": "You are up to date",
   "about.appUpdate": "App update {version} available",
   "about.dshUpdate": "dsh core update {version} available",
@@ -590,6 +850,7 @@ const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 const { BalancePanel } = require('./balance-panel.js');
+const { fmtQuantity } = require('./helpers.js');
 
 const noopSub = () => () => {};
 const SELECTED_PROVIDER_KEY = "dsh-desktop:selected-balance-provider";
@@ -625,6 +886,11 @@ function activeProvider(providers, selection, selectedProviderId) {
 /** Card amount text for one provider entry, or null when unavailable. */
 function providerAmount(provider) {
   if (!provider || !provider.configured) return null;
+  const primaryPlan = Array.isArray(provider.plans) ? provider.plans[0] : null;
+  if (Number.isFinite(primaryPlan?.remaining)) {
+    return `${fmtQuantity(primaryPlan.remaining)} ${primaryPlan.unit ?? ""}`.trim();
+  }
+  if (provider.plans_error) return null;
   if (provider.kind === "balance") {
     const info = provider.balance?.balance_infos?.[0];
     if (info && provider.balance?.is_available !== false) {
@@ -773,7 +1039,9 @@ function BalanceBadge(props) {
   const off = providers === null
     ? (!balance || balance.configured === false)
     : !providers.some((p) => p.configured);
-  const amountLabel = active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
+  const amountLabel = (Array.isArray(active?.plans) && active.plans.length > 0) || active?.plans_error
+    ? t("badge.plan")
+    : active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
 
   return jsxs("div", {
     ref: bindFooterItem,
@@ -830,7 +1098,7 @@ module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, Bala
 const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
-const { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost } = require('./helpers.js');
+const { fmtTokens, fmtMoney, fmtUsd, fmtDate, fmtQuantity, fmtIsoDate, fmtIsoDateTime, estimateCost } = require('./helpers.js');
 
 /** Pure render layer: props in, panel markup out (no fetch, no effects). */
 function BalancePanelView(props) {
@@ -852,6 +1120,7 @@ function BalancePanelView(props) {
     if (!p.configured) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("badge.unconfigured") });
     if (p.kind === "unsupported") return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("balance.unsupported") });
     if (p.error) return jsx("span", { className: "dbb_badge dbb_badgeErr", children: t("badge.offline") });
+    if (p.plans_error) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("plan.limited") });
     if (p.kind === "balance") {
       if (p.balance?.is_available === false) return jsx("span", { className: "dbb_badge dbb_badgeErr", children: t("balance.unavailable") });
       if (balance?.low === true) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("balance.low") });
@@ -864,13 +1133,30 @@ function BalancePanelView(props) {
   const providerCard = (p) => {
     const info = p.kind === "balance" ? p.balance?.balance_infos?.[0] : null;
     const usageData = p.kind === "usage" ? p.usage : null;
+    const plans = Array.isArray(p.plans) ? p.plans : [];
+    const primaryPlan = plans[0] ?? null;
     const unsupported = p.kind === "unsupported";
+    const planUnavailable = plans.length === 0 && typeof p.plans_error === "string" && p.plans_error.length > 0;
     const hasRemaining = Number.isFinite(usageData?.remaining);
-    const big = p.kind === "balance"
+    const hasPlanRemaining = Number.isFinite(primaryPlan?.remaining);
+    const primaryIsQuota = primaryPlan?.unit === "%" && Number.isFinite(primaryPlan?.used);
+    const big = planUnavailable
+      ? "—"
+      : primaryIsQuota
+      ? fmtQuantity(primaryPlan.used)
+      : hasPlanRemaining
+      ? fmtQuantity(primaryPlan.remaining)
+      : p.kind === "balance"
       ? info?.total_balance ?? "—"
       : hasRemaining ? usageData.remaining.toFixed(2)
         : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
-    const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
+    const cur = planUnavailable
+      ? ""
+      : primaryIsQuota
+      ? `% ${t("plan.used")}`
+      : hasPlanRemaining
+      ? primaryPlan?.unit ?? ""
+      : p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
     return jsxs("button", {
       type: "button",
       className: "dbb_card dbb_providerCard" + (p.id === selectedProviderId ? " dbb_selected" : ""),
@@ -887,7 +1173,35 @@ function BalancePanelView(props) {
           cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
         ] }),
         unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
-        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
+        plans.length > 0 && jsxs("div", { className: "dbb_planList", children: [
+          plans.slice(0, 3).map((plan) => {
+            const isQuota = plan.unit === "%" && Number.isFinite(plan.used);
+            return jsxs("div", { className: "dbb_plan", children: [
+            jsxs("div", { className: "dbb_planHead", children: [
+              jsx("span", { className: "dbb_planName", title: plan.name, children: plan.name }),
+              jsx("span", { className: "dbb_planRemaining", children: isQuota
+                ? `${fmtQuantity(plan.used)}% ${t("plan.used")}`
+                : `${fmtQuantity(plan.remaining)}${plan.unit ? ` ${plan.unit}` : ""}` })
+            ] }),
+            plan.product && jsx("div", { className: "dbb_planProduct", children: plan.product }),
+            jsxs("div", { className: "dbb_planMetrics", children: [
+              !isQuota && jsxs("span", { children: [t("plan.used"), " ", jsx("b", { children: fmtQuantity(plan.used) })] }),
+              !isQuota && jsxs("span", { children: [t("plan.total"), " ", jsx("b", { children: fmtQuantity(plan.total) })] }),
+              !isQuota && Number.isFinite(plan.period_usage) && jsxs("span", { children: [t("plan.recentUsage"), " ", jsx("b", { children: fmtQuantity(plan.period_usage) })] }),
+              !isQuota && plan.expires_at && jsxs("span", { children: [t("plan.expires"), " ", jsx("b", { children: fmtIsoDate(plan.expires_at) })] }),
+              isQuota && jsxs("span", { children: [t("plan.remaining"), " ", jsx("b", { children: `${fmtQuantity(plan.remaining)}%` })] }),
+              isQuota && jsx("span", { children: plan.expires_at
+                ? jsxs(Fragment, { children: [t("plan.resets"), " ", jsx("b", { children: fmtIsoDateTime(plan.expires_at) })] })
+                : t("plan.noActiveWindow") })
+            ] })
+          ] }, plan.id);
+          }),
+          plans.length > 3 && jsx("div", { className: "dbb_planMore", children: t("plan.more", { count: plans.length - 3 }) })
+        ] }),
+        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: (plans.length > 0 || planUnavailable) ? [
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("plan.accountBalance"), " ", jsx("b", { children: `${info.total_balance ?? "-"} ${info.currency ?? ""}`.trim() })] }) }),
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "-" })] }) })
+        ] : [
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
         ] }),
@@ -902,6 +1216,7 @@ function BalancePanelView(props) {
           ] }),
           jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
         ] }),
+        p.plans_error && jsx("div", { className: "dbb_planError", children: `${t("plan.partial")}: ${p.plans_error}` }),
         p.error && jsx("div", { className: "dbb_error", children: p.error })
       ]
     }, p.id);
@@ -910,7 +1225,9 @@ function BalancePanelView(props) {
   /** A provider card carries real data only when it actually returned a
    *  balance or a usage total — everything else is folded out of the main list. */
   const hasProviderData = (p) => Boolean(
-    (p && p.kind === "balance" && p.balance) || (p && p.kind === "usage" && p.usage),
+    (p && Array.isArray(p.plans) && p.plans.length > 0)
+      || (p && p.kind === "balance" && p.balance)
+      || (p && p.kind === "usage" && p.usage),
   );
 
   /** Compact row for the folded group: name + reason (+ error text, muted). */
@@ -1244,10 +1561,22 @@ async function getJson(path, init) {
 function AboutSectionView(props) {
   const { t, info, loadError, update, busy, notice, onOpen, onCheck } = props;
   const u = update?.status ?? null;
+  const core = u?.core ?? {
+    current: u?.dshCurrent,
+    latest: u?.dshLatest,
+    updateAvailable: u?.dshUpdateAvailable === true,
+  };
+  const shell = u?.shell ?? {
+    current: u?.appCurrent,
+    latest: u?.appLatest,
+    updateAvailable: u?.appUpdateAvailable === true,
+    releaseUrl: u?.appUrl,
+  };
 
   const parts = [];
-  if (u?.appUpdateAvailable === true) parts.push(t('about.appUpdate', { version: u.appLatest ?? '?' }));
-  if (u?.dshUpdateAvailable === true) parts.push(t('about.dshUpdate', { version: u.dshLatest ?? '?' }));
+  if (shell.updateAvailable === true) parts.push(t('about.appUpdate', { version: shell.latest ?? '?' }));
+  if (core.updateAvailable === true) parts.push(t('about.dshUpdate', { version: core.latest ?? '?' }));
+  if (u?.readiness?.ready === false && u.readiness.reason) parts.push(u.readiness.reason);
   const updateText = update?.checking === true
     ? t('about.checking')
     : update?.error !== undefined && update?.error !== null
@@ -1320,11 +1649,11 @@ function AboutSectionView(props) {
             children: t('about.repoBtn'),
           }),
         ] }),
-        u?.appUpdateAvailable === true && u?.appUrl
+        shell.updateAvailable === true && shell.releaseUrl
           ? jsx('button', {
               type: 'button',
               className: 'dbb_aboutLink dbb_aboutRelease',
-              onClick: () => onOpen(u.appUrl),
+              onClick: () => onOpen(shell.releaseUrl),
               children: t('about.release'),
             })
           : null,
@@ -1414,7 +1743,7 @@ module.exports = { AboutSection, AboutSectionView };
 // dsh-desktop-bridge — 外观与动效 (Appearance & motion) settings section.
 //
 // Registered as a native settings page (`settings.section`, id "appearance"):
-// a two-way motion-intensity picker (安静 / 丰富) backed by the desktop
+// a three-way appearance picker (DSH 默认 / 安静 / 丰富) backed by the desktop
 // shell's persisted config. GETs /desktop/motion on mount and POSTs
 // /desktop/motion-save on change, so no cross-origin call from the remote dsh
 // page is ever made — the same bridge proxy contract used by remote-access.
@@ -1435,8 +1764,15 @@ async function getJson(path, init) {
 
 /** Pure render layer: props in, section markup out (no fetch, no effects). */
 function AppearanceSectionView(props) {
-  const { t, motion, loadError, busy, notice, onChange } = props;
-  const value = motion === 'quiet' ? 'quiet' : 'rich';
+  const {
+    t, motion, loadError, busy, notice, onChange,
+    notificationMode, notificationBusy, testBusy, notificationNotice,
+    onNotificationChange, onNotificationTest,
+  } = props;
+  const value = ['default', 'quiet', 'rich'].includes(motion) ? motion : 'rich';
+  const notifyValue = ['off', 'unfocused', 'always'].includes(notificationMode)
+    ? notificationMode
+    : 'unfocused';
   const segCls = (active) => 'dbb_segBtn' + (active ? ' dbb_segActive' : '');
 
   return jsxs('section', {
@@ -1452,6 +1788,15 @@ function AppearanceSectionView(props) {
           role: 'radiogroup',
           'aria-label': t('appearance.motionLabel'),
           children: [
+            jsx('button', {
+              type: 'button',
+              role: 'radio',
+              'aria-checked': value === 'default',
+              className: segCls(value === 'default'),
+              disabled: busy,
+              onClick: () => onChange('default'),
+              children: t('appearance.motionDefault'),
+            }),
             jsx('button', {
               type: 'button',
               role: 'radio',
@@ -1480,6 +1825,53 @@ function AppearanceSectionView(props) {
             })
           : null,
       ] }),
+      jsxs('div', { className: 'dbb_aboutCard', children: [
+        jsx('span', { className: 'dbb_remoteLabel', children: t('appearance.notificationLabel') }),
+        jsxs('div', {
+          className: 'dbb_seg dbb_notificationSeg',
+          role: 'radiogroup',
+          'aria-label': t('appearance.notificationLabel'),
+          children: [
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'off',
+              className: segCls(notifyValue === 'off'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('off'),
+              children: t('appearance.notificationOff'),
+            }),
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'unfocused',
+              className: segCls(notifyValue === 'unfocused'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('unfocused'),
+              children: t('appearance.notificationUnfocused'),
+            }),
+            jsx('button', {
+              type: 'button', role: 'radio',
+              'aria-checked': notifyValue === 'always',
+              className: segCls(notifyValue === 'always'),
+              disabled: notificationBusy || testBusy,
+              onClick: () => onNotificationChange('always'),
+              children: t('appearance.notificationAlways'),
+            }),
+          ],
+        }),
+        jsx('p', { className: 'dbb_note', children: t('appearance.notificationHint') }),
+        jsxs('div', { className: 'dbb_aboutActions', children: [
+          jsx('button', {
+            type: 'button',
+            className: 'dbb_aboutSecondary',
+            disabled: notificationBusy || testBusy,
+            onClick: onNotificationTest,
+            children: testBusy ? t('appearance.notificationTesting') : t('appearance.notificationTest'),
+          }),
+        ] }),
+        notificationNotice?.kind === 'ok'
+          ? jsx('p', { className: 'dbb_aboutStatus', role: 'status', children: notificationNotice.text })
+          : null,
+      ] }),
     ],
   });
 }
@@ -1491,6 +1883,11 @@ function AppearanceSection(props) {
   const [loadError, setLoadError] = react.useState(null);
   const [busy, setBusy] = react.useState(false);
   const [notice, setNotice] = react.useState(null);
+  const [notificationMode, setNotificationMode] = react.useState(null);
+  const [notificationBusy, setNotificationBusy] = react.useState(false);
+  const [testBusy, setTestBusy] = react.useState(false);
+  const [notificationNotice, setNotificationNotice] = react.useState(null);
+  const [notificationError, setNotificationError] = react.useState(null);
 
   react.useEffect(() => {
     ensureStyles();
@@ -1498,7 +1895,7 @@ function AppearanceSection(props) {
     getJson('/desktop/motion')
       .then((payload) => {
         if (cancelled) return;
-        setMotion(payload?.motion === 'quiet' ? 'quiet' : 'rich');
+        setMotion(['default', 'quiet', 'rich'].includes(payload?.motion) ? payload.motion : 'rich');
         setLoadError(null);
       })
       .catch((e) => {
@@ -1507,8 +1904,28 @@ function AppearanceSection(props) {
     return () => { cancelled = true; };
   }, []);
 
+  react.useEffect(() => {
+    let cancelled = false;
+    getJson('/desktop/notifications')
+      .then((payload) => {
+        if (cancelled) return;
+        setNotificationMode(['off', 'unfocused', 'always'].includes(payload?.mode) ? payload.mode : 'unfocused');
+        setNotificationError(null);
+      })
+      .catch((e) => {
+        if (!cancelled) setNotificationError(String(e?.message ?? e));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   react.useEffect(() => { if (loadError !== null) showMessage(`${t('appearance.offline')}（${loadError}）`); }, [loadError, t]);
   react.useEffect(() => { if (notice?.kind === 'err') showMessage(notice.text); }, [notice]);
+  react.useEffect(() => {
+    if (notificationError !== null) showMessage(`${t('appearance.notificationOffline')}（${notificationError}）`);
+  }, [notificationError, t]);
+  react.useEffect(() => {
+    if (notificationNotice?.kind === 'err') showMessage(notificationNotice.text);
+  }, [notificationNotice]);
 
   const onChange = async (next) => {
     if (busy) return;
@@ -1530,6 +1947,40 @@ function AppearanceSection(props) {
     }
   };
 
+  const onNotificationChange = async (next) => {
+    if (notificationBusy || testBusy) return;
+    const previous = notificationMode;
+    setNotificationMode(next);
+    setNotificationNotice(null);
+    setNotificationBusy(true);
+    try {
+      await getJson('/desktop/notifications-save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: next }),
+      });
+    } catch (e) {
+      setNotificationMode(previous);
+      setNotificationNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally {
+      setNotificationBusy(false);
+    }
+  };
+
+  const onNotificationTest = async () => {
+    if (notificationBusy || testBusy) return;
+    setNotificationNotice(null);
+    setTestBusy(true);
+    try {
+      await getJson('/desktop/notifications-test', { method: 'POST' });
+      setNotificationNotice({ kind: 'ok', text: t('appearance.notificationTestSent') });
+    } catch (e) {
+      setNotificationNotice({ kind: 'err', text: String(e?.message ?? e) });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   return jsx(AppearanceSectionView, {
     t,
     motion,
@@ -1537,10 +1988,205 @@ function AppearanceSection(props) {
     busy,
     notice,
     onChange,
+    notificationMode,
+    notificationBusy,
+    testBusy,
+    notificationNotice,
+    onNotificationChange,
+    onNotificationTest,
   });
 }
 
 module.exports = { AppearanceSection, AppearanceSectionView };
+
+},
+"./model-behavior-section.js": function (require, module, exports) {
+const react = require('react');
+const { jsx, jsxs } = require('react/jsx-runtime');
+const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
+
+const PROMPT_MAX_CHARS = 20000;
+
+async function getJson(path, init) {
+  const response = await fetch(path, init);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(payload?.error ?? `HTTP ${String(response.status)}`);
+  }
+  return payload;
+}
+
+function ModelBehaviorSectionView(props) {
+  const {
+    t, loading, loadError, systemPrompt, temperatureEnabled, temperature,
+    dirty, busy, notice, onPromptChange, onTemperatureEnabledChange,
+    onTemperatureChange, onReset, onSave, onRetry,
+  } = props;
+  const safeTemperature = Number.isFinite(temperature) ? temperature : 1;
+
+  if (loading) {
+    return jsxs('section', { className: 'dbb_modelBehavior', 'aria-label': t('modelBehavior.title'), children: [
+      jsx('h2', { className: 'dbb_aboutTitle', children: t('modelBehavior.title') }),
+      jsxs('div', { className: 'dbb_modelSkeleton', 'aria-label': t('modelBehavior.loading'), children: [jsx('span', {}), jsx('span', {})] }),
+    ] });
+  }
+
+  if (loadError !== null) {
+    return jsxs('section', { className: 'dbb_modelBehavior', 'aria-label': t('modelBehavior.title'), children: [
+      jsx('h2', { className: 'dbb_aboutTitle', children: t('modelBehavior.title') }),
+      jsxs('div', { className: 'dbb_modelError', role: 'alert', children: [
+        jsx('p', { children: t('modelBehavior.offline') }),
+        jsx('button', { type: 'button', className: 'dbb_aboutSecondary', onClick: onRetry, children: t('modelBehavior.retry') }),
+      ] }),
+    ] });
+  }
+
+  return jsxs('section', { className: 'dbb_modelBehavior', 'aria-label': t('modelBehavior.title'), children: [
+    jsx('h2', { className: 'dbb_aboutTitle', children: t('modelBehavior.title') }),
+    jsx('p', { className: 'dbb_aboutIntro', children: t('modelBehavior.intro') }),
+    jsxs('div', { className: 'dbb_aboutCard dbb_modelCard', children: [
+      jsxs('div', { className: 'dbb_modelFieldHead', children: [
+        jsx('label', { className: 'dbb_modelLabel', htmlFor: 'dbb-system-prompt', children: t('modelBehavior.promptLabel') }),
+        jsx('span', { className: 'dbb_modelCount', children: t('modelBehavior.promptCount').replace('{count}', String(systemPrompt.length)).replace('{max}', String(PROMPT_MAX_CHARS)) }),
+      ] }),
+      jsx('textarea', {
+        id: 'dbb-system-prompt',
+        className: 'dbb_modelTextarea',
+        value: systemPrompt,
+        maxLength: PROMPT_MAX_CHARS,
+        rows: 7,
+        placeholder: t('modelBehavior.promptPlaceholder'),
+        disabled: busy,
+        onChange: (event) => onPromptChange(event.target.value),
+      }),
+      jsx('p', { className: 'dbb_note', children: t('modelBehavior.promptHint') }),
+    ] }),
+    jsxs('div', { className: 'dbb_aboutCard dbb_modelCard', children: [
+      jsxs('div', { className: 'dbb_modelTemperatureHead', children: [
+        jsxs('div', { children: [
+          jsx('span', { className: 'dbb_modelLabel', children: t('modelBehavior.temperatureLabel') }),
+          jsx('p', { className: 'dbb_modelSubcopy', children: t('modelBehavior.temperatureHint') }),
+        ] }),
+        jsxs('label', { className: 'dbb_modelToggle', children: [
+          jsx('input', {
+            type: 'checkbox', checked: temperatureEnabled, disabled: busy,
+            onChange: (event) => onTemperatureEnabledChange(event.target.checked),
+          }),
+          jsx('span', { children: temperatureEnabled ? t('modelBehavior.custom') : t('modelBehavior.modelDefault') }),
+        ] }),
+      ] }),
+      jsxs('div', { className: 'dbb_modelTemperatureControls', 'aria-disabled': !temperatureEnabled, children: [
+        jsx('input', {
+          className: 'dbb_modelRange', type: 'range', min: '0', max: '2', step: '0.1',
+          value: safeTemperature, disabled: busy || !temperatureEnabled,
+          'aria-label': t('modelBehavior.temperatureLabel'),
+          onChange: (event) => onTemperatureChange(Number(event.target.value)),
+        }),
+        jsx('input', {
+          className: 'dbb_modelNumber', type: 'number', min: '0', max: '2', step: '0.1',
+          value: safeTemperature.toFixed(1), disabled: busy || !temperatureEnabled,
+          'aria-label': t('modelBehavior.temperatureValue'),
+          onChange: (event) => onTemperatureChange(Number(event.target.value)),
+        }),
+      ] }),
+      jsxs('div', { className: 'dbb_modelScale', 'aria-hidden': 'true', children: [
+        jsx('span', { children: t('modelBehavior.precise') }),
+        jsx('span', { children: t('modelBehavior.balanced') }),
+        jsx('span', { children: t('modelBehavior.creative') }),
+      ] }),
+      jsx('p', { className: 'dbb_note', children: t('modelBehavior.compatibility') }),
+    ] }),
+    jsxs('div', { className: 'dbb_modelFooter', children: [
+      jsx('p', { className: 'dbb_modelApplyHint', children: t('modelBehavior.applyHint') }),
+      jsxs('div', { className: 'dbb_aboutActions', children: [
+        jsx('button', { type: 'button', className: 'dbb_aboutSecondary', disabled: busy, onClick: onReset, children: t('modelBehavior.reset') }),
+        jsx('button', { type: 'button', className: 'dbb_aboutPrimary', disabled: busy || !dirty, onClick: onSave, children: busy ? t('modelBehavior.saving') : t('modelBehavior.save') }),
+      ] }),
+    ] }),
+    notice?.kind === 'ok' ? jsx('p', { className: 'dbb_aboutStatus', role: 'status', children: notice.text }) : null,
+  ] });
+}
+
+function ModelBehaviorSection({ t }) {
+  const [loading, setLoading] = react.useState(true);
+  const [loadError, setLoadError] = react.useState(null);
+  const [systemPrompt, setSystemPrompt] = react.useState('');
+  const [temperatureEnabled, setTemperatureEnabled] = react.useState(false);
+  const [temperature, setTemperature] = react.useState(1);
+  const [saved, setSaved] = react.useState({ systemPrompt: '', temperature: undefined });
+  const [busy, setBusy] = react.useState(false);
+  const [notice, setNotice] = react.useState(null);
+
+  const load = react.useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const payload = await getJson('/desktop/model-behavior');
+      const nextPrompt = typeof payload.systemPrompt === 'string' ? payload.systemPrompt : '';
+      const nextTemperature = Number.isFinite(payload.temperature) ? payload.temperature : undefined;
+      setSystemPrompt(nextPrompt);
+      setTemperatureEnabled(nextTemperature !== undefined);
+      setTemperature(nextTemperature ?? 1);
+      setSaved({ systemPrompt: nextPrompt, temperature: nextTemperature });
+    } catch (error) {
+      setLoadError(String(error?.message ?? error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  react.useEffect(() => { ensureStyles(); load(); }, [load]);
+  react.useEffect(() => {
+    if (loadError !== null) showMessage(`${t('modelBehavior.offline')}（${loadError}）`);
+  }, [loadError, t]);
+  react.useEffect(() => {
+    if (notice?.kind === 'err') showMessage(notice.text);
+  }, [notice]);
+
+  const selectedTemperature = temperatureEnabled ? temperature : undefined;
+  const dirty = systemPrompt !== saved.systemPrompt || selectedTemperature !== saved.temperature;
+  const onTemperatureChange = (next) => {
+    if (!Number.isFinite(next)) return;
+    setTemperature(Math.min(2, Math.max(0, Math.round(next * 10) / 10)));
+  };
+  const onReset = () => {
+    setSystemPrompt('');
+    setTemperatureEnabled(false);
+    setTemperature(1);
+    setNotice(null);
+  };
+  const onSave = async () => {
+    if (busy || !dirty) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const payload = await getJson('/desktop/model-behavior-save', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ systemPrompt, ...(temperatureEnabled ? { temperature } : {}) }),
+      });
+      const nextTemperature = Number.isFinite(payload.temperature) ? payload.temperature : undefined;
+      setSaved({ systemPrompt: payload.systemPrompt ?? '', temperature: nextTemperature });
+      setSystemPrompt(payload.systemPrompt ?? '');
+      setTemperatureEnabled(nextTemperature !== undefined);
+      setTemperature(nextTemperature ?? 1);
+      setNotice({ kind: 'ok', text: t('modelBehavior.saved') });
+    } catch (error) {
+      setNotice({ kind: 'err', text: String(error?.message ?? error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return jsx(ModelBehaviorSectionView, {
+    t, loading, loadError, systemPrompt, temperatureEnabled, temperature,
+    dirty, busy, notice, onPromptChange: setSystemPrompt,
+    onTemperatureEnabledChange: setTemperatureEnabled, onTemperatureChange,
+    onReset, onSave, onRetry: load,
+  });
+}
+
+module.exports = { ModelBehaviorSection, ModelBehaviorSectionView };
 
 },
 "./plugin-network-section.js": function (require, module, exports) {
@@ -1630,6 +2276,172 @@ function PluginNetworkSection({ t }) {
 }
 
 module.exports = { PluginNetworkSection, NetworkSectionView };
+
+},
+"./builtin-plugins-section.js": function (require, module, exports) {
+// dsh-desktop-bridge - built-in plugin controls kept in the bridge control
+// plane so the user can always re-enable desktop integration.
+const react = require('react');
+const { jsx, jsxs } = require('react/jsx-runtime');
+const { ensureStyles } = require('./styles.js');
+const { showMessage } = require('./message.js');
+
+const PLUGIN_GROUPS = [
+  {
+    id: 'desktop',
+    plugins: [
+      'dsh-desktop-bridge',
+      'dsh-desktop-session-manager',
+      'dsh-desktop-change-history',
+      'dsh-desktop-file-upload',
+    ],
+  },
+  { id: 'services', plugins: ['dsh-vision-any', 'dshmarket'] },
+];
+
+async function getJson(path, init) {
+  const resp = await fetch(path, init);
+  const payload = await resp.json().catch(() => ({}));
+  if (!resp.ok || payload?.ok !== true) throw new Error(payload?.error ?? `HTTP ${String(resp.status)}`);
+  return payload;
+}
+
+function sameEnabled(left, right) {
+  if (left.size !== right.size) return false;
+  for (const id of left) if (!right.has(id)) return false;
+  return true;
+}
+
+function sourceLabel(t, source) {
+  if (source === 'user') return t('builtinPlugins.sourceUser');
+  if (source === 'bundledThirdParty') return t('builtinPlugins.sourceThirdParty');
+  return t('builtinPlugins.sourceDesktop');
+}
+
+function PluginRow({ t, plugin, enabled, busy, onToggle }) {
+  const id = plugin.id;
+  return jsxs('div', { className: 'dbb_builtinRow', children: [
+    jsxs('div', { className: 'dbb_builtinCopy', children: [
+      jsxs('div', { className: 'dbb_builtinNameLine', children: [
+        jsx('strong', { className: 'dbb_builtinName', children: t(`builtinPlugins.${id}.name`) }),
+        plugin.version ? jsx('span', { className: 'dbb_builtinVersion', children: `v${plugin.version}` }) : null,
+      ] }),
+      jsx('p', { className: 'dbb_builtinDescription', children: t(`builtinPlugins.${id}.description`) }),
+      jsxs('div', { className: 'dbb_builtinMeta', children: [
+        jsx('span', { children: sourceLabel(t, plugin.source) }),
+        plugin.controlPlaneRetained && !enabled
+          ? jsx('span', { children: t('builtinPlugins.controlPlane') })
+          : null,
+      ] }),
+    ] }),
+    jsxs('label', { className: 'dbb_builtinSwitch', children: [
+      jsx('input', {
+        type: 'checkbox',
+        checked: enabled,
+        disabled: busy,
+        onChange: () => onToggle(id),
+        'aria-label': t('builtinPlugins.toggle', { name: t(`builtinPlugins.${id}.name`) }),
+      }),
+      jsx('span', { className: 'dbb_builtinSwitchTrack', 'aria-hidden': 'true' }),
+      jsx('span', { className: 'dbb_builtinState', children: enabled ? t('builtinPlugins.on') : t('builtinPlugins.off') }),
+    ] }),
+  ] });
+}
+
+function BuiltinPluginsSectionView({ t, plugins, enabled, initialEnabled, busy, loadError, onToggle, onEnableAll, onCancel, onApply }) {
+  const dirty = !sameEnabled(enabled, initialEnabled);
+  const count = enabled.size;
+  return jsxs('section', { className: 'dbb_builtin', 'aria-label': t('builtinPlugins.title'), children: [
+    jsxs('div', { className: 'dbb_builtinHeader', children: [
+      jsxs('div', { children: [
+        jsx('h2', { className: 'dbb_aboutTitle', children: t('builtinPlugins.title') }),
+        jsx('p', { className: 'dbb_aboutIntro', children: t('builtinPlugins.intro') }),
+      ] }),
+      plugins.length > 0
+        ? jsx('span', { className: 'dbb_builtinCount', children: t('builtinPlugins.count', { enabled: count, total: plugins.length }) })
+        : null,
+    ] }),
+    loadError !== null
+      ? jsx('div', { className: 'dbb_builtinError', role: 'alert', children: t('builtinPlugins.offline') })
+      : plugins.length === 0
+        ? jsx('div', { className: 'dbb_builtinSkeleton', 'aria-label': t('builtinPlugins.loading'), children: [0, 1, 2].map((id) => jsx('span', {}, id)) })
+        : PLUGIN_GROUPS.map((group) => jsxs('div', { className: 'dbb_builtinGroup', children: [
+          jsx('h3', { className: 'dbb_builtinGroupTitle', children: t(`builtinPlugins.group.${group.id}`) }),
+          jsx('div', { className: 'dbb_builtinList', children: group.plugins.map((id) => {
+            const plugin = plugins.find((item) => item.id === id);
+            return plugin ? jsx(PluginRow, { t, plugin, enabled: enabled.has(id), busy, onToggle }, id) : null;
+          }) }),
+        ] }, group.id)),
+    plugins.length > 0 ? jsxs('div', { className: 'dbb_builtinFooter' + (dirty ? ' dbb_builtinFooterVisible' : ''), children: [
+      jsx('p', { className: 'dbb_builtinRestartHint', children: dirty ? t('builtinPlugins.pending') : t('builtinPlugins.restartHint') }),
+      jsxs('div', { className: 'dbb_builtinActions', children: [
+        jsx('button', { type: 'button', className: 'dbb_builtinTextButton', disabled: busy || count === plugins.length, onClick: onEnableAll, children: t('builtinPlugins.enableAll') }),
+        dirty ? jsx('button', { type: 'button', className: 'dbb_aboutSecondary', disabled: busy, onClick: onCancel, children: t('builtinPlugins.cancel') }) : null,
+        dirty ? jsx('button', { type: 'button', className: 'dbb_aboutPrimary', disabled: busy, onClick: onApply, children: busy ? t('builtinPlugins.applying') : t('builtinPlugins.apply') }) : null,
+      ] }),
+    ] }) : null,
+  ] });
+}
+
+function BuiltinPluginsSection({ t }) {
+  const [plugins, setPlugins] = react.useState([]);
+  const [enabled, setEnabled] = react.useState(new Set());
+  const [initialEnabled, setInitialEnabled] = react.useState(new Set());
+  const [busy, setBusy] = react.useState(false);
+  const [loadError, setLoadError] = react.useState(null);
+
+  react.useEffect(() => {
+    ensureStyles();
+    let cancelled = false;
+    getJson('/desktop/builtin-plugins').then((payload) => {
+      if (cancelled) return;
+      const rows = Array.isArray(payload.plugins) ? payload.plugins : [];
+      const active = new Set(rows.filter((plugin) => plugin.enabled !== false).map((plugin) => plugin.id));
+      setPlugins(rows);
+      setEnabled(active);
+      setInitialEnabled(new Set(active));
+      setLoadError(null);
+    }).catch((error) => {
+      if (!cancelled) setLoadError(String(error?.message ?? error));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  react.useEffect(() => {
+    if (loadError !== null) showMessage(`${t('builtinPlugins.offline')}（${loadError}）`);
+  }, [loadError, t]);
+
+  const onToggle = (id) => setEnabled((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const onEnableAll = () => setEnabled(new Set(plugins.map((plugin) => plugin.id)));
+  const onCancel = () => setEnabled(new Set(initialEnabled));
+  const onApply = async () => {
+    setBusy(true);
+    try {
+      const payload = await getJson('/desktop/builtin-plugins-apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: [...enabled] }),
+      });
+      const rows = Array.isArray(payload.plugins) ? payload.plugins : plugins;
+      const active = new Set(rows.filter((plugin) => plugin.enabled !== false).map((plugin) => plugin.id));
+      setPlugins(rows);
+      setEnabled(active);
+      setInitialEnabled(new Set(active));
+      showMessage(t('builtinPlugins.restarting'));
+    } catch (error) {
+      showMessage(String(error?.message ?? error));
+      setBusy(false);
+    }
+  };
+
+  return jsx(BuiltinPluginsSectionView, { t, plugins, enabled, initialEnabled, busy, loadError, onToggle, onEnableAll, onCancel, onApply });
+}
+
+module.exports = { BuiltinPluginsSection, BuiltinPluginsSectionView, sameEnabled };
 
 },
 "./remote-section.js": function (require, module, exports) {
@@ -2254,11 +3066,13 @@ module.exports = { qrSvgDataUri, matrixFor, _internals: { encodeData, interleave
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge, setFooterStack } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack, activeProvider, providerAmount } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
+const { ModelBehaviorSection, ModelBehaviorSectionView } = require('./model-behavior-section.js');
 const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-section.js');
+const { BuiltinPluginsSection, BuiltinPluginsSectionView } = require('./builtin-plugins-section.js');
 const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
 
@@ -2272,6 +3086,16 @@ const inject = ["slots", "locale", "sessions"];
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-desktop-bridge: dictionaries");
   const t = ctx.locale.bind(NS);
+
+  // The control plane stays mounted even when the desktop-integration feature
+  // switch is off, otherwise there would be no in-app path to turn it on.
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "builtin-plugins",
+    order: 13,
+    label: () => t("builtinPlugins.nav"),
+    inject: () => ({ t }),
+  }, BuiltinPluginsSection));
 
   // Publish the currently focused session to the host bridge (POST
   // /desktop/current-session) so the wave-state classifier tracks THIS
@@ -2298,7 +3122,8 @@ function apply(ctx) {
     return unsubscribe;
   }, "dsh-desktop-bridge: focus publisher");
 
-  ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+  const featureDisposers = [];
+  featureDisposers.push(ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "desktop-balance",
     order: BALANCE_FOOTER_ORDER,
@@ -2310,50 +3135,75 @@ function apply(ctx) {
       sessions: ctx.sessions ?? null,
       modelDirectories: ctx.get?.("modelDirectories") ?? null,
     })
-  }, BalanceBadge));
+  }, BalanceBadge)));
   // 远程访问 (Remote access) page in the in-app settings modal: relay-client
   // configuration (enabled switch, relay url, secret, device id) plus live
   // status and the phone entry URL.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "model-behavior",
+    order: 4,
+    label: () => t("modelBehavior.nav"),
+    inject: () => ({ t }),
+  }, ModelBehaviorSection)));
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "remote-access",
     order: 11,
     label: () => t("remote.nav"),
     inject: () => ({ t }),
-  }, RemoteSection));
+  }, RemoteSection)));
   // 外观与动效 (Appearance & motion) page in the in-app settings modal:
   // two-way motion-intensity picker persisted by the shell.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "appearance",
     order: 5,
     label: () => t("appearance.nav"),
     inject: () => ({ t }),
-  }, AppearanceSection));
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  }, AppearanceSection)));
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "plugin-network",
     order: 12,
     label: () => t("pluginNetwork.nav"),
     inject: () => ({ t }),
-  }, PluginNetworkSection));
+  }, PluginNetworkSection)));
   // 关于 (About) page in the in-app settings modal: shell identity, blog /
   // repo links into the default browser, and a shell+dsh check-update action.
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
+  featureDisposers.push(ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "about",
     order: 30,
     label: () => t("about.nav"),
     inject: () => ({ t }),
-  }, AboutSection));
+  }, AboutSection)));
+
+  ctx.effect(() => {
+    if (typeof fetch !== 'function') return;
+    let cancelled = false;
+    fetch('/desktop/builtin-plugins')
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled) return;
+        const bridge = payload?.plugins?.find?.((plugin) => plugin.id === 'dsh-desktop-bridge');
+        if (bridge?.enabled === false) {
+          for (const dispose of featureDisposers.reverse()) {
+            if (typeof dispose === 'function') dispose();
+          }
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, 'dsh-desktop-bridge: feature gate');
 }
 
 exports.apply = apply;
 exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
-exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, PluginNetworkSectionView: NetworkSectionView, RemoteSectionView };
-exports.footer = { setFooterStack };
+exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, ModelBehaviorSectionView, PluginNetworkSectionView: NetworkSectionView, BuiltinPluginsSectionView, RemoteSectionView };
+exports.footer = { setFooterStack, activeProvider, providerAmount };
 exports.qr = require('./qr.js');
 
 }

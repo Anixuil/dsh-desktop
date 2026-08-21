@@ -1,6 +1,6 @@
 // dsh-desktop-bridge — Cordis host plugin mounted into the dsh web profile by
 // DSH Desktop. It is the shell's window into DSH:
-//   * listens for `agent/status` idle transitions and POSTs /turn-end to the shell
+//   * tracks per-session task completion and POSTs /turn-end to the shell
 //   * serves POST /set-key | /unset-key so the shell can write the DeepSeek key
 //     through the official credentials service
 //   * serves same-origin GET /desktop/balance | /desktop/refresh (proxied to the
@@ -9,11 +9,13 @@
 //
 // Implementation lives in the modules under lib/: zstd frame scan, session
 // model attribution, usage aggregation, the credentials listener, the
-// /desktop routes, and the wave-state classifier. This entry only wires them
-// into the cordis context.
+// /desktop routes, the turn notifier, and the wave-state classifier. This
+// entry only wires them into the cordis context.
 import { startCredentialsServer } from './lib/credentials.js'
 import { registerDesktopRoutes } from './lib/desktop-routes.js'
+import { registerTurnNotifier } from './lib/turn-notifier.js'
 import { registerWaveState } from './lib/wave-state.js'
+import { registerModelBehavior } from './lib/model-behavior.js'
 
 export const name = 'dsh-desktop-bridge'
 export const inject = ['webServer']
@@ -34,9 +36,21 @@ export function apply(ctx, config) {
   // Its setFocused() is wired into /desktop/current-session so the classifier
   // reports only the conversation currently focused in the UI.
   const wave = registerWaveState(ctx, { shellPort })
+  const turnNotifier = registerTurnNotifier(ctx, { shellPort })
+  const modelBehavior = registerModelBehavior(ctx)
 
-  // same-origin /desktop routes + turn-end notifications
-  registerDesktopRoutes(ctx, { shellPort, onFocus: wave.setFocused })
+  // Same-origin /desktop routes publish the focused session to both consumers:
+  // ambient motion follows it, while completion notifications use it to avoid
+  // interrupting a task the user is already viewing.
+  registerDesktopRoutes(ctx, {
+    shellPort,
+    getRunning: turnNotifier.isRunning,
+    modelBehavior,
+    onFocus: (id) => {
+      wave.setFocused(id)
+      turnNotifier.setFocused(id)
+    },
+  })
 
   ctx.on('dispose', () => {
     credentials.close()

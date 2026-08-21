@@ -22,6 +22,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import path, { join } from 'node:path';
 import { applyDshmarketDesktopPatch } from './dshmarket-desktop-patch.mjs';
 import { applyDshSkillDesktopPatch } from './dsh-skill-desktop-patch.mjs';
+import { applyDshModelReasoningPatch } from './dsh-model-reasoning-patch.mjs';
+import { applyDshContentScrollPatch } from './dsh-content-scroll-patch.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const runtimeDir = path.join(root, 'runtime');
@@ -113,6 +115,8 @@ if (!existsSync(dshBin) || refreshDsh) {
   console.log(`[2/3] dsh already installed`);
 }
 applyDshSkillDesktopPatch(path.join(dshDir, 'node_modules'));
+applyDshModelReasoningPatch(path.join(dshDir, 'node_modules'));
+applyDshContentScrollPatch(path.join(dshDir, 'node_modules'));
 
 // ---------------------------------------------------------------- 3. plugins
 console.log('[3/3] installing desktop plugin packages into the dsh module tree ...');
@@ -122,6 +126,8 @@ const desktopPlugins = [
   { name: 'dsh-desktop-bridge', dir: 'bridge' },
   { name: 'dsh-desktop-session-manager', dir: 'session-manager' },
   { name: 'dsh-desktop-change-history', dir: 'change-history' },
+  { name: 'dsh-desktop-file-upload', dir: 'file-upload' },
+  { name: 'dsh-desktop-web-search', dir: 'web-search' },
 ];
 const pluginStore = path.join(runtimeDir, 'plugins-src');
 const copyTree = (src, dst) => {

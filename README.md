@@ -8,7 +8,7 @@
 
 **DeepSeek Harness 的 Windows 桌面客户端**（第三方社区项目）。
 
-它把命令行版 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 封装成安装即用的桌面应用：内置 Node.js 运行时、dsh 内核、桌面桥接插件、会话管理、变更历史、文件上传、识图插件和插件市场。用户不需要安装 Node，也不需要碰终端，双击打开就是完整界面。
+它把命令行版 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 封装成安装即用的桌面应用：内置 Node.js 运行时、dsh 内核、桌面桥接插件、会话管理、变更历史、文件上传、识图、联网搜索和插件市场。用户不需要安装 Node，也不需要碰终端，双击打开就是完整界面。
 
 > 鲸鱼图标取自 `@deepseek-ai/dsh` 官方 favicon，其版权归 DeepSeek 所有。
 > 本项目与 DeepSeek 官方无关，MIT 协议开源；仓库不含 dsh 运行时本体，构建时通过脚本从 npm 官方源下载。
@@ -36,6 +36,7 @@
 - **系统托盘**：余额显示、打开主窗口、设置、刷新余额、检查更新、开机自启、退出；关闭窗口默认最小化到托盘。
 - **单实例锁**：防止重复启动。
 - **崩溃自动重启**：dsh 进程异常退出后自动拉起。
+- **任务完成通知**：每轮任务完成后发送 Windows 桌面通知（显示会话标题），三档模式——关闭 / 仅窗口未聚焦时 / 始终；在「外观与动效」中切换并支持发送测试通知。由桥接插件监听会话 turn 事件驱动，同一任务只会通知一次。
 - **日志落盘**：运行日志写入 `%APPDATA%\com.anixuil.dshdesktop\logs\dsh.log`。
 - **开机自启**：支持静默启动到托盘并预热服务。
 
@@ -46,7 +47,7 @@
   - 火山引擎账户余额。
   - OpenAI 兼容网关的按量账单。
   - 其他平台的状态提示。
-- **Token 消费统计**：展示总 Token、输入、缓存命中、输出、模型分布、近 14 天趋势、最近会话和成本估算。
+- **Token 消费统计**：展示总 Token、输入、缓存命中、输出、模型分布、近 14 天趋势、最近会话和成本估算；可手动重置统计计数。
 - **自动刷新**：保存 Key 时、每 60 秒、托盘手动刷新、每轮对话结束后自动刷新。
 - **API Key 管理**：API Key 在 DSH 原生设置页的「模型」中统一管理；桌面版会读取 DSH 凭据并同步余额状态。
 
@@ -70,6 +71,18 @@
 - **聊天内图片预览**：桌面叠加层将对话中的图片路径提示自动替换为图片卡片，点击可打开全屏灯箱预览（Esc / 点击遮罩关闭）。
 - **图片过期处理**：图片被 LRU 清扫后，卡片显示「图片已过期」占位。
 
+### 模型与搜索
+
+- **模型行为**：设置 →「模型行为」可统一配置所有普通对话的全局规则与生成随机性：
+  - 自定义系统提示词（最多 20000 字符），作为全局规则追加到 DSH 内置提示词之后，不覆盖工具、安全规则与运行上下文；
+  - 模型温度：0（稳定）– 1（均衡）– 2（发散），步进 0.1，支持「模型默认」。
+  保存后从下一次模型调用开始生效，无需重启。
+- **联网搜索**：设置 →「联网搜索」可配置 `web_search` 工具的搜索来源及其顺序，来源不可用时会自动降级到下一层：
+  1. 第三方搜索：Exa / Tavily / Brave / Perplexity / 通用 JSON API（可配置 Base URL、API Key 环境变量与超时）；
+  2. 当前模型原生搜索；
+  3. DeepSeek 官方兜底。
+  支持一键测试整条搜索链路并查看命中数量。
+
 ### 远程访问
 
 - **手机远程连接**：通过中继服务器让手机在非局域网下访问 PC 上的 DSH Desktop。
@@ -82,10 +95,11 @@
 
 ### 更新与插件
 
-- **dsh 内核自动更新**：从 npm 官方源检测新版本，一键更新，更新后自动重启；新内核 60 秒健康验证，失败自动回滚。
-- **壳自动更新检测**：启动时和每 6 小时检查 GitHub Releases。
+- **dsh 内核安全更新**：仅接受 npm 官方 metadata 中严格高于当前版本的包，重新校验包名、HTTPS 地址和 SHA-512；空闲时事务替换，重启后持续健康验证，失败自动回滚。
+- **桌面应用签名更新**：0.2.1 起使用 Tauri 签名 manifest 在应用内检查、下载、验签、安装并重启。0.2.0 用户需先手动覆盖安装一次 0.2.1。
 - **CLI 生态兼容**：默认共享 `~/.dsh`，复用已有 CLI 配置、会话和兼容插件；内置第三方插件检测到用户已安装同名包时会复用，不覆盖用户版本。
-- **内置插件市场**：预装 `dshmarket`，可在设置 →「插件市场」浏览和安装社区插件。
+- **内置插件市场**：预装 `dshmarket`，可在设置 →「插件市场」浏览和安装社区插件；桌面版对市场做了可靠性增强——取消安装回滚、技能健康隔离、托管残留清理等。
+- **内置插件开关**：设置 →「内置插件」可批量开启或关闭六个随附插件，默认全部开启；应用后仅重启一次 DSH，插件文件、配置和历史数据均保留。
 - **插件下载网络**：设置 →「插件下载网络」可配置 HTTP(S) 代理、npm 源和单次安装超时，并支持一键检测下载链路（npm registry → 包下载 → 包解压全流程），解决国内网络环境下的插件安装问题。检测结果会逐段展示各环节的延迟与状态。
 
 ### 应用内设置页
@@ -94,10 +108,13 @@
 
 | 页面 | 功能 |
 |---|---|
-| 外观与动效 | 切换动画强度：安静 / 丰富 |
+| 外观与动效 | 切换动画强度：安静 / 丰富；任务完成通知：关闭 / 仅窗口未聚焦时 / 始终 |
+| 模型行为 | 全局系统提示词、模型温度 |
+| 联网搜索 | 配置搜索来源顺序、第三方搜索 API、超时、测试搜索链路 |
 | 远程访问 | 配置中继、设备名、并发上限、配对码、二维码、长期配对码 |
 | 视觉模型 | 配置识图插件 provider / baseUrl / model / API Key |
 | 插件下载网络 | 配置 HTTP 代理、npm 源、安装超时、检测下载链路 |
+| 内置插件 | 开启或关闭桌面集成、会话管理、变更历史、文件上传、视觉识别和插件市场 |
 | 会话管理 | 查看、恢复、删除会话 |
 | 变更历史 | 查看 diff、标记已审阅、回滚变更 |
 | 关于 | 查看壳与内核版本、作者、博客、GitHub、检查更新 |
@@ -129,8 +146,6 @@
 
 **桌面设置窗口**（托盘右键 →「设置」）：
 
-![桌面设置窗口](docs/screenshots/settings-window.png)
-
 包含运行状态、余额、远程访问、更新、诊断和关于。
 
 ## 安装
@@ -152,6 +167,8 @@
 | 手机远程访问这台电脑 | 应用内设置 →「远程访问」；或托盘右键 →「设置」→「远程访问」 |
 | 配置识图模型 | 应用内设置 →「视觉模型」 |
 | 切换动画强度 | 应用内设置 →「外观与动效」 |
+| 设置全局系统提示词 / 温度 | 应用内设置 →「模型行为」 |
+| 配置联网搜索来源 | 应用内设置 →「联网搜索」 |
 | 配置插件下载网络 | 应用内设置 →「插件下载网络」 |
 | 恢复归档 / 删除会话 | 应用内设置 →「会话管理」；或侧边栏会话菜单「永久删除」 |
 | 查看变更历史 / 回滚文件 | 应用内设置 →「变更历史」 |
@@ -240,15 +257,19 @@ DSH Desktop（Tauri 2 壳，Windows）
 │   └─ calm / thinking / streaming / tooling / waiting / error / settle
 ├─ 桥接插件 dsh-desktop-bridge
 │   ├─ 对话结束通知壳刷新余额
+│   ├─ turn-notifier：监听会话 turn/start、turn/end 事件 → 壳发送任务完成桌面通知
 │   ├─ wave-state 状态分类器 → 壳 /turn-state（驱动环境动画）
-│   ├─ 同源 /desktop 路由：余额、用量、外观、远程访问、关于、更新、插件下载网络
-│   └─ 注入设置页：外观与动效 / 远程访问 / 插件下载网络 / 关于
+│   ├─ model-behavior：全局系统提示词 / 温度实时配置
+│   ├─ 同源 /desktop 路由：余额、用量、外观、任务通知、模型行为、内置插件开关、远程访问、插件下载网络、更新、关于
+│   └─ 注入设置页：外观与动效 / 模型行为 / 远程访问 / 插件下载网络 / 内置插件 / 关于
 ├─ 会话管理插件 dsh-desktop-session-manager
 │   └─ /desktop-sessions 路由 + 设置页：会话列表 / 恢复归档 / 彻底删除
 ├─ 变更历史插件 dsh-desktop-change-history
 │   └─ /desktop-changes 路由 + 设置页：diff / 审阅 / 回滚 / 文件查看器 / 逐轮变更审批
 ├─ 文件上传插件 dsh-desktop-file-upload
 │   └─ /file-upload 路由：上传文件、暂存、对话内文件卡片 / 发送时自动插入提示
+├─ 内置联网搜索插件 dsh-desktop-web-search
+│   └─ web_search 优先级路由：第三方搜索 → 模型原生搜索 → DeepSeek 兜底 + 设置页「联网搜索」
 ├─ 内置识图插件 dsh-vision-any
 │   └─ 图片粘贴 / vision 工具 / 视觉模型设置页 / 聊天内图片卡片 + 全屏灯箱
 ├─ 内置插件市场 dshmarket
@@ -264,16 +285,12 @@ DSH Desktop（Tauri 2 壳，Windows）
 - 变更历史存储：`$DSH_HOME/desktop/changes/`。
 - 上传文件暂存：系统临时目录 `dsh-file-upload/`，LRU 清理。
 
-## 壳自动更新
+## 签名更新
 
-1. 用 [gh](https://cli.github.com/) 发布安装包：
-   `gh release create v0.2.0 "安装包路径" --repo 你的账号/你的仓库`
-2. 配置更新源：
-   - `%APPDATA%\com.anixuil.dshdesktop\config.json` 写入 `{"updateRepo": "账号/仓库"}`
-   - 或设置环境变量 `DSH_DESKTOP_UPDATE_REPO=账号/仓库`
-3. 重启应用。检测到新 tag 时设置页会提示「应用有新版」。
-
-以后发版：改 `tauri.conf.json` 的 version → `npm run build` → 用 gh 发对应 tag 的 Release。
+- 生产安装只信任编译进应用的官方 `latest.json` endpoint 和 updater 公钥。旧配置中的 `updateRepo` 字段仅为兼容读取保留，不再改变生产安装源。
+- 0.2.1 是 updater 引导版本：0.2.0 用户从 [Releases](https://github.com/Anixuil/dsh-desktop/releases) 下载普通 setup.exe 覆盖安装一次；0.2.1 及后续版本可在「设置 → 更新」中一键升级。
+- 有前台或后台任务、内核更新/验证、另一桌面更新时不会安装；任务结束后按钮自动恢复，不会自动排队或强制中断。
+- tag 发布由 `.github/workflows/release.yml` 构建 Windows x64 NSIS、`.sig` 与 `latest.json`。签名密钥配置见 [`docs/BUILDING.md`](docs/BUILDING.md)。
 
 ## 从源码构建
 
@@ -297,10 +314,11 @@ npm run release-dev                   # 本地发布构建：重建插件、测�
 |---|---|
 | `src-tauri/src/lib.rs` | 壳逻辑：进程、健康检查、余额、远程访问、托盘、更新回滚、自启、主题注入、标题栏注入 |
 | `ui/` | 启动页与桌面设置窗口 |
-| `scripts/bridge/` | `dsh-desktop-bridge` 插件：余额面板、用量统计、wave-state 会话状态分类、外观、远程访问、插件下载网络、关于 |
+| `scripts/bridge/` | `dsh-desktop-bridge` 插件：余额面板、用量统计、wave-state 会话状态分类、任务完成通知、模型行为、外观、远程访问、内置插件开关、插件下载网络、关于 |
 | `scripts/session-manager/` | `dsh-desktop-session-manager` 插件：会话列表、恢复归档、删除（含侧边栏永久删除注入） |
 | `scripts/change-history/` | `dsh-desktop-change-history` 插件：变更追踪、diff、回滚、文件查看器、逐轮变更审批 |
 | `scripts/file-upload/` | `dsh-desktop-file-upload` 插件：文件上传、暂存、对话内文件卡片 |
+| `scripts/web-search/` | `dsh-desktop-web-search` 插件：联网搜索来源路由 + 设置页「联网搜索」 |
 | `scripts/vision-any/` | 内置识图插件桌面叠加层：聊天内图片卡片 + 全屏灯箱 + `/vision-any/images/*` 图片路由 |
 | `scripts/relay/` | 中继服务器（支持注册、配对码、长期配对码、手机令牌） |
 | `scripts/relay-client/` | PC 侧中继客户端（伴生进程，帧协议转发） |
@@ -309,7 +327,7 @@ npm run release-dev                   # 本地发布构建：重建插件、测�
 | `scripts/make-runtime-archive.mjs` | 打包运行时归档 |
 | `scripts/sync-runtime-plugins.mjs` | 同步桌面插件到 runtime |
 | `scripts/sync-vision-any.mjs` | 同步识图插件叠加层 |
-| `scripts/test-*.mjs` | 插件、桥接、relay、UI 测试（13 个测试套件） |
+| `scripts/test-*.mjs` | 插件、桥接、relay、UI 测试（17 个测试套件） |
 | `docs/screenshots/` | README 截图 |
 | `docs/BUILDING.md` | 构建指南 |
 
@@ -319,7 +337,7 @@ npm run release-dev                   # 本地发布构建：重建插件、测�
 - 识图依赖你自备的第三方视觉 API。
 - 远程访问默认使用公共中继，服务可能不稳定；建议有条件的用户自建中继。
 - 远程访问当前无端到端加密，对话内容会经中继转发。
-- 壳更新目前是「检测 + 引导下载」，未做应用内一键安装。
+- 仅 0.2.1 及后续版本支持应用内签名升级；0.2.0 需要手动覆盖一次。
 - 仅支持 Windows；macOS/Linux 待规划。
 
 ## 许可证

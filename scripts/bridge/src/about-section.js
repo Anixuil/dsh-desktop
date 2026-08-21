@@ -29,10 +29,22 @@ async function getJson(path, init) {
 function AboutSectionView(props) {
   const { t, info, loadError, update, busy, notice, onOpen, onCheck } = props;
   const u = update?.status ?? null;
+  const core = u?.core ?? {
+    current: u?.dshCurrent,
+    latest: u?.dshLatest,
+    updateAvailable: u?.dshUpdateAvailable === true,
+  };
+  const shell = u?.shell ?? {
+    current: u?.appCurrent,
+    latest: u?.appLatest,
+    updateAvailable: u?.appUpdateAvailable === true,
+    releaseUrl: u?.appUrl,
+  };
 
   const parts = [];
-  if (u?.appUpdateAvailable === true) parts.push(t('about.appUpdate', { version: u.appLatest ?? '?' }));
-  if (u?.dshUpdateAvailable === true) parts.push(t('about.dshUpdate', { version: u.dshLatest ?? '?' }));
+  if (shell.updateAvailable === true) parts.push(t('about.appUpdate', { version: shell.latest ?? '?' }));
+  if (core.updateAvailable === true) parts.push(t('about.dshUpdate', { version: core.latest ?? '?' }));
+  if (u?.readiness?.ready === false && u.readiness.reason) parts.push(u.readiness.reason);
   const updateText = update?.checking === true
     ? t('about.checking')
     : update?.error !== undefined && update?.error !== null
@@ -105,11 +117,11 @@ function AboutSectionView(props) {
             children: t('about.repoBtn'),
           }),
         ] }),
-        u?.appUpdateAvailable === true && u?.appUrl
+        shell.updateAvailable === true && shell.releaseUrl
           ? jsx('button', {
               type: 'button',
               className: 'dbb_aboutLink dbb_aboutRelease',
-              onClick: () => onOpen(u.appUrl),
+              onClick: () => onOpen(shell.releaseUrl),
               children: t('about.release'),
             })
           : null,

@@ -1,0 +1,4 @@
+# Route the stable web_search tool through DSH Desktop's priority provider.
+- id: web
+  config:
+    searchProvider: desktop-priority

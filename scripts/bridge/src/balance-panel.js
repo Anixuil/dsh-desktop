@@ -8,7 +8,7 @@
 const react = require('react');
 const { jsx, jsxs, Fragment } = require('react/jsx-runtime');
 const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
-const { fmtTokens, fmtMoney, fmtUsd, fmtDate, estimateCost } = require('./helpers.js');
+const { fmtTokens, fmtMoney, fmtUsd, fmtDate, fmtQuantity, fmtIsoDate, fmtIsoDateTime, estimateCost } = require('./helpers.js');
 
 /** Pure render layer: props in, panel markup out (no fetch, no effects). */
 function BalancePanelView(props) {
@@ -30,6 +30,7 @@ function BalancePanelView(props) {
     if (!p.configured) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("badge.unconfigured") });
     if (p.kind === "unsupported") return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("balance.unsupported") });
     if (p.error) return jsx("span", { className: "dbb_badge dbb_badgeErr", children: t("badge.offline") });
+    if (p.plans_error) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("plan.limited") });
     if (p.kind === "balance") {
       if (p.balance?.is_available === false) return jsx("span", { className: "dbb_badge dbb_badgeErr", children: t("balance.unavailable") });
       if (balance?.low === true) return jsx("span", { className: "dbb_badge dbb_badgeWarn", children: t("balance.low") });
@@ -42,13 +43,30 @@ function BalancePanelView(props) {
   const providerCard = (p) => {
     const info = p.kind === "balance" ? p.balance?.balance_infos?.[0] : null;
     const usageData = p.kind === "usage" ? p.usage : null;
+    const plans = Array.isArray(p.plans) ? p.plans : [];
+    const primaryPlan = plans[0] ?? null;
     const unsupported = p.kind === "unsupported";
+    const planUnavailable = plans.length === 0 && typeof p.plans_error === "string" && p.plans_error.length > 0;
     const hasRemaining = Number.isFinite(usageData?.remaining);
-    const big = p.kind === "balance"
+    const hasPlanRemaining = Number.isFinite(primaryPlan?.remaining);
+    const primaryIsQuota = primaryPlan?.unit === "%" && Number.isFinite(primaryPlan?.used);
+    const big = planUnavailable
+      ? "—"
+      : primaryIsQuota
+      ? fmtQuantity(primaryPlan.used)
+      : hasPlanRemaining
+      ? fmtQuantity(primaryPlan.remaining)
+      : p.kind === "balance"
       ? info?.total_balance ?? "—"
       : hasRemaining ? usageData.remaining.toFixed(2)
         : Number.isFinite(usageData?.total_usage_usd) ? `$${usageData.total_usage_usd.toFixed(2)}` : "—";
-    const cur = p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
+    const cur = planUnavailable
+      ? ""
+      : primaryIsQuota
+      ? `% ${t("plan.used")}`
+      : hasPlanRemaining
+      ? primaryPlan?.unit ?? ""
+      : p.kind === "balance" ? info?.currency ?? "" : hasRemaining ? usageData?.unit ?? "USD" : "USD";
     return jsxs("button", {
       type: "button",
       className: "dbb_card dbb_providerCard" + (p.id === selectedProviderId ? " dbb_selected" : ""),
@@ -65,7 +83,35 @@ function BalancePanelView(props) {
           cur !== "" && jsx("span", { className: "dbb_currency", children: cur })
         ] }),
         unsupported && jsx("div", { className: "dbb_note", children: t("balance.unsupportedNote") }),
-        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: [
+        plans.length > 0 && jsxs("div", { className: "dbb_planList", children: [
+          plans.slice(0, 3).map((plan) => {
+            const isQuota = plan.unit === "%" && Number.isFinite(plan.used);
+            return jsxs("div", { className: "dbb_plan", children: [
+            jsxs("div", { className: "dbb_planHead", children: [
+              jsx("span", { className: "dbb_planName", title: plan.name, children: plan.name }),
+              jsx("span", { className: "dbb_planRemaining", children: isQuota
+                ? `${fmtQuantity(plan.used)}% ${t("plan.used")}`
+                : `${fmtQuantity(plan.remaining)}${plan.unit ? ` ${plan.unit}` : ""}` })
+            ] }),
+            plan.product && jsx("div", { className: "dbb_planProduct", children: plan.product }),
+            jsxs("div", { className: "dbb_planMetrics", children: [
+              !isQuota && jsxs("span", { children: [t("plan.used"), " ", jsx("b", { children: fmtQuantity(plan.used) })] }),
+              !isQuota && jsxs("span", { children: [t("plan.total"), " ", jsx("b", { children: fmtQuantity(plan.total) })] }),
+              !isQuota && Number.isFinite(plan.period_usage) && jsxs("span", { children: [t("plan.recentUsage"), " ", jsx("b", { children: fmtQuantity(plan.period_usage) })] }),
+              !isQuota && plan.expires_at && jsxs("span", { children: [t("plan.expires"), " ", jsx("b", { children: fmtIsoDate(plan.expires_at) })] }),
+              isQuota && jsxs("span", { children: [t("plan.remaining"), " ", jsx("b", { children: `${fmtQuantity(plan.remaining)}%` })] }),
+              isQuota && jsx("span", { children: plan.expires_at
+                ? jsxs(Fragment, { children: [t("plan.resets"), " ", jsx("b", { children: fmtIsoDateTime(plan.expires_at) })] })
+                : t("plan.noActiveWindow") })
+            ] })
+          ] }, plan.id);
+          }),
+          plans.length > 3 && jsx("div", { className: "dbb_planMore", children: t("plan.more", { count: plans.length - 3 }) })
+        ] }),
+        p.kind === "balance" && info && jsxs("div", { className: "dbb_balanceSub", children: (plans.length > 0 || planUnavailable) ? [
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("plan.accountBalance"), " ", jsx("b", { children: `${info.total_balance ?? "-"} ${info.currency ?? ""}`.trim() })] }) }),
+          jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "-" })] }) })
+        ] : [
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.topped"), " ", jsx("b", { children: info.topped_up_balance ?? "—" })] }) }),
           jsx("span", { className: "dbb_kv", children: jsxs(Fragment, { children: [t("balance.granted"), " ", jsx("b", { children: info.granted_balance ?? "—" })] }) })
         ] }),
@@ -80,6 +126,7 @@ function BalancePanelView(props) {
           ] }),
           jsx("div", { className: "dbb_note", children: hasRemaining ? t("balance.remainingNote") : t("balance.usageNote") })
         ] }),
+        p.plans_error && jsx("div", { className: "dbb_planError", children: `${t("plan.partial")}: ${p.plans_error}` }),
         p.error && jsx("div", { className: "dbb_error", children: p.error })
       ]
     }, p.id);
@@ -88,7 +135,9 @@ function BalancePanelView(props) {
   /** A provider card carries real data only when it actually returned a
    *  balance or a usage total — everything else is folded out of the main list. */
   const hasProviderData = (p) => Boolean(
-    (p && p.kind === "balance" && p.balance) || (p && p.kind === "usage" && p.usage),
+    (p && Array.isArray(p.plans) && p.plans.length > 0)
+      || (p && p.kind === "balance" && p.balance)
+      || (p && p.kind === "usage" && p.usage),
   );
 
   /** Compact row for the folded group: name + reason (+ error text, muted). */

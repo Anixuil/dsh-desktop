@@ -13,7 +13,75 @@ import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 const { scanFrames } = await import('./bridge/lib/zstd.js')
 const { readSessionModel, encodeWorkspace } = await import('./bridge/lib/model-attribution.js')
 const { usageReport, resetUsageCounter } = await import('./bridge/lib/usage.js')
+const { registerTurnNotifier, normalizeTurnTitle } = await import('./bridge/lib/turn-notifier.js')
+const { normalizeModelBehavior, applyModelTemperature } = await import('./bridge/lib/model-behavior.js')
 const plugin = await import('./bridge/index.js')
+
+// --- 0a. model behavior validation + request override ---------------------
+{
+  const normalized = normalizeModelBehavior({ systemPrompt: '  reply in Chinese  ', temperature: 0.74 })
+  if (normalized.systemPrompt !== '  reply in Chinese  ' || normalized.temperature !== 0.7) {
+    throw new Error(`model behavior normalization failed: ${JSON.stringify(normalized)}`)
+  }
+  const overridden = applyModelTemperature({ provider: 'p', model: 'm', temperature: 1.3 }, 0.2)
+  if (overridden.temperature !== 0.2) throw new Error('temperature override failed')
+  const defaults = applyModelTemperature(overridden, undefined)
+  if ('temperature' in defaults) throw new Error('model-default mode must remove a persisted temperature')
+  for (const bad of [-0.1, 2.1, Number.NaN]) {
+    let rejected = false
+    try { normalizeModelBehavior({ systemPrompt: '', temperature: bad }) } catch { rejected = true }
+    if (!rejected) throw new Error(`invalid temperature accepted: ${String(bad)}`)
+  }
+  console.log('model behavior validation + request override ok')
+}
+
+// --- 0. per-session task completion notifier ------------------------------
+{
+  const handlers = {}
+  const posts = []
+  const ctx = {
+    on: (event, fn) => {
+      (handlers[event] = handlers[event] ?? []).push(fn)
+      return () => {}
+    },
+  }
+  const emit = (event, ...args) => (handlers[event] ?? []).forEach((fn) => fn(...args))
+  const notifier = registerTurnNotifier(ctx, { post: (payload) => posts.push(payload) })
+  notifier.setFocused('s1')
+
+  // status running and the exact turn/start arm the same turn; exact turn/end
+  // wins and the later idle fallback must not duplicate it.
+  emit('agent/status', { agent: { id: 's1', title: 'Focused task' }, status: 'running' })
+  emit('session/event', { id: 's1', title: 'Focused task' }, { type: 'turn/start', data: {} })
+  if (!notifier.isRunning()) throw new Error('turn notifier should report an armed task')
+  emit('session/event', { id: 's1', title: 'Focused task' }, { type: 'turn/end', data: {} })
+  emit('agent/status', { agent: { id: 's1' }, status: 'idle' })
+  if (posts.length !== 1 || posts[0].isFocusedSession !== true || posts[0].turnKey !== 's1:1') {
+    throw new Error(`exact completion dedupe failed: ${JSON.stringify(posts)}`)
+  }
+
+  // Consecutive exact turns receive distinct keys. A second session can run
+  // in parallel, and a status-only runtime still receives one fallback event.
+  emit('session/event', { id: 's1', title: 'Second turn' }, { type: 'turn/start', data: {} })
+  emit('agent/status', { agent: { id: 's2', title: 'Background task' }, status: 'running' })
+  emit('session/event', { id: 's1' }, { type: 'turn/end', data: {} })
+  emit('agent/status', { agent: { id: 's2' }, status: 'idle' })
+  emit('session/event', { id: 's2' }, { type: 'turn/end', data: {} })
+  if (posts.length !== 3 || posts[1].turnKey !== 's1:2' || posts[2].turnKey !== 's2:1') {
+    throw new Error(`consecutive/parallel completion failed: ${JSON.stringify(posts)}`)
+  }
+  if (posts[2].isFocusedSession !== false) throw new Error('background completion marked focused')
+
+  const longTitle = '鲸'.repeat(100)
+  if (Array.from(normalizeTurnTitle({ title: longTitle }, {})).length !== 80) {
+    throw new Error('turn title must be Unicode-safe and limited to 80 characters')
+  }
+  emit('session/event', { id: 's3' }, { type: 'turn/end', data: {} })
+  if (posts[3]?.title !== null || posts[3]?.turnKey !== 's3:1') {
+    throw new Error(`title fallback event malformed: ${JSON.stringify(posts[3])}`)
+  }
+  console.log('per-session turn notifier exact/fallback/dedupe/title checks ok')
+}
 
 // --- 1. zstd frame scan round-trip -----------------------------------------
 {
@@ -88,6 +156,7 @@ try {
   const disposers = []
   const mockCtx = {
     effect: (fn) => { fn(); return () => {}; },
+    inject: () => {},
     webServer: { register: (registration) => { routeRegistration = registration; } },
     on: (event, fn) => {
       (handlers[event] = handlers[event] ?? []).push(fn)
@@ -109,6 +178,12 @@ try {
     res.writeHead = (status) => { res.status = status; };
     res.end = (body) => { res.body = String(body); };
     return res;
+  }
+  {
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/model-behavior' }, res)
+    if (res.status !== 503 || !res.body.includes('"ok":false')) throw new Error(`model behavior readiness route failed: ${res.status} ${res.body}`)
+    console.log('/desktop/model-behavior readiness envelope ok')
   }
   {
     const res = fakeRes()
@@ -195,6 +270,25 @@ try {
     console.log(`/desktop/motion-save proxy ok (status ${res2.status})`)
   }
   {
+    // Task-notification settings and the test action are shell-owned and must
+    // remain reachable through the same-origin desktop bridge.
+    const getRes = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/notifications' }, getRes)
+    if ((getRes.status !== 200 && getRes.status !== 502) || !getRes.body.includes('"ok"')) throw new Error(`notifications route failed: ${getRes.status} ${getRes.body}`)
+    const saveReq = {
+      method: 'POST', url: '/desktop/notifications-save',
+      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ mode: 'unfocused' })) },
+    }
+    const saveRes = fakeRes()
+    await routeRegistration.handler(saveReq, saveRes)
+    if ((saveRes.status !== 200 && saveRes.status !== 502) || !saveRes.body.includes('"ok"')) throw new Error(`notifications-save route failed: ${saveRes.status} ${saveRes.body}`)
+    const testReq = { method: 'POST', url: '/desktop/notifications-test', async *[Symbol.asyncIterator]() {} }
+    const testRes = fakeRes()
+    await routeRegistration.handler(testReq, testRes)
+    if ((testRes.status !== 200 && testRes.status !== 502) || !testRes.body.includes('"ok"')) throw new Error(`notifications-test route failed: ${testRes.status} ${testRes.body}`)
+    console.log(`/desktop/notifications settings/test proxies ok (get ${getRes.status}, save ${saveRes.status}, test ${testRes.status})`)
+  }
+  {
     // Plugin-download-network proxies use the same local shell contract as
     // remote and motion settings. They must never 404 when the shell is down.
     const res = fakeRes()
@@ -213,6 +307,19 @@ try {
     await routeRegistration.handler(testReq, testRes)
     if ((testRes.status !== 200 && testRes.status !== 502) || !testRes.body.includes('"ok"')) throw new Error(`plugin-network-test route failed: ${testRes.status} ${testRes.body}`)
     console.log(`/desktop/plugin-network save/test proxies ok (save ${saveRes.status}, test ${testRes.status})`)
+  }
+  {
+    const res = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/builtin-plugins' }, res)
+    if ((res.status !== 200 && res.status !== 502) || !res.body.includes('"ok"')) throw new Error(`builtin-plugins route failed: ${res.status} ${res.body}`)
+    const applyReq = {
+      method: 'POST', url: '/desktop/builtin-plugins-apply',
+      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ enabled: ['dsh-desktop-bridge'] })) },
+    }
+    const applyRes = fakeRes()
+    await routeRegistration.handler(applyReq, applyRes)
+    if ((applyRes.status !== 200 && applyRes.status !== 502) || !applyRes.body.includes('"ok"')) throw new Error(`builtin-plugins-apply route failed: ${applyRes.status} ${applyRes.body}`)
+    console.log(`/desktop/builtin-plugins read/apply proxies ok (read ${res.status}, apply ${applyRes.status})`)
   }
   {
     // open-external: GET → 404; POST with a non-http(s) url → the shell
@@ -266,11 +373,18 @@ try {
     }
   }
   {
-    // agent/status running→idle transition arms the turn-end notifier once
-    emit('agent/status', { status: 'running' })
-    emit('agent/status', { status: 'idle' })
-    emit('agent/status', { status: 'idle' })
-    console.log('agent/status listener ok')
+    // /desktop/status now reflects per-session armed work instead of a global
+    // running flag that can drift when conversations overlap.
+    emit('agent/status', { agent: { id: 'status-session' }, status: 'running' })
+    const running = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/status' }, running)
+    if (!running.body.includes('"running":true')) throw new Error(`status did not report running: ${running.body}`)
+    emit('agent/status', { agent: { id: 'status-session' }, status: 'idle' })
+    const idle = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/status' }, idle)
+    if (!idle.body.includes('"running":false')) throw new Error(`status did not settle: ${idle.body}`)
+    emit('session/disposed', { id: 'status-session' })
+    console.log('per-session /desktop/status ok')
   }
   {
     // --- 4. wave-state classifier: per-session + focused-session reporting -----

@@ -54,6 +54,7 @@ if (typeof result.views?.BalancePanelView !== 'function') throw new Error('bundl
 if (typeof result.views?.AboutSectionView !== 'function') throw new Error('bundle must export views.AboutSectionView');
 if (typeof result.views?.AppearanceSectionView !== 'function') throw new Error('bundle must export views.AppearanceSectionView');
 if (typeof result.views?.PluginNetworkSectionView !== 'function') throw new Error('bundle must export views.PluginNetworkSectionView');
+if (typeof result.views?.BuiltinPluginsSectionView !== 'function') throw new Error('bundle must export views.BuiltinPluginsSectionView');
 if (typeof result.views?.RemoteSectionView !== 'function') throw new Error('bundle must export views.RemoteSectionView');
 if (typeof result.qr?.qrSvgDataUri !== 'function') throw new Error('bundle must export qr.qrSvgDataUri');
 if (typeof result.qr?.matrixFor !== 'function') throw new Error('bundle must export qr.matrixFor');
@@ -319,6 +320,7 @@ const usageFixture = {
       providers: [
         { id: 'deepseek-official', kind: 'balance', configured: true, display_name: 'DeepSeek', balance: { is_available: true, balance_infos: [{ total_balance: '88.00', currency: 'CNY', topped_up_balance: '88.00', granted_balance: '0.00' }] } },
         { id: 'gateway', kind: 'usage', configured: true, display_name: 'Gateway', usage: { remaining: 56.78, unit: 'CNY', is_valid: true, total_usage_usd: 12.34, soft_limit_usd: 100, hard_limit_usd: 200, has_payment_method: true } },
+        { id: 'volcengine', kind: 'balance', configured: true, display_name: '火山引擎', balance: { is_available: true, balance_infos: [{ total_balance: '0.00', currency: 'CNY', topped_up_balance: '0.00', granted_balance: '0.00' }] }, plans: [{ id: 'plan-1', name: '方舟 Coding Plan', product: '豆包大模型', remaining: 72.5, total: 100, used: 27.5, unit: 'M Tokens', period_usage: 3.75, expires_at: '2026-09-30T15:59:59Z' }] },
         { id: 'unsupported', kind: 'unsupported', configured: true, display_name: 'UnsupportedCo' },
         { id: 'unconfigured', kind: 'balance', configured: false, display_name: 'NoKeyCo' },
         { id: 'broken', kind: 'balance', configured: true, error: 'boom', display_name: 'BrokenCo' },
@@ -327,7 +329,7 @@ const usageFixture = {
     usage: usageFixture,
     selectedProviderId: 'gateway',
   });
-  for (const marker of ['DeepSeek', '88.00', 'Gateway', '56.78', 'CNY', 'usage.active', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes', 'dbb_providerCard', 'dbb_selected', 'aria-pressed="true"', 'balance.select']) {
+  for (const marker of ['DeepSeek', '88.00', 'Gateway', '56.78', 'CNY', 'usage.active', '火山引擎', '方舟 Coding Plan', '豆包大模型', '72.5', 'M Tokens', '27.5', '100', '3.75', '2026-09-30', 'plan.accountBalance', '0.00', 'dbb_planList', 'dbb_planMetrics', 'UnsupportedCo', 'balance.unsupported', 'NoKeyCo', 'badge.unconfigured', 'BrokenCo', 'boom', 'usage.paymentYes', 'dbb_providerCard', 'dbb_selected', 'aria-pressed="true"', 'balance.select']) {
     if (!markup.includes(marker)) throw new Error(`providers render missing ${marker}\n${markup}`);
   }
   // the three data-less providers are folded into a collapsed summary group
@@ -335,6 +337,56 @@ const usageFixture = {
     if (!markup.includes(marker)) throw new Error(`providers render missing folded marker ${marker}\n${markup}`);
   }
   console.log('multi-provider render ok');
+}
+
+// 2b. a plan-only provider must not present its cash balance as plan quota
+{
+  const markup = render({
+    balance: {
+      configured: true,
+      low: false,
+      providers: [{
+        id: 'volcengine',
+        kind: 'balance',
+        configured: true,
+        display_name: '火山引擎',
+        balance: { is_available: true, balance_infos: [{ total_balance: '0', currency: 'CNY', topped_up_balance: '0', granted_balance: '0' }] },
+        plans: [],
+        plans_error: 'Coding Plan 仅可在控制台查询',
+      }],
+    },
+  });
+  for (const marker of ['火山引擎', 'plan.limited', 'plan.partial', 'Coding Plan 仅可在控制台查询', 'plan.accountBalance', '0 CNY', 'dbb_planError']) {
+    if (!markup.includes(marker)) throw new Error(`limited plan render missing ${marker}\n${markup}`);
+  }
+  if (markup.includes('dbb_balanceBig">0<')) throw new Error(`limited plan must not use cash balance as the headline\n${markup}`);
+  console.log('limited plan render ok');
+}
+
+// 2c. Volcengine Coding Plan quota windows show used %, remaining %, and reset
+{
+  const markup = render({
+    balance: {
+      configured: true,
+      low: false,
+      providers: [{
+        id: 'volcengine',
+        kind: 'balance',
+        configured: true,
+        display_name: '火山引擎',
+        balance: { is_available: true, balance_infos: [{ total_balance: '12.00', currency: 'CNY', topped_up_balance: '12.00', granted_balance: '0' }] },
+        plans: [
+          { id: 'volc-coding-session', name: '5 小时额度', product: '方舟 Coding Plan', total: 100, used: 0, remaining: 100, unit: '%', status: 'Running' },
+          { id: 'volc-coding-weekly', name: '7 天额度', product: '方舟 Coding Plan', total: 100, used: 1.672568, remaining: 98.327432, unit: '%', status: 'Running', expires_at: '2026-06-22T00:00:00Z' },
+          { id: 'volc-coding-monthly', name: '每月额度', product: '方舟 Coding Plan', total: 100, used: 0.836284, remaining: 99.163716, unit: '%', status: 'Running', expires_at: '2026-07-17T23:59:59Z' },
+        ],
+      }],
+    },
+  });
+  for (const marker of ['5 小时额度', '7 天额度', '每月额度', '方舟 Coding Plan', '1.67% plan.used', '98.33%', 'plan.resets', 'plan.noActiveWindow', 'plan.accountBalance', '12.00 CNY']) {
+    if (!markup.includes(marker)) throw new Error(`coding plan render missing ${marker}\n${markup}`);
+  }
+  console.log('coding plan quota render ok');
 }
 
 // 3. usage error state
@@ -421,7 +473,7 @@ console.log('empty usage render ok');
   console.log('remote section render ok');
 }
 
-// 7. appearance section view: quiet / rich toggle states + offline state
+// 7. appearance section view: DSH default / quiet / rich states + offline state
 {
   const renderAppearance = (props) => renderToString(react.createElement(result.views.AppearanceSectionView, {
     t,
@@ -430,18 +482,113 @@ console.log('empty usage render ok');
     busy: false,
     notice: null,
     onChange: noop,
+    notificationMode: 'unfocused',
+    notificationBusy: false,
+    testBusy: false,
+    notificationNotice: null,
+    onNotificationChange: noop,
+    onNotificationTest: noop,
     ...props,
   }));
   const quiet = renderAppearance({ motion: 'quiet' });
-  for (const marker of ['appearance.title', 'appearance.motionLabel', 'appearance.motionQuiet', 'appearance.motionRich', 'appearance.hint']) {
+  for (const marker of ['appearance.title', 'appearance.motionLabel', 'appearance.motionDefault', 'appearance.motionQuiet', 'appearance.motionRich', 'appearance.hint', 'appearance.notificationLabel', 'appearance.notificationOff', 'appearance.notificationUnfocused', 'appearance.notificationAlways', 'appearance.notificationHint', 'appearance.notificationTest']) {
     if (!quiet.includes(marker)) throw new Error(`appearance quiet render missing ${marker}\n${quiet}`);
   }
   if (!quiet.includes('aria-checked="true"')) throw new Error(`appearance quiet should mark the quiet option checked\n${quiet}`);
   const rich = renderAppearance({ motion: 'rich' });
   if (rich === quiet) throw new Error('appearance rich/quiet renders must differ');
+  const dshDefault = renderAppearance({ motion: 'default' });
+  if (dshDefault === quiet || dshDefault === rich) throw new Error('appearance default/quiet/rich renders must differ');
+  if (!dshDefault.match(/aria-checked="true"[^>]*>appearance\.motionDefault</)) {
+    throw new Error(`appearance default should mark the DSH default option checked\n${dshDefault}`);
+  }
   const offline = renderAppearance({ motion: null, loadError: 'boom' });
   if (offline.includes('appearance.offline') || offline.includes('boom')) throw new Error(`appearance error leaked into page content\n${offline}`);
+  const notifyAlways = renderAppearance({ motion: 'default', notificationMode: 'always' });
+  if (!notifyAlways.match(/aria-checked="true"[^>]*>appearance\.notificationAlways</)) {
+    throw new Error(`appearance notifications should mark always checked\n${notifyAlways}`);
+  }
+  const notifyBusy = renderAppearance({ notificationBusy: true, testBusy: true });
+  if (!notifyBusy.includes('appearance.notificationTesting') || !notifyBusy.includes('disabled=""')) {
+    throw new Error(`appearance notification busy state missing\n${notifyBusy}`);
+  }
+  const notifyOk = renderAppearance({ notificationNotice: { kind: 'ok', text: 'appearance.notificationTestSent' } });
+  if (!notifyOk.includes('role="status"') || !notifyOk.includes('appearance.notificationTestSent')) {
+    throw new Error(`appearance notification success feedback missing\n${notifyOk}`);
+  }
   console.log('appearance section render ok');
+}
+
+// 8. model behavior: prompt editor, temperature defaults, dirty/save states
+{
+  const renderModelBehavior = (props) => renderToString(react.createElement(result.views.ModelBehaviorSectionView, {
+    t,
+    loading: false,
+    loadError: null,
+    systemPrompt: '默认使用简体中文',
+    temperatureEnabled: true,
+    temperature: 0.4,
+    dirty: true,
+    busy: false,
+    notice: null,
+    onPromptChange: noop,
+    onTemperatureEnabledChange: noop,
+    onTemperatureChange: noop,
+    onReset: noop,
+    onSave: noop,
+    onRetry: noop,
+    ...props,
+  }));
+  const custom = renderModelBehavior({});
+  for (const marker of ['modelBehavior.title', 'modelBehavior.promptLabel', '默认使用简体中文', 'modelBehavior.temperatureLabel', '0.4', 'modelBehavior.save']) {
+    if (!custom.includes(marker)) throw new Error(`model behavior view missing ${marker}\n${custom}`);
+  }
+  if (!custom.includes('type="range"') || !custom.includes('type="number"') || !custom.includes('checked=""')) {
+    throw new Error(`model behavior custom temperature controls missing\n${custom}`);
+  }
+  const defaults = renderModelBehavior({ temperatureEnabled: false, dirty: false });
+  if (!defaults.includes('disabled=""') || !defaults.includes('modelBehavior.modelDefault')) {
+    throw new Error(`model behavior default state missing\n${defaults}`);
+  }
+  const loading = renderModelBehavior({ loading: true });
+  if (!loading.includes('modelBehavior.loading')) throw new Error(`model behavior loading state missing\n${loading}`);
+  const failed = renderModelBehavior({ loadError: 'boom-secret' });
+  if (!failed.includes('role="alert"') || !failed.includes('modelBehavior.retry') || failed.includes('boom-secret')) {
+    throw new Error(`model behavior error state missing or leaked details\n${failed}`);
+  }
+  console.log('model behavior settings render ok');
+}
+
+// 9. built-in plugin controls: grouped rows, state changes, and action bar
+{
+  const plugins = [
+    { id: 'dsh-desktop-bridge', version: '0.2.0', source: 'desktop', enabled: true, controlPlaneRetained: true },
+    { id: 'dsh-desktop-session-manager', version: '0.1.0', source: 'desktop', enabled: true },
+    { id: 'dsh-desktop-change-history', version: '0.1.0', source: 'desktop', enabled: true },
+    { id: 'dsh-desktop-file-upload', version: '0.2.0', source: 'desktop', enabled: true },
+    { id: 'dsh-vision-any', version: '0.1.0', source: 'bundledThirdParty', enabled: true },
+    { id: 'dshmarket', version: '1.15.0', source: 'user', enabled: false },
+  ];
+  const renderBuiltin = (active, initial = active) => renderToString(react.createElement(result.views.BuiltinPluginsSectionView, {
+    t,
+    plugins,
+    enabled: new Set(active),
+    initialEnabled: new Set(initial),
+    busy: false,
+    loadError: null,
+    onToggle: noop,
+    onEnableAll: noop,
+    onCancel: noop,
+    onApply: noop,
+  }));
+  const clean = renderBuiltin(plugins.slice(0, 5).map((plugin) => plugin.id));
+  for (const marker of ['builtinPlugins.title', 'builtinPlugins.group.desktop', 'builtinPlugins.group.services', 'dshmarket', 'v1.15.0']) {
+    if (!clean.includes(marker)) throw new Error(`built-in plugin view missing ${marker}\n${clean}`);
+  }
+  if (clean.includes('builtinPlugins.apply')) throw new Error(`clean built-in plugin state should not show apply action\n${clean}`);
+  const dirty = renderBuiltin(plugins.slice(0, 4).map((plugin) => plugin.id), plugins.slice(0, 5).map((plugin) => plugin.id));
+  if (!dirty.includes('builtinPlugins.apply') || !dirty.includes('builtinPlugins.pending')) throw new Error(`dirty built-in plugin state missing actions\n${dirty}`);
+  console.log('built-in plugin settings render ok');
 }
 
 console.log('bridge views fixture tests PASSED');

@@ -319,29 +319,32 @@ listen('balance-updated', (e) => {
 });
 
 listen('update-status', (e) => {
-  const u = e.payload;
-  const parts = [];
-  if (u.dshUpdateAvailable) {
-    parts.push(`dsh 内核有新版：${u.dshCurrent} → ${u.dshLatest}`);
-    $('apply-dsh-update').disabled = false;
-    $('apply-dsh-update').dataset.tarball = u.dshTarball || '';
-  }
-  if (u.appUpdateAvailable) {
-    parts.push(`应用有新版：${u.appCurrent} → ${u.appLatest}`);
-    aboutMsg(`应用有新版：${u.appCurrent} → ${u.appLatest}`, 'ok');
-    $('about-release-link').dataset.url = u.appUrl || '';
-    $('about-release-link').hidden = !u.appUrl;
-  }
-  if (parts.length) upMsg(`【自动检测】${parts.join('；')}`, 'ok');
+  updateStatus = normalizeUpdateStatus(e.payload);
+  renderUpdateStatus(updateStatus);
+  renderAboutUpdateStatus(updateStatus);
+  if (updateStatus.core.updateAvailable || updateStatus.shell.updateAvailable) upMsg('已自动检测到可用更新。', 'ok');
 });
 
 listen('update-rollback', (e) => {
-  upMsg(String(e.payload), 'ok');
+  const detail = String(e.payload);
+  const failed = detail.includes('失败');
+  setUpdatePhase('core', failed ? '回滚失败' : detail.includes('验证通过') ? '更新成功' : '已回滚', failed ? 'err' : 'ok');
+  setProgress('core', detail, null, null);
+  upMsg(detail, failed ? 'err' : 'ok');
+  refreshUpdateReadiness();
 });
 
 listen('update-progress', (e) => {
-  const detail = e.payload?.detail;
-  if (detail) upMsg(detail);
+  const payload = e.payload || {};
+  const labels = { download: '下载中', install: '安装中', verify: '验证中' };
+  setUpdatePhase('core', labels[payload.stage] || '更新中', 'warn');
+  setProgress('core', payload.detail || '正在更新 dsh 内核…', payload.downloaded, payload.total);
+});
+
+listen('shell-update-progress', (e) => {
+  const payload = e.payload || {};
+  setUpdatePhase('shell', payload.stage === 'download' ? '下载中' : '安装中', 'warn');
+  setProgress('shell', payload.detail || '正在更新桌面应用…', payload.downloaded, payload.total);
 });
 
 /* ---------------------------------------------------------------------------
@@ -360,6 +363,104 @@ $('open-home').addEventListener('click', () => invoke('open_dsh_home'));
  * updates
  * ------------------------------------------------------------------------- */
 
+let updateStatus = null;
+let coreUpdating = false;
+let shellUpdating = false;
+
+function normalizeUpdateStatus(value) {
+  const core = value?.core || { current: value?.dshCurrent ?? null, latest: value?.dshLatest ?? null, updateAvailable: value?.dshUpdateAvailable === true, releaseUrl: null, notes: null };
+  const shell = value?.shell || { current: value?.appCurrent ?? null, latest: value?.appLatest ?? null, updateAvailable: value?.appUpdateAvailable === true, releaseUrl: value?.appUrl ?? null, notes: null };
+  return { core, shell, readiness: value?.readiness || { ready: true, reason: null } };
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function setUpdatePhase(kind, text, tone = 'warn') {
+  const badge = $(`${kind}-update-state`);
+  badge.textContent = text;
+  badge.className = `badge ${tone}`;
+}
+
+function setProgress(kind, label, downloaded, total) {
+  const root = $(`${kind}-progress`);
+  const bar = $(`${kind}-progress-bar`);
+  root.hidden = false;
+  $(`${kind}-progress-label`).textContent = label;
+  const hasTotal = Number.isFinite(total) && total > 0 && Number.isFinite(downloaded);
+  if (hasTotal) {
+    const percent = Math.min(100, Math.max(0, downloaded / total * 100));
+    bar.value = percent;
+    $(`${kind}-progress-bytes`).textContent = `${formatBytes(downloaded)} / ${formatBytes(total)} · ${Math.round(percent)}%`;
+  } else {
+    bar.removeAttribute('value');
+    $(`${kind}-progress-bytes`).textContent = Number.isFinite(downloaded) ? formatBytes(downloaded) : '';
+  }
+}
+
+function updateComponent(kind, component) {
+  $(kind === 'core' ? 'up-dsh' : 'up-app').textContent = component.current || '?';
+  $(kind === 'core' ? 'up-dsh-latest' : 'up-app-latest').textContent = component.latest || '未获取';
+  if (!(kind === 'core' ? coreUpdating : shellUpdating)) {
+    setUpdatePhase(kind, component.updateAvailable ? '有新版本' : component.latest ? '已是最新' : '未检查', component.updateAvailable ? 'ok' : 'warn');
+  }
+}
+
+function renderReadiness(readiness) {
+  const root = $('update-readiness');
+  const ready = readiness?.coreReady !== false && readiness?.shellReady !== false && readiness?.ready !== false;
+  const reason = readiness?.reason || readiness?.coreReason || readiness?.shellReason;
+  root.textContent = ready ? '当前空闲，可以执行更新。' : (reason || '当前暂不可更新。');
+  root.className = `update-readiness ${ready ? 'ready' : 'blocked'}`;
+}
+
+function syncUpdateButtons() {
+  if (!updateStatus) return;
+  const readiness = updateStatus.readiness || {};
+  const coreReady = readiness.coreReady ?? (readiness.ready !== false && readiness.adopted !== true);
+  const shellReady = readiness.shellReady ?? readiness.ready !== false;
+  $('apply-dsh-update').disabled = coreUpdating || shellUpdating || !coreReady || !updateStatus.core.updateAvailable;
+  $('apply-shell-update').disabled = coreUpdating || shellUpdating || !shellReady || !updateStatus.shell.updateAvailable;
+}
+
+function renderUpdateStatus(status) {
+  updateComponent('core', status.core);
+  updateComponent('shell', status.shell);
+  renderReadiness(status.readiness);
+  const notes = $('shell-release-notes');
+  notes.textContent = status.shell.notes || '';
+  notes.hidden = !status.shell.notes;
+  const release = $('open-shell-release');
+  release.dataset.url = status.shell.releaseUrl || '';
+  release.hidden = !status.shell.releaseUrl;
+  syncUpdateButtons();
+}
+
+function renderAboutUpdateStatus(status) {
+  const parts = [
+    status.core.updateAvailable ? `dsh 内核：${status.core.current || '?'} → ${status.core.latest || '?'}` : `dsh 内核已是最新（${status.core.current || '?'}）`,
+    status.shell.updateAvailable ? `桌面应用：${status.shell.current || '?'} → ${status.shell.latest || '?'}` : `桌面应用已是最新（${status.shell.current || '?'}）`,
+  ];
+  aboutMsg(parts.join('；'), status.core.updateAvailable || status.shell.updateAvailable ? 'ok' : '');
+  $('about-release-link').dataset.url = status.shell.releaseUrl || '';
+  $('about-release-link').hidden = !status.shell.releaseUrl;
+}
+
+async function refreshUpdateReadiness() {
+  if (!updateStatus) return;
+  try {
+    updateStatus.readiness = await invoke('get_update_readiness');
+    renderReadiness(updateStatus.readiness);
+    syncUpdateButtons();
+  } catch (e) { /* transient shell restart */ }
+}
+
 async function renderUpdatePanel() {
   try {
     const st = await invoke('get_status');
@@ -374,23 +475,11 @@ $('check-update').addEventListener('click', async () => {
   $('check-update').classList.add('busy');
   upMsg('正在检查更新…');
   try {
-    const u = await invoke('check_update');
-    const parts = [];
-    if (u.dshUpdateAvailable) {
-      parts.push(`dsh 内核：${u.dshCurrent} → ${u.dshLatest}`);
-      $('apply-dsh-update').disabled = false;
-      $('apply-dsh-update').dataset.tarball = u.dshTarball || '';
-    } else {
-      parts.push(`dsh 内核已是最新（${u.dshCurrent || '?'}）`);
-      $('apply-dsh-update').disabled = true;
-    }
-    if (u.appRepo) {
-      if (u.appUpdateAvailable) parts.push(`壳：${u.appCurrent} → ${u.appLatest}（请前往 Releases 下载安装）`);
-      else parts.push(`壳已是最新（${u.appCurrent}）`);
-    } else {
-      parts.push('壳更新未配置仓库');
-    }
-    upMsg(parts.join('；'), u.dshUpdateAvailable || u.appUpdateAvailable ? 'ok' : '');
+    updateStatus = normalizeUpdateStatus(await invoke('check_update'));
+    renderUpdateStatus(updateStatus);
+    renderAboutUpdateStatus(updateStatus);
+    const available = updateStatus.core.updateAvailable || updateStatus.shell.updateAvailable;
+    upMsg(available ? '发现可用更新。' : 'dsh 内核和桌面应用均已是最新。', available ? 'ok' : '');
   } catch (e) {
     showMessage(String(e));
   } finally {
@@ -400,23 +489,49 @@ $('check-update').addEventListener('click', async () => {
 });
 
 $('apply-dsh-update').addEventListener('click', async () => {
-  if (!confirm('更新 dsh 内核？更新会自动备份当前版本并在失败时回滚，正在运行中的对话不受影响。')) return;
+  if (!confirm('更新 dsh 内核？服务会短暂重启，当前页面可能暂时断开；新版本验证失败时会自动回滚。')) return;
+  coreUpdating = true;
   $('apply-dsh-update').disabled = true;
   $('apply-dsh-update').classList.add('busy');
   upMsg('正在下载并应用 dsh 更新（请勿关闭应用）…');
   try {
-    const tarball = $('apply-dsh-update').dataset.tarball || null;
-    const result = await invoke('apply_dsh_update', { tarball });
+    const result = await invoke('apply_dsh_update');
     upMsg(result, 'ok');
-    $('apply-dsh-update').disabled = true;
     renderStatus();
     renderUpdatePanel();
   } catch (e) {
+    setUpdatePhase('core', '更新失败', 'err');
+    upMsg(String(e), 'err');
     showMessage(String(e));
-    $('apply-dsh-update').disabled = false;
   } finally {
+    coreUpdating = false;
     $('apply-dsh-update').classList.remove('busy');
+    refreshUpdateReadiness();
   }
+});
+
+$('apply-shell-update').addEventListener('click', async () => {
+  if (!confirm('安装桌面应用更新？下载并验证签名后，应用会退出、完成安装并自动重启。')) return;
+  shellUpdating = true;
+  syncUpdateButtons();
+  $('apply-shell-update').classList.add('busy');
+  setUpdatePhase('shell', '准备下载', 'warn');
+  setProgress('shell', '正在连接官方签名更新源…', null, null);
+  try {
+    await invoke('apply_shell_update');
+  } catch (e) {
+    shellUpdating = false;
+    $('apply-shell-update').classList.remove('busy');
+    setUpdatePhase('shell', '更新失败', 'err');
+    upMsg(String(e), 'err');
+    showMessage(String(e));
+    refreshUpdateReadiness();
+  }
+});
+
+$('open-shell-release').addEventListener('click', () => {
+  const url = $('open-shell-release').dataset.url;
+  if (url) openExternal(url);
 });
 
 /* ---------------------------------------------------------------------------
@@ -466,23 +581,9 @@ $('about-check-update').addEventListener('click', async () => {
   $('about-check-update').classList.add('busy');
   aboutMsg('正在检查更新…');
   try {
-    const u = await invoke('check_update');
-    const parts = [];
-    if (u.dshUpdateAvailable) parts.push(`dsh 内核：${u.dshCurrent} → ${u.dshLatest}`);
-    else parts.push(`dsh 内核已是最新（${u.dshCurrent || '?'}）`);
-    if (u.appRepo) {
-      if (u.appUpdateAvailable) {
-        parts.push(`应用：${u.appCurrent} → ${u.appLatest}`);
-        $('about-release-link').dataset.url = u.appUrl || '';
-        $('about-release-link').hidden = !u.appUrl;
-      } else {
-        parts.push(`应用已是最新（${u.appCurrent}）`);
-        $('about-release-link').hidden = true;
-      }
-    } else {
-      $('about-release-link').hidden = true;
-    }
-    aboutMsg(parts.join('；'), u.dshUpdateAvailable || u.appUpdateAvailable ? 'ok' : '');
+    updateStatus = normalizeUpdateStatus(await invoke('check_update'));
+    renderUpdateStatus(updateStatus);
+    renderAboutUpdateStatus(updateStatus);
   } catch (e) {
     showMessage(String(e));
   } finally {
@@ -496,3 +597,4 @@ renderUpdatePanel();
 renderRemote();
 setInterval(renderStatus, 15000);
 setInterval(renderRemote, 15000);
+setInterval(refreshUpdateReadiness, 5000);

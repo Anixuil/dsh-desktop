@@ -129,16 +129,65 @@
         </section>
 
         <section id="panel-updates" class="settings-panel" role="tabpanel" aria-labelledby="tab-updates" data-panel="updates" hidden>
-          <div class="card">
-      <h2>自动更新</h2>
-      <div class="kv"><span class="k">壳版本（本应用）</span><span class="v" id="up-app">…</span></div>
-      <div class="kv"><span class="k">dsh 内核版本</span><span class="v" id="up-dsh">…</span></div>
-      <div class="row">
+          <div class="card update-overview">
+      <div class="update-heading">
+        <div>
+          <h2>应用更新</h2>
+          <p>仅在没有运行中任务时安装，不会自动排队或中断任务。</p>
+        </div>
         <button id="check-update">检查更新</button>
-        <button id="apply-dsh-update" disabled>更新 dsh 内核</button>
       </div>
-      <div id="up-msg"></div>
-      <p class="hint">壳更新默认检查 GitHub 仓库 Anixuil/dsh-desktop 的 Releases（可通过 DSH_DESKTOP_UPDATE_REPO 环境变量或配置 update_repo 覆盖）；dsh 内核更新走 npm 官方源，带自动备份与回滚。</p>
+      <div id="update-readiness" class="update-readiness" role="status" aria-live="polite">正在读取更新状态…</div>
+      <div id="up-msg" role="status" aria-live="polite"></div>
+    </div>
+
+          <div class="card update-card" id="core-update-card">
+      <div class="update-component-head">
+        <div>
+          <h2>dsh 内核</h2>
+          <p>从 npm 官方源重新校验版本、包名、HTTPS 地址与 SHA-512 完整性。</p>
+        </div>
+        <span class="badge warn" id="core-update-state">未检查</span>
+      </div>
+      <div class="update-versions">
+        <div><span>当前版本</span><strong id="up-dsh">…</strong></div>
+        <div><span>最新版本</span><strong id="up-dsh-latest">…</strong></div>
+      </div>
+      <div class="update-progress" id="core-progress" hidden>
+        <div class="update-progress-line"><span id="core-progress-label">准备更新…</span><span id="core-progress-bytes"></span></div>
+        <progress id="core-progress-bar" max="100"></progress>
+      </div>
+      <div class="row update-actions">
+        <button class="primary" id="apply-dsh-update" disabled>更新 dsh 内核</button>
+      </div>
+    </div>
+
+          <div class="card update-card" id="shell-update-card">
+      <div class="update-component-head">
+        <div>
+          <h2>桌面应用</h2>
+          <p>通过应用内置的官方地址与公钥检查、下载并验证签名安装包。</p>
+        </div>
+        <span class="badge warn" id="shell-update-state">未检查</span>
+      </div>
+      <div class="update-versions">
+        <div><span>当前版本</span><strong id="up-app">…</strong></div>
+        <div><span>最新版本</span><strong id="up-app-latest">…</strong></div>
+      </div>
+      <p class="update-notes" id="shell-release-notes" hidden></p>
+      <div class="update-progress" id="shell-progress" hidden>
+        <div class="update-progress-line"><span id="shell-progress-label">准备更新…</span><span id="shell-progress-bytes"></span></div>
+        <progress id="shell-progress-bar" max="100"></progress>
+      </div>
+      <div class="row update-actions">
+        <button class="primary" id="apply-shell-update" disabled>更新并重启桌面应用</button>
+        <button id="open-shell-release" hidden>查看 Release</button>
+      </div>
+      <p class="hint">从 0.2.1 起支持签名一键升级。0.2.0 用户需要先从 Releases 手动覆盖安装 0.2.1。</p>
+    </div>
+
+          <div class="card">
+      <h2>启动设置</h2>
       <label class="autostart">
         <span class="switch"><input type="checkbox" id="autostart" /><span class="knob"></span></span>
         <span>开机自启（登录 Windows 时自动启动）</span>

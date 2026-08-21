@@ -1,5 +1,5 @@
-// Builds the official DSH whale icon (black whale, light-mode form of the
-// DSH favicon) into src-tauri/icons/icon-src.svg and ui/whale.svg.
+// Builds the high-contrast white DSH whale used by the Windows executable,
+// taskbar, tray, and web shell.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
@@ -22,6 +22,6 @@ const svg = (fill) => `<svg xmlns="http://www.w3.org/2000/svg" width="1024" heig
 `;
 
 mkdirSync(path.join(root, 'src-tauri/icons'), { recursive: true });
-writeFileSync(path.join(root, 'src-tauri/icons/icon-src.svg'), svg('#000000'));
+writeFileSync(path.join(root, 'src-tauri/icons/icon-src.svg'), svg('#FFFFFF'));
 writeFileSync(path.join(root, 'ui/whale.svg'), svg('#FFFFFF'));
 console.log('whale svgs written');

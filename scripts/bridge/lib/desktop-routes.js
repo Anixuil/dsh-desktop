@@ -2,33 +2,13 @@
 //
 // Same-origin /desktop routes inside the dsh web server (no CORS, no ports):
 // status/balance/refresh proxy to the shell listener, usage aggregates from
-// the dsh session projection cache. Also listens for `agent/status` idle
-// transitions and POSTs /turn-end to the shell.
+// the dsh session projection cache. Turn completion is tracked independently
+// by turn-notifier.js and exposed here through getRunning().
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { resetUsageCounter, usageReport } from './usage.js'
 
-export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
-  let lastRunning = false
-  let notified = false
-
-  const notifyTurnEnd = () => {
-    fetch(`http://127.0.0.1:${shellPort}/turn-end`, { method: 'POST' }).catch(() => {})
-  }
-
-  ctx.on('agent/status', (payload) => {
-    const status = payload?.status
-    if (status === 'running') {
-      lastRunning = true
-      notified = false
-      return
-    }
-    if (status === 'idle' && lastRunning && !notified) {
-      lastRunning = false
-      notified = true
-      notifyTurnEnd()
-    }
-  })
+export function registerDesktopRoutes(ctx, { shellPort, onFocus, getRunning, modelBehavior }) {
 
   const json = (res, status, payload) => {
     res.writeHead(status, {
@@ -163,6 +143,24 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
+      if (pathname === '/desktop/notifications-save') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          const mode = typeof body?.mode === 'string' ? body.mode : ''
+          return json(res, 200, await shellPost('/notifications-save', { mode }, 8000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/notifications-test') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          return json(res, 200, await shellPost('/notifications-test', {}, 8000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
       if (pathname === '/desktop/plugin-network-save') {
         if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
         try {
@@ -182,6 +180,31 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
           return json(res, 200, await shellPost('/plugin-network-test', {}, 55000))
         } catch (error) {
           return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/builtin-plugins-apply') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          const enabled = Array.isArray(body?.enabled)
+            ? body.enabled.filter((id) => typeof id === 'string')
+            : []
+          return json(res, 200, await shellPost('/builtin-plugins-apply', { enabled }, 15000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/model-behavior-save') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req, 65536)
+          const value = await modelBehavior?.save(body)
+          if (value === undefined) throw new Error('model behavior settings are unavailable')
+          return json(res, 200, { ok: true, ...value })
+        } catch (error) {
+          const message = String(error?.message ?? error)
+          const status = /not ready|unavailable/.test(message) ? 503 : 400
+          return json(res, status, { ok: false, error: message })
         }
       }
       // The persistent pairing endpoint is a write operation, so it must be
@@ -217,11 +240,34 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
+      if (pathname === '/desktop/notifications') {
+        try {
+          return json(res, 200, await shellGet('/notifications', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
       if (pathname === '/desktop/plugin-network') {
         try {
           return json(res, 200, await shellGet('/plugin-network', 3000))
         } catch (error) {
           return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/builtin-plugins') {
+        try {
+          return json(res, 200, await shellGet('/builtin-plugins', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/model-behavior') {
+        try {
+          const value = modelBehavior?.read()
+          if (value === undefined) throw new Error('model behavior settings are unavailable')
+          return json(res, 200, { ok: true, ...value })
+        } catch (error) {
+          return json(res, 503, { ok: false, error: String(error?.message ?? error) })
         }
       }
       if (pathname === '/desktop/remote-config') {
@@ -239,7 +285,7 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus }) {
         }
       }
       if (pathname === '/desktop/status') {
-        return json(res, 200, { ok: true, running: lastRunning });
+        return json(res, 200, { ok: true, running: getRunning?.() === true });
       }
       if (pathname === '/desktop/balance') {
         try {

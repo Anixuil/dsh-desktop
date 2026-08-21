@@ -19,6 +19,7 @@ const plugins = [
   { name: 'dsh-desktop-session-manager', dir: 'session-manager' },
   { name: 'dsh-desktop-change-history', dir: 'change-history' },
   { name: 'dsh-desktop-file-upload', dir: 'file-upload' },
+  { name: 'dsh-desktop-web-search', dir: 'web-search' },
 ]
 
 if (!existsSync(runtime)) {
