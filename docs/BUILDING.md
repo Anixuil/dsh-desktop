@@ -32,6 +32,29 @@ npm run dev     # 开发模式（runtime/ 直接使用解压形态）
 npm run build   # 产出 src-tauri/target/release/bundle/nsis/*.exe
 ```
 
+运行时 npm 安装默认最多等待 45 分钟。网络较慢时可通过
+`DSH_DESKTOP_RUNTIME_INSTALL_TIMEOUT_MS` 调整毫秒数，设为 `0` 可禁用超时。
+Windows 下脚本会直接启动 npm CLI，避免超时后 shell 子进程继续修改 runtime。
+
+本地未配置 `TAURI_SIGNING_PRIVATE_KEY` 时，`npm run build` 和 `npm run release:build`
+会自动使用 `tauri.local.conf.json`，只生成普通 NSIS `setup.exe`，不生成 updater
+artifact。配置了签名私钥时仍按 `tauri.conf.json` 生成并签名 updater artifact；
+GitHub Release workflow 直接使用 `tauri-action` 和仓库 secrets，不受本地覆盖配置影响。
+如需在本地生成签名 updater artifact，可在当前 PowerShell 会话中注入私钥路径和
+密码后再构建：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$env:USERPROFILE\.tauri\dsh-desktop-updater.key"
+$securePassword = Read-Host 'Updater 私钥密码' -AsSecureString
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [System.Net.NetworkCredential]::new('', $securePassword).Password
+try {
+  npm run release:build
+} finally {
+  Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+  Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+}
+```
+
 ## 发布清单
 
 1. 同步修改 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 的版本。

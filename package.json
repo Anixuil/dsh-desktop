@@ -5,7 +5,7 @@
   "description": "DeepSeek Harness Windows desktop shell (Tauri 2 + bundled Node/dsh runtime)",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "node scripts/tauri-build.mjs",
     "release:build": "node scripts/release-build.mjs",
     "release-dev": "node scripts/release-build.mjs --dev",
     "release-dev:fast": "node scripts/release-build.mjs --dev --fast",

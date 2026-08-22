@@ -20,6 +20,7 @@ const { showMessage } = require('./message.js');
 // Fallback in case an older shell omits `defaultRelayUrl` from the snapshot;
 // the shell is the source of truth and reports the real default.
 const DEFAULT_RELAY_URL = 'wss://remote.anixuil.com';
+const REMOTE_STATUS_POLL_MS = 2000;
 
 /** GET/POST one /desktop/* route with the { ok, ... } shell envelope. */
 async function getJson(path, init) {
@@ -31,24 +32,45 @@ async function getJson(path, init) {
   return payload;
 }
 
-function statusBadge(cfg, t) {
+function preserveRemoteDraft(current, fresh) {
+  return current ?? fresh ?? null;
+}
+
+function statusBadge(cfg, t, statusError) {
+  if (cfg === null || cfg === undefined) {
+    return jsx('span', {
+      className: `dbb_badge ${statusError ? 'dbb_badgeErr' : 'dbb_badgeWarn'}`,
+      role: 'status',
+      'aria-live': 'polite',
+      children: statusError ? t('remote.stateUnavailable') : t('remote.stateChecking'),
+    });
+  }
   if (cfg?.enabled !== true) {
-    return jsx('span', { className: 'dbb_badge dbb_badgeErr', children: t('remote.stateOff') });
+    return jsx('span', { className: 'dbb_badge dbb_badgeErr', role: 'status', 'aria-live': 'polite', children: t('remote.stateOff') });
+  }
+  if (statusError) {
+    return jsx('span', {
+      className: 'dbb_badge dbb_badgeErr',
+      role: 'status',
+      'aria-live': 'polite',
+      children: t('remote.stateUnavailable'),
+    });
   }
   if (cfg?.online === true) {
-    return jsx('span', { className: 'dbb_badge dbb_badgeOk', children: t('remote.stateOnline') });
+    return jsx('span', { className: 'dbb_badge dbb_badgeOk', role: 'status', 'aria-live': 'polite', children: t('remote.stateOnline') });
   }
   if (cfg?.running === true) {
-    return jsx('span', { className: 'dbb_badge dbb_badgeWarn', children: t('remote.stateConnecting') });
+    return jsx('span', { className: 'dbb_badge dbb_badgeWarn', role: 'status', 'aria-live': 'polite', children: t('remote.stateConnecting') });
   }
-  return jsx('span', { className: 'dbb_badge dbb_badgeWarn', children: t('remote.stateStopped') });
+  return jsx('span', { className: 'dbb_badge dbb_badgeWarn', role: 'status', 'aria-live': 'polite', children: t('remote.stateStopped') });
 }
 
 /** Pure render layer: props in, section markup out (no fetch, no effects). */
 function RemoteSectionView(props) {
-  const { t, cfg, loadError, busy, notice, pairingBusy, pairingCode, pairingQr, pairingError, persistentCode, persistentBusy, persistentNotice, onPersistentCodeChange, onSavePersistentCode, onChange, onSave, onPair } = props;
+  const { t, cfg, runtimeCfg, loadError, statusError, busy, notice, pairingBusy, pairingCode, pairingQr, pairingError, persistentCode, persistentBusy, persistentNotice, onPersistentCodeChange, onSavePersistentCode, onChange, onSave, onPair } = props;
   const custom = cfg?.customRelay === true;
   const defaultRelayUrl = cfg?.defaultRelayUrl || DEFAULT_RELAY_URL;
+  const statusCfg = runtimeCfg ?? cfg;
   return jsxs('section', {
     className: 'dbb_remote',
     'aria-label': t('remote.title'),
@@ -125,19 +147,19 @@ function RemoteSectionView(props) {
             onClick: onPair,
             children: pairingBusy ? t('remote.pairingBusy') : t('remote.pair'),
           }),
-          statusBadge(cfg, t),
+          statusBadge(statusCfg, t, statusError ?? loadError),
         ] }),
         jsxs('div', { className: 'dbb_remotePersistent', children: [
           jsx('span', { className: 'dbb_remoteLabel', children: t('remote.persistentCode') }),
           jsx('p', { className: 'dbb_note', children: t('remote.persistentHint') }),
           jsx('input', {
             type: 'password', className: 'dbb_remoteInput', value: persistentCode,
-            placeholder: cfg?.persistentPairingEnabled ? t('remote.persistentReplace') : t('remote.persistentPlaceholder'),
+            placeholder: statusCfg?.persistentPairingEnabled ? t('remote.persistentReplace') : t('remote.persistentPlaceholder'),
             onChange: (e) => onPersistentCodeChange(e.target.value), autoComplete: 'new-password',
           }),
           jsxs('div', { className: 'dbb_aboutActions', children: [
             jsx('button', { type: 'button', className: 'dbb_aboutSecondary', disabled: persistentBusy || busy || cfg?.enabled !== true, onClick: onSavePersistentCode, children: persistentBusy ? t('remote.persistentSaving') : t('remote.persistentSave') }),
-            cfg?.persistentPairingEnabled ? jsx('span', { className: 'dbb_badge dbb_badgeOk', children: t('remote.persistentEnabled') }) : null,
+            statusCfg?.persistentPairingEnabled ? jsx('span', { className: 'dbb_badge dbb_badgeOk', children: t('remote.persistentEnabled') }) : null,
           ] }),
           persistentNotice?.kind !== 'err' && persistentNotice ? jsx('p', { className: 'dbb_aboutStatus', children: persistentNotice.text }) : null,
         ] }),
@@ -152,8 +174,8 @@ function RemoteSectionView(props) {
           : null,
         jsxs('div', { className: 'dbb_row', children: [
           jsx('span', { className: 'dbb_rowLabel', children: t('remote.entry') }),
-          cfg?.entry
-            ? jsx('span', { className: 'dbb_rowValue', children: cfg.entry })
+          statusCfg?.entry
+            ? jsx('span', { className: 'dbb_rowValue', children: statusCfg.entry })
             : jsx('span', { className: 'dbb_rowValue', children: t('remote.entryNone') }),
         ] }),
         notice !== null && notice?.kind !== 'err'
@@ -172,7 +194,9 @@ function RemoteSectionView(props) {
 function RemoteSection(props) {
   const { t } = props;
   const [cfg, setCfg] = react.useState(null);
+  const [runtimeCfg, setRuntimeCfg] = react.useState(null);
   const [loadError, setLoadError] = react.useState(null);
+  const [statusError, setStatusError] = react.useState(null);
   const [busy, setBusy] = react.useState(false);
   const [notice, setNotice] = react.useState(null);
   const [pairingBusy, setPairingBusy] = react.useState(false);
@@ -186,16 +210,44 @@ function RemoteSection(props) {
   react.useEffect(() => {
     ensureStyles();
     let cancelled = false;
-    getJson('/desktop/remote-config')
-      .then((payload) => {
+    let loaded = false;
+    let refreshing = false;
+
+    const refreshStatus = async () => {
+      if (refreshing || cancelled) return;
+      refreshing = true;
+      try {
+        const payload = await getJson('/desktop/remote-config');
         if (cancelled) return;
-        setCfg(payload?.config ?? null);
+        const fresh = payload?.config ?? null;
+        setCfg((current) => preserveRemoteDraft(current, fresh));
+        setRuntimeCfg(fresh);
         setLoadError(null);
-      })
-      .catch((e) => {
-        if (!cancelled) setLoadError(String(e?.message ?? e));
-      });
-    return () => { cancelled = true; };
+        setStatusError(null);
+        loaded = true;
+      } catch (e) {
+        if (cancelled) return;
+        const message = String(e?.message ?? e);
+        setStatusError(message);
+        if (!loaded) setLoadError(message);
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshStatus();
+    };
+    void refreshStatus();
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refreshStatus();
+    }, REMOTE_STATUS_POLL_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, []);
 
   react.useEffect(() => { if (loadError !== null) showMessage(`${t('remote.offline')}（${loadError}）`); }, [loadError, t]);
@@ -240,6 +292,7 @@ function RemoteSection(props) {
       });
       const nextCfg = payload?.config ?? sourceCfg;
       setCfg(nextCfg);
+      setRuntimeCfg(nextCfg);
       if (showNotice) setNotice({ kind: nextCfg.online === true ? 'ok' : '', text: sourceCfg.enabled === true ? (nextCfg.online === true ? t('remote.saved') : t('remote.savedPending')) : t('remote.disabled') });
       return nextCfg;
     } catch (e) {
@@ -299,7 +352,9 @@ function RemoteSection(props) {
       const payload = await getJson('/desktop/remote-persistent-pairing', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: persistentCode }),
       });
-      setCfg(payload?.config ?? savedCfg ?? cfg);
+      const nextCfg = payload?.config ?? savedCfg ?? cfg;
+      setCfg(nextCfg);
+      setRuntimeCfg(nextCfg);
       setPersistentCode('');
       setPersistentNotice({ kind: 'ok', text: persistentCode ? t('remote.persistentSaved') : t('remote.persistentCleared') });
     } catch (e) {
@@ -310,7 +365,9 @@ function RemoteSection(props) {
   return jsx(RemoteSectionView, {
     t,
     cfg,
+    runtimeCfg,
     loadError,
+    statusError,
     busy,
     notice,
     pairingBusy,
@@ -328,4 +385,4 @@ function RemoteSection(props) {
   });
 }
 
-module.exports = { RemoteSection, RemoteSectionView };
+module.exports = { RemoteSection, RemoteSectionView, preserveRemoteDraft };

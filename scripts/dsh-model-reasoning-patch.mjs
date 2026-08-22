@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const REASONING_PATCH_MARKER = 'dsh-desktop model reasoning compatibility 2026-08-21'
-const SUPPORTED_DSH_VERSIONS = new Set(['0.1.0-rc.8'])
+const SUPPORTED_DSH_VERSIONS = new Set(['0.1.0-rc.8', '0.1.1-rc.2'])
 const SUPPORTED_PI_AI_VERSIONS = new Set(['0.82.1'])
 
 function replaceOnce(source, needle, replacement, file) {

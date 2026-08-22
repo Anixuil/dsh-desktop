@@ -11,6 +11,7 @@ import {
   CONTENT_SCROLL_LIFECYCLE_MARKER,
   CONTENT_SCROLL_PATCH_MARKER,
   CONTENT_SCROLL_POLISH_MARKER,
+  CONTENT_SCROLL_SETTLED_GROUP_MARKER,
 } from './dsh-content-scroll-patch.mjs'
 
 const root = join(import.meta.dirname, '..')
@@ -28,6 +29,7 @@ try {
   let conversation = readFileSync(conversationClient, 'utf8')
   if (conversation.includes(CONTENT_SCROLL_PATCH_MARKER)) {
     conversation = conversation
+      .replace(`\n\t\t/** ${CONTENT_SCROLL_SETTLED_GROUP_MARKER}: keep live reasoning and Tool calls in their native rows; group only settled turns. */`, '')
       .replace(`\n\t\t/** ${CONTENT_SCROLL_LIFECYCLE_MARKER}: open while generating and collapse when the run settles. */`, '')
       .replace(`\n\t\t/** ${CONTENT_SCROLL_POLISH_MARKER}: compact disclosure styling and active-run behavior. */`, '')
       .replace(`\n\t\t/** ${CONTENT_SCROLL_FOLD_MARKER}: process groups collapse to one disclosure row by default. */`, '')
@@ -102,6 +104,7 @@ try {
   assert.equal((patchedConversation.match(new RegExp(CONTENT_SCROLL_FOLD_MARKER, 'g')) ?? []).length, 1)
   assert.equal((patchedConversation.match(new RegExp(CONTENT_SCROLL_POLISH_MARKER, 'g')) ?? []).length, 1)
   assert.equal((patchedConversation.match(new RegExp(CONTENT_SCROLL_LIFECYCLE_MARKER, 'g')) ?? []).length, 1)
+  assert.equal((patchedConversation.match(new RegExp(CONTENT_SCROLL_SETTLED_GROUP_MARKER, 'g')) ?? []).length, 1)
 
   const processFlowSource = patchedConversation.match(/function processChatFlow\(order, nodeStore\) \{[\s\S]*?\n\t\t\}/)?.[0]
   assert.ok(processFlowSource, 'processChatFlow source should remain extractable for behavior checks')
@@ -121,6 +124,17 @@ try {
       { kind: 'node', key: 'assistant:1:2', nodeKey: 'assistant:1:2' },
       { kind: 'node', key: 'tail:1', nodeKey: 'tail:1' },
     ],
+  )
+  const liveNodes = new Map([
+    ['user:2', { kind: 'user', data: {} }],
+    ['assistant:2:1', { kind: 'assistant-step', data: { status: 'running' } }],
+    ['tool:2', { kind: 'tool-call', data: {} }],
+    ['assistant:2:2', { kind: 'assistant-step', data: { status: 'running' } }],
+  ])
+  assert.deepEqual(
+    processChatFlow([...liveNodes.keys()], liveNodes),
+    [...liveNodes.keys()].map((nodeKey) => ({ kind: 'node', key: nodeKey, nodeKey })),
+    'live reasoning and Tool calls must keep their original rows until the turn settles',
   )
 
   const patchedTool = readFileSync(toolClient, 'utf8')

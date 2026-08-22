@@ -35,8 +35,21 @@ const fastTauri = JSON.parse(readFileSync(new URL('../src-tauri/tauri.fast.conf.
 assert.equal(fastTauri.bundle.windows.nsis.compression, 'none');
 assert.equal(fastTauri.bundle.createUpdaterArtifacts, false);
 
+const localTauri = JSON.parse(readFileSync(new URL('../src-tauri/tauri.local.conf.json', import.meta.url), 'utf8'));
+assert.equal(localTauri.bundle.createUpdaterArtifacts, false);
+
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 assert.match(packageJson.scripts['release-dev:fast'], /--dev --fast/);
+assert.equal(packageJson.scripts.build, 'node scripts/tauri-build.mjs');
+
+const tauriBuild = readFileSync(new URL('./tauri-build.mjs', import.meta.url), 'utf8');
+assert.match(tauriBuild, /TAURI_SIGNING_PRIVATE_KEY/);
+assert.match(tauriBuild, /TAURI_SIGNING_PRIVATE_KEY_PATH/);
+assert.match(tauriBuild, /readFileSync\(resolvedSigningKeyPath, 'utf8'\)/);
+assert.match(tauriBuild, /TAURI_SIGNING_PRIVATE_KEY_PATH: _signingKeyPath/);
+assert.match(tauriBuild, /Updater 私钥签名预检通过/);
+assert.match(tauriBuild, /tauri\.local\.conf\.json/);
+assert.match(tauriBuild, /hasExplicitConfig/);
 
 const releaseBuild = readFileSync(new URL('./release-build.mjs', import.meta.url), 'utf8');
 assert.doesNotMatch(releaseBuild, /'compile Tauri without bundling'/);

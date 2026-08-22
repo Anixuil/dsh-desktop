@@ -32,6 +32,61 @@ const dshDir = path.join(runtimeDir, 'dsh');
 
 const NODE_VERSION = 'v24.15.0';
 const DSH_VERSION = process.argv[2] ?? '0.1.0-rc.6';
+const DEFAULT_NPM_INSTALL_TIMEOUT_MS = 45 * 60 * 1000;
+
+function readNpmInstallTimeout() {
+  const raw = process.env.DSH_DESKTOP_RUNTIME_INSTALL_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_NPM_INSTALL_TIMEOUT_MS;
+  const timeout = Number(raw);
+  if (!Number.isSafeInteger(timeout) || timeout < 0) {
+    throw new Error('DSH_DESKTOP_RUNTIME_INSTALL_TIMEOUT_MS 必须是非负整数（毫秒），设为 0 可禁用超时');
+  }
+  return timeout;
+}
+
+const npmInstallTimeoutMs = readNpmInstallTimeout();
+
+function formatTimeout(timeout) {
+  if (timeout === 0) return '不限制';
+  if (timeout % 60_000 === 0) return `${timeout / 60_000} 分钟`;
+  return `${Math.ceil(timeout / 1000)} 秒`;
+}
+
+function resolveNpmInvocation() {
+  const npmCliCandidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(path.dirname(process.execPath), '_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(path.dirname(process.execPath), 'node', '_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  const npmCli = npmCliCandidates.find((candidate) => existsSync(candidate));
+  if (npmCli) return { command: process.execPath, prefixArgs: [npmCli] };
+
+  if (process.platform === 'win32') {
+    throw new Error('找不到 npm JavaScript CLI；请通过 npm run fetch-runtime -- <version> 执行');
+  }
+
+  return { command: 'npm', prefixArgs: [] };
+}
+
+function runNpmInstall(args, label) {
+  const { command, prefixArgs } = resolveNpmInvocation();
+  const result = spawnSync(command, [...prefixArgs, 'install', ...args], {
+    shell: false,
+    stdio: 'inherit',
+    cwd: root,
+    windowsHide: true,
+    timeout: npmInstallTimeoutMs || undefined,
+  });
+  if (result.error?.code === 'ETIMEDOUT') {
+    throw new Error(
+      `${label}超时（${formatTimeout(npmInstallTimeoutMs)}），已取消；` +
+      '可检查 npm 源/网络，或通过 DSH_DESKTOP_RUNTIME_INSTALL_TIMEOUT_MS 调整',
+    );
+  }
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${label}失败 (exit ${result.status})`);
+}
 
 // Bundled third-party plugin (github.com/tianmingwan/dsh-vision-any).
 // Pinned by commit so every build reproduces the same code; bump the pin
@@ -96,21 +151,28 @@ if (!existsSync(dshBin) || refreshDsh) {
   // renderer alongside the core so Node-side client loading (and our bundle
   // smoke tests) has a consistent React 18 pair instead of relying on npm's
   // incidental hoisting choices.
-  const runtimePeers = 'react@18.3.1 react-dom@18.3.1';
+  const runtimePeers = ['react@18.3.1', 'react-dom@18.3.1'];
   // npm cache lives OUTSIDE runtime/ (kept out of the installer bundle)
   const cacheDir = path.join(root, '.npm-cache');
   mkdirSync(cacheDir, { recursive: true });
   // dsh uses peer dependencies as runtime imports. Keep npm's normal peer
   // installation enabled; `--legacy-peer-deps` would finish faster but creates
   // an incomplete runtime that fails only when Node resolves those imports.
-  // npm.cmd on Windows requires a shell; stdio inherit shows real failures.
-  const r = spawnSync(
-    `npm install --prefix "${dshDir}" ${spec} ${runtimePeers} --cache "${cacheDir}" --ignore-scripts --no-audit --no-fund --no-progress --fetch-retries=1 --fetch-timeout=30000`,
-    { shell: true, stdio: 'inherit', cwd: root, timeout: 10 * 60 * 1000 },
-  );
-  if (r.error?.code === 'ETIMEDOUT') throw new Error('npm 安装 dsh 超时（10 分钟），已取消；请检查 npm 源或网络后重试');
-  if (r.error) throw r.error;
-  if (r.status !== 0) throw new Error(`npm install failed (exit ${r.status})`);
+  // Invoke npm's JavaScript CLI directly. A shell wrapper can
+  // survive spawnSync's timeout on Windows and keep mutating the runtime after
+  // this script has already reported failure.
+  runNpmInstall([
+    '--prefix', dshDir,
+    spec,
+    ...runtimePeers,
+    '--cache', cacheDir,
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    '--no-progress',
+    '--fetch-retries=1',
+    '--fetch-timeout=30000',
+  ], 'npm 安装 dsh');
 } else {
   console.log(`[2/3] dsh already installed`);
 }
@@ -180,13 +242,19 @@ console.log('[4/5] installing bundled plugin market (dshmarket) ...');
     mkdirSync(cacheDir, { recursive: true });
     rmSync(stagingDir, { recursive: true, force: true });
     try {
-      const r = spawnSync(
-        `npm install --prefix "${stagingDir}" ${name}@${version} --cache "${cacheDir}" --ignore-scripts --no-save --no-package-lock --no-audit --no-fund --no-progress --fetch-retries=1 --fetch-timeout=30000`,
-        { shell: true, stdio: 'inherit', cwd: root, timeout: 10 * 60 * 1000 },
-      );
-      if (r.error?.code === 'ETIMEDOUT') throw new Error('npm 安装 dshmarket 超时（10 分钟），已取消；请检查 npm 源或网络后重试');
-      if (r.error) throw r.error;
-      if (r.status !== 0) throw new Error(`npm install dshmarket failed (exit ${r.status})`);
+      runNpmInstall([
+        '--prefix', stagingDir,
+        `${name}@${version}`,
+        '--cache', cacheDir,
+        '--ignore-scripts',
+        '--no-save',
+        '--no-package-lock',
+        '--no-audit',
+        '--no-fund',
+        '--no-progress',
+        '--fetch-retries=1',
+        '--fetch-timeout=30000',
+      ], 'npm 安装 dshmarket');
       for (const packageName of runtimePackages) {
         const src = path.join(stagingDir, 'node_modules', packageName);
         if (!existsSync(path.join(src, 'package.json'))) {

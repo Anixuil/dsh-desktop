@@ -17,7 +17,7 @@ const { AppearanceSection, AppearanceSectionView } = require('./appearance-secti
 const { ModelBehaviorSection, ModelBehaviorSectionView } = require('./model-behavior-section.js');
 const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-section.js');
 const { BuiltinPluginsSection, BuiltinPluginsSectionView } = require('./builtin-plugins-section.js');
-const { RemoteSection, RemoteSectionView } = require('./remote-section.js');
+const { RemoteSection, RemoteSectionView, preserveRemoteDraft } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
 
 // The balance card is the footer's stable anchor. Third-party footer actions
@@ -147,5 +147,6 @@ exports.inject = inject;
 // Pure view + helpers re-exported for fixture-driven tests and future
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
 exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, ModelBehaviorSectionView, PluginNetworkSectionView: NetworkSectionView, BuiltinPluginsSectionView, RemoteSectionView };
+exports.remote = { preserveRemoteDraft };
 exports.footer = { setFooterStack, activeProvider, providerAmount };
 exports.qr = require('./qr.js');

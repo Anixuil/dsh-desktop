@@ -56,6 +56,7 @@ if (typeof result.views?.AppearanceSectionView !== 'function') throw new Error('
 if (typeof result.views?.PluginNetworkSectionView !== 'function') throw new Error('bundle must export views.PluginNetworkSectionView');
 if (typeof result.views?.BuiltinPluginsSectionView !== 'function') throw new Error('bundle must export views.BuiltinPluginsSectionView');
 if (typeof result.views?.RemoteSectionView !== 'function') throw new Error('bundle must export views.RemoteSectionView');
+if (typeof result.remote?.preserveRemoteDraft !== 'function') throw new Error('bundle must export remote.preserveRemoteDraft');
 if (typeof result.qr?.qrSvgDataUri !== 'function') throw new Error('bundle must export qr.qrSvgDataUri');
 if (typeof result.qr?.matrixFor !== 'function') throw new Error('bundle must export qr.matrixFor');
 
@@ -469,7 +470,39 @@ console.log('empty usage render ok');
     throw new Error(`remote disabled state missing\n${disabled}`);
   }
   const offline = renderRemote({ cfg: null, loadError: 'boom' });
-  if (offline.includes('remote.offline') || offline.includes('boom')) throw new Error(`remote error leaked into page content\n${offline}`);
+  if (!offline.includes('remote.stateUnavailable') || offline.includes('remote.offline') || offline.includes('boom')) throw new Error(`remote unavailable state missing or error leaked into page content\n${offline}`);
+  const checking = renderRemote({ cfg: null });
+  if (!checking.includes('remote.stateChecking') || checking.includes('remote.stateOff')) throw new Error(`remote checking state missing\n${checking}`);
+
+  const edited = {
+    enabled: false,
+    customRelay: true,
+    relayUrl: 'wss://draft.example.com',
+    deviceId: 'draft-device',
+    maxConcurrent: 9,
+    running: true,
+    online: false,
+    persistentPairingEnabled: false,
+  };
+  const fresh = {
+    enabled: true,
+    customRelay: false,
+    relayUrl: 'wss://saved.example.com',
+    deviceId: 'saved-device',
+    maxConcurrent: 3,
+    running: true,
+    online: true,
+    persistentPairingEnabled: true,
+  };
+  const refreshed = result.remote.preserveRemoteDraft(edited, fresh);
+  for (const key of ['enabled', 'customRelay', 'relayUrl', 'deviceId', 'maxConcurrent']) {
+    if (refreshed[key] !== edited[key]) throw new Error(`remote status refresh overwrote draft field ${key}`);
+  }
+  if (result.remote.preserveRemoteDraft(null, fresh) !== fresh) throw new Error('remote initial snapshot did not populate draft');
+  const liveStatus = renderRemote({ cfg: edited, runtimeCfg: fresh });
+  if (!liveStatus.includes('remote.stateOnline') || liveStatus.includes('remote.stateConnecting')) {
+    throw new Error(`remote badge did not use authoritative runtime snapshot\n${liveStatus}`);
+  }
   console.log('remote section render ok');
 }
 

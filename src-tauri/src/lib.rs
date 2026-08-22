@@ -2025,50 +2025,18 @@ fn builtin_plugins_snapshot(paths: &Paths, config: &AppConfig) -> serde_json::Va
     serde_json::json!({ "ok": true, "plugins": plugins })
 }
 
-fn restart_dsh_after_builtin_change(
-    app: AppHandle,
-    paths: Paths,
-    next: AppConfig,
-    previous: AppConfig,
-) {
+fn restart_desktop_after_builtin_change(app: AppHandle, paths: Paths) {
     thread::spawn(move || {
+        // The settings request reaches this endpoint through the DSH bridge.
+        // Let the success response and UI feedback clear that bridge before
+        // exiting the whole desktop process. Tauri then starts a fresh copy,
+        // whose normal bootstrap applies the updated plugin graph.
         thread::sleep(Duration::from_millis(750));
-        let state = app.state::<AppState>();
-        state.runtime_ready.store(false, Ordering::SeqCst);
-        ensure_runtime_files(&paths);
-        let spawn_result = {
-            let mut dsh = state.dsh.lock().unwrap();
-            if let Some(mut child) = dsh.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            spawn_dsh(&paths, &next).map(|child| {
-                dsh.child = Some(child);
-            })
-        };
-        if let Err(error) = spawn_result {
-            log_line(
-                &paths.log_file,
-                &format!("built-in plugin restart failed, rolling back: {error}"),
-            );
-            save_config(&paths.config_file, &previous);
-            *state.config.lock().unwrap() = previous.clone();
-            ensure_runtime_files(&paths);
-            let mut dsh = state.dsh.lock().unwrap();
-            match spawn_dsh(&paths, &previous) {
-                Ok(child) => dsh.child = Some(child),
-                Err(rollback_error) => log_line(
-                    &paths.log_file,
-                    &format!("built-in plugin rollback restart failed: {rollback_error}"),
-                ),
-            }
-        } else {
-            log_line(
-                &paths.log_file,
-                "built-in plugin settings applied; DSH restarted",
-            );
-        }
-        state.runtime_ready.store(true, Ordering::SeqCst);
+        log_line(
+            &paths.log_file,
+            "built-in plugin settings applied; restarting DSH Desktop",
+        );
+        app.request_restart();
     });
 }
 
@@ -5687,8 +5655,7 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             }
                             enabled_ids.insert(id.to_string());
                         }
-                        let previous = state2.config.lock().unwrap().clone();
-                        let mut config = previous.clone();
+                        let mut config = state2.config.lock().unwrap().clone();
                         config.disabled_builtin_plugins = BUILTIN_PLUGINS
                             .iter()
                             .filter(|name| !enabled_ids.contains(**name))
@@ -5702,7 +5669,7 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         response.insert("restartPending".into(), serde_json::json!(true));
                         let _ =
                             req.respond(json_response(200, serde_json::Value::Object(response)));
-                        restart_dsh_after_builtin_change(app2.clone(), paths2, config, previous);
+                        restart_desktop_after_builtin_change(app2.clone(), paths2);
                     }
                     ("POST", "/plugin-network-save") => {
                         let mut body = String::new();

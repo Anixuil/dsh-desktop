@@ -956,12 +956,18 @@ function TurnApprovalSummary({ matched, sessionId, openFile, t }) {
     const result = await api.getTurnApproval(sessionId, turn)
     setApproval(result.approval)
   }, [sessionId, turn])
-  useEffect(() => { ensureStyles(); void refresh().catch((err) => showMessage(String(err.message ?? err))) }, [refresh])
+  useEffect(() => {
+    ensureStyles()
+    void refresh().catch((err) => console.warn('change-history turn summary unavailable:', err))
+  }, [refresh])
   const approveAll = async () => {
     setBusy(true)
     try { await api.approveTurn(sessionId, turn); await refresh() } catch (err) { showMessage(String(err.message ?? err)) } finally { setBusy(false) }
   }
-  if (approval === null) return el('section', { className: 'chx_turnSummary', 'aria-busy': true }, el('span', { className: 'chx_approvalMeta' }, t('loading')))
+  // This is background enrichment after a completed turn. Avoid inserting a
+  // loading card into the conversation or surfacing a global request error;
+  // the summary should appear only when the host confirms actual changes.
+  if (approval === null) return null
   if (approval.changes.length === 0) return null
   const pending = approval.changes.filter((row) => row.status === 'pending').length
   return el(Fragment, null,
@@ -979,7 +985,7 @@ function TurnApprovalSummary({ matched, sessionId, openFile, t }) {
 
 function selectTurnApproval(owner) {
   const turn = owner.turn?.turn
-  return Number.isInteger(turn) ? { turn } : null
+  return Number.isInteger(turn) && owner.turn?.end !== undefined ? { turn } : null
 }
 
 module.exports = { ApprovalPanel, TurnApprovalSummary, selectTurnApproval }

@@ -7,9 +7,10 @@ export const CONTENT_SCROLL_GROUP_MARKER = 'dsh-desktop grouped process flow 202
 export const CONTENT_SCROLL_FOLD_MARKER = 'dsh-desktop collapsible process flow 2026-08-21'
 export const CONTENT_SCROLL_POLISH_MARKER = 'dsh-desktop polished process disclosure 2026-08-21'
 export const CONTENT_SCROLL_LIFECYCLE_MARKER = 'dsh-desktop process lifecycle disclosure 2026-08-21'
+export const CONTENT_SCROLL_SETTLED_GROUP_MARKER = 'dsh-desktop settled process grouping 2026-08-22'
 
-const SUPPORTED_CONVERSATION_VERSIONS = new Set(['0.1.0-rc.8'])
-const SUPPORTED_TOOL_VERSIONS = new Set(['0.1.0-rc.8'])
+const SUPPORTED_CONVERSATION_VERSIONS = new Set(['0.1.0-rc.8', '0.1.1-rc.2'])
+const SUPPORTED_TOOL_VERSIONS = new Set(['0.1.0-rc.8', '0.1.1-rc.2'])
 
 function replaceOnce(source, needle, replacement, file) {
   if (!source.includes(needle)) {
@@ -477,6 +478,53 @@ export function applyDshContentScrollPatch(dshModulesDir) {
     writeFileSync(conversationClientFile, conversation)
   }
 
+  const patchConversationSettledGroup = !conversation.includes(CONTENT_SCROLL_SETTLED_GROUP_MARKER)
+  if (patchConversationSettledGroup) {
+    conversation = replaceOnce(
+      conversation,
+      `/** ${CONTENT_SCROLL_LIFECYCLE_MARKER}: open while generating and collapse when the run settles. */`,
+      `/** ${CONTENT_SCROLL_LIFECYCLE_MARKER}: open while generating and collapse when the run settles. */\n\t\t/** ${CONTENT_SCROLL_SETTLED_GROUP_MARKER}: keep live reasoning and Tool calls in their native rows; group only settled turns. */`,
+      conversationClientFile,
+    )
+    conversation = replaceOnce(
+      conversation,
+      `\t\t\tconst flushProcess = () => {
+\t\t\t\tif (processKeys.length === 0) return;
+\t\t\t\tflow.push({
+\t\t\t\t\tkind: "process",
+\t\t\t\t\tkey: \`process:\${processKeys[0]}\`,
+\t\t\t\t\tnodeKeys: processKeys
+\t\t\t\t});
+\t\t\t\tprocessKeys = [];
+\t\t\t};`,
+      `\t\t\tconst flushProcess = (settled) => {
+\t\t\t\tif (processKeys.length === 0) return;
+\t\t\t\tif (settled) {
+\t\t\t\t\tflow.push({
+\t\t\t\t\t\tkind: "process",
+\t\t\t\t\t\tkey: \`process:\${processKeys[0]}\`,
+\t\t\t\t\t\tnodeKeys: processKeys
+\t\t\t\t\t});
+\t\t\t\t} else {
+\t\t\t\t\tfor (const nodeKey of processKeys) flow.push({ kind: "node", key: nodeKey, nodeKey });
+\t\t\t\t}
+\t\t\t\tprocessKeys = [];
+\t\t\t};`,
+      conversationClientFile,
+    )
+    conversation = replaceOnce(
+      conversation,
+      `\t\t\t\tflushProcess();
+\t\t\t\tflow.push({`,
+      `\t\t\t\tconst settlesProcess = node?.kind === "assistant-step" && node.data.finalNode !== void 0 && finalAssistantSeqs.has(node.data.finalNode.seq) || node?.kind === "turn-tail" && node.data.closing !== null;
+\t\t\t\tflushProcess(settlesProcess);
+\t\t\t\tflow.push({`,
+      conversationClientFile,
+    )
+    conversation = replaceOnce(conversation, '\t\t\tflushProcess();\n\t\t\treturn flow;', '\t\t\tflushProcess(false);\n\t\t\treturn flow;', conversationClientFile)
+    writeFileSync(conversationClientFile, conversation)
+  }
+
   let tool = readFileSync(toolClientFile, 'utf8')
   const patchTool = !tool.includes(CONTENT_SCROLL_PATCH_MARKER)
   if (patchTool) {
@@ -522,5 +570,5 @@ export function applyDshContentScrollPatch(dshModulesDir) {
   }
   if (patchTool || patchToolFlex) writeFileSync(toolClientFile, tool)
 
-  return { conversation: patchConversation || patchConversationGroup || patchConversationFold || patchConversationPolish || patchConversationLifecycle, tool: patchTool || patchToolFlex }
+  return { conversation: patchConversation || patchConversationGroup || patchConversationFold || patchConversationPolish || patchConversationLifecycle || patchConversationSettledGroup, tool: patchTool || patchToolFlex }
 }

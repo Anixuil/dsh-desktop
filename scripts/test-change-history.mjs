@@ -383,7 +383,8 @@ import { join, dirname } from 'node:path'
   if (turnTail === undefined || turnTail.reg.locale !== 'changeHistory' || typeof turnTail.reg.select !== 'function') {
     throw new Error(`bad turn-tail registration: ${JSON.stringify(turnTail?.reg)}`)
   }
-  if (turnTail.reg.select({ turn: { turn: 7 } })?.turn !== 7) throw new Error('turn-tail selector must match completed turns')
+  if (turnTail.reg.select({ turn: { turn: 7 } }) !== null) throw new Error('turn-tail selector must ignore a running turn')
+  if (turnTail.reg.select({ turn: { turn: 7, end: { time: 123 } } })?.turn !== 7) throw new Error('turn-tail selector must match completed turns')
   console.log('turn-tail review registration ok')
 
   // SSR of the inline mutation row (settled diff, actions absent until the
@@ -434,7 +435,7 @@ import { join, dirname } from 'node:path'
   const approvalMarkup = renderToString(react.createElement(ApprovalPanel, { sessionId: 's1', turn: 1, openFile: () => {}, onClose: () => {}, t }))
   if (!approvalMarkup.includes('chx_approvalPanel')) throw new Error(`approval panel render missing\n${approvalMarkup}`)
   const summaryMarkup = renderToString(react.createElement(TurnApprovalSummary, { matched: { turn: 1 }, sessionId: 's1', openFile: () => {}, t }))
-  if (!summaryMarkup.includes('chx_turnSummary')) throw new Error(`turn summary render missing\n${summaryMarkup}`)
+  if (summaryMarkup !== '') throw new Error(`turn summary must stay absent while its background request is pending\n${summaryMarkup}`)
   console.log('approval views render ok')
 }
 
