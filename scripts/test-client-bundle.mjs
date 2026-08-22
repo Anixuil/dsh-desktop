@@ -82,6 +82,13 @@ if (typeof result.apply !== 'function') throw new Error('client bundle did not e
 if (!Array.isArray(result.inject) || !result.inject.includes('slots')) throw new Error('client bundle inject must include slots');
 if (typeof result.footer?.setFooterStack !== 'function') throw new Error('footer stack binding helper missing');
 if (typeof result.footer?.providerAmount !== 'function') throw new Error('provider amount helper missing');
+if (typeof result.footer?.providerLabel !== 'function') throw new Error('provider label helper missing');
+if (result.footer.providerLabel({ display_name: '火山引擎', kind: 'balance' }, (key) => key) !== '火山引擎') {
+  throw new Error('provider label must show the active platform name');
+}
+if (result.footer.providerLabel(null, (key) => key) !== 'badge') {
+  throw new Error('provider label must preserve the legacy fallback');
+}
 const planAmount = result.footer.providerAmount({
   configured: true,
   kind: 'balance',

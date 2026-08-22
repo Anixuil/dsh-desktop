@@ -10,7 +10,7 @@
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge, setFooterStack, activeProvider, providerAmount } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack, activeProvider, providerAmount, providerLabel } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
@@ -19,6 +19,7 @@ const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-s
 const { BuiltinPluginsSection, BuiltinPluginsSectionView } = require('./builtin-plugins-section.js');
 const { RemoteSection, RemoteSectionView, preserveRemoteDraft } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
+const { registerConfigCompatibilityPrompt } = require('./config-compatibility.js');
 
 // The balance card is the footer's stable anchor. Third-party footer actions
 // must stay above it even when plugins are loaded after this bundle.
@@ -30,6 +31,7 @@ const inject = ["slots", "locale", "sessions"];
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-desktop-bridge: dictionaries");
   const t = ctx.locale.bind(NS);
+  registerConfigCompatibilityPrompt(ctx, t);
 
   // The control plane stays mounted even when the desktop-integration feature
   // switch is off, otherwise there would be no in-app path to turn it on.
@@ -148,5 +150,5 @@ exports.inject = inject;
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
 exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, ModelBehaviorSectionView, PluginNetworkSectionView: NetworkSectionView, BuiltinPluginsSectionView, RemoteSectionView };
 exports.remote = { preserveRemoteDraft };
-exports.footer = { setFooterStack, activeProvider, providerAmount };
+exports.footer = { setFooterStack, activeProvider, providerAmount, providerLabel };
 exports.qr = require('./qr.js');

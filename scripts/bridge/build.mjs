@@ -12,6 +12,7 @@ buildClientBundle({
   files: [
     'styles.js',
     'message.js',
+    'config-compatibility.js',
     'helpers.js',
     'locales.js',
     'balance-badge.js',

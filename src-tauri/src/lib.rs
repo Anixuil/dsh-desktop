@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256, Sha512};
 use tauri::{
     menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
+    webview::PageLoadEvent,
     AppHandle, Emitter, Listener, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
@@ -699,7 +700,16 @@ const OCEAN_THEME_SCRIPT: &str = r#"
   // The shell re-evals this script after navigation (3s/10s fallback); the
   // first instance owns the listeners, re-arm watchers and state machine —
   // later evals must not register duplicate dsh-wave-state listeners.
-  if (window.__DSH_OCEAN_READY__) return;
+  if (window.__DSH_OCEAN_READY__) {
+    try {
+      if (typeof window.__DSH_OCEAN_RECONCILE__ === 'function') {
+        window.__DSH_OCEAN_RECONCILE__();
+      }
+    } catch (e) {
+      try { console.error('[dsh-desktop ocean-theme] reconcile-error', String(e)); } catch (_) {}
+    }
+    return;
+  }
   try { window.__DSH_OCEAN_READY__ = true; } catch (e) {}
   var STYLE_ID = '__dsh_ocean_theme__';
   var AMBIENT_ID = '__dsh_ocean_ambient__';
@@ -1163,6 +1173,13 @@ const OCEAN_THEME_SCRIPT: &str = r#"
     return ok;
   }
 
+  // Repeated native injection repairs a document-start pass that ran before
+  // DSH created head/body or a later app-shell DOM replacement.
+  window.__DSH_OCEAN_RECONCILE__ = function () {
+    applyMotionAttr(motionValue());
+    return mount();
+  };
+
   // document-start, retried by the same defensive triggers as the title bar
   if (!mount()) {
     document.addEventListener('DOMContentLoaded', function () { mount(); }, { once: true });
@@ -1182,6 +1199,32 @@ const OCEAN_THEME_SCRIPT: &str = r#"
   }, 1000);
 })();
 "#;
+
+fn desktop_page_script(motion: MotionIntensity) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        motion_init_script(motion),
+        TITLEBAR_SCRIPT,
+        THEME_TRANSITION_SCRIPT,
+        OCEAN_THEME_SCRIPT
+    )
+}
+
+fn inject_desktop_page_scripts(window: &tauri::WebviewWindow, reason: &str) {
+    let app = window.app_handle();
+    let config = state_config(app);
+    let paths = resolve_paths(app, &config);
+    match window.eval(desktop_page_script(config.motion)) {
+        Ok(()) => log_line(
+            &paths.log_file,
+            &format!("desktop page scripts dispatched ({reason})"),
+        ),
+        Err(error) => log_line(
+            &paths.log_file,
+            &format!("desktop page script injection failed ({reason}): {error}"),
+        ),
+    }
+}
 
 fn dsh_web_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/")
@@ -1516,6 +1559,10 @@ pub struct AppState {
     /// "unsupported") so probe providers don't re-probe every refresh.
     adapters: Mutex<HashMap<String, String>>,
     config: Mutex<AppConfig>,
+    /// Present when config.json exists but cannot be safely loaded by this
+    /// version. The process keeps running with AppConfig::default(); the web
+    /// control plane offers a backed-up, explicitly confirmed replacement.
+    config_compatibility_issue: Mutex<Option<ConfigCompatibilityIssue>>,
     /// Defensive shell-side duplicate guard for repeated local /turn-end
     /// requests. The bridge already deduplicates by session turn.
     recent_task_notifications: Mutex<HashMap<String, Instant>>,
@@ -1541,6 +1588,11 @@ pub struct AppState {
     startup_decision: Mutex<Option<StartupMode>>,
     startup_decision_cv: Condvar,
     startup_pending: AtomicBool,
+}
+
+#[derive(Clone)]
+struct ConfigCompatibilityIssue {
+    reason: String,
 }
 
 #[derive(Clone)]
@@ -1948,10 +2000,18 @@ fn webview_data_dir(app: &AppHandle) -> PathBuf {
 }
 
 fn load_config(path: &Path) -> AppConfig {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    load_config_checked(path).unwrap_or_default()
+}
+
+fn load_config_checked(path: &Path) -> Result<AppConfig, String> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AppConfig::default());
+        }
+        Err(error) => return Err(format!("无法读取旧配置: {error}")),
+    };
+    serde_json::from_str(&source).map_err(|error| format!("旧配置格式与当前版本不兼容: {error}"))
 }
 
 fn save_config(path: &Path, config: &AppConfig) {
@@ -1961,6 +2021,33 @@ fn save_config(path: &Path, config: &AppConfig) {
     if let Ok(s) = serde_json::to_string_pretty(config) {
         let _ = fs::write(path, s);
     }
+}
+
+fn incompatible_config_backup_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut candidate = parent.join(format!("config.incompatible-{timestamp}.json"));
+    let mut suffix = 1u16;
+    while candidate.exists() {
+        candidate = parent.join(format!("config.incompatible-{timestamp}-{suffix}.json"));
+        suffix = suffix.saturating_add(1);
+    }
+    candidate
+}
+
+fn replace_incompatible_config(path: &Path, config: &AppConfig) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err("待恢复的旧配置文件已不存在，请重新启动后再试".into());
+    }
+    let backup = incompatible_config_backup_path(path);
+    fs::copy(path, &backup).map_err(|error| format!("备份旧配置失败: {error}"))?;
+    let serialized = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("生成新版配置失败: {error}"))?;
+    if let Err(error) = fs::write(path, serialized) {
+        return Err(format!("覆盖旧配置失败，原文件已备份: {error}"));
+    }
+    load_config_checked(path).map_err(|error| format!("新版配置写入后校验失败: {error}"))?;
+    Ok(backup)
 }
 
 fn valid_plugin_proxy(value: &str) -> Option<String> {
@@ -2023,6 +2110,27 @@ fn builtin_plugins_snapshot(paths: &Paths, config: &AppConfig) -> serde_json::Va
         })
         .collect::<Vec<_>>();
     serde_json::json!({ "ok": true, "plugins": plugins })
+}
+
+fn parse_builtin_plugin_ids(
+    payload: &serde_json::Value,
+    key: &str,
+) -> Result<HashSet<String>, String> {
+    let values = payload
+        .get(key)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("{key} 必须是插件 ID 数组"))?;
+    let mut ids = HashSet::new();
+    for value in values {
+        let id = value
+            .as_str()
+            .ok_or_else(|| format!("{key} 中的插件 ID 必须是字符串"))?;
+        if !BUILTIN_PLUGINS.contains(&id) {
+            return Err(format!("未知的内置插件: {id}"));
+        }
+        ids.insert(id.to_string());
+    }
+    Ok(ids)
 }
 
 fn restart_desktop_after_builtin_change(app: AppHandle, paths: Paths) {
@@ -3898,17 +4006,15 @@ async fn health_check_loop(app: AppHandle) {
                 // scripts mount everything on the dsh page; re-eval after
                 // navigation covers exotic cases where document-created
                 // injection failed.
-                let script = format!(
-                    "{}\n{}\n{}",
-                    TITLEBAR_SCRIPT, THEME_TRANSITION_SCRIPT, OCEAN_THEME_SCRIPT
-                );
                 for delay in [3u64, 10] {
                     let app3 = app.clone();
-                    let script3 = script.clone();
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(delay)).await;
                         if let Some(w) = app3.get_webview_window("main") {
-                            let _ = w.eval(&script3);
+                            inject_desktop_page_scripts(
+                                &w,
+                                &format!("ready fallback after {delay}s"),
+                            );
                         }
                     });
                 }
@@ -5510,6 +5616,85 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                             serde_json::json!({ "ok": true, "motion": config.motion }),
                         ));
                     }
+                    ("GET", "/config-health") => {
+                        let state2 = app2.state::<AppState>();
+                        let issue = state2.config_compatibility_issue.lock().unwrap().clone();
+                        let _ = req.respond(json_response(
+                            200,
+                            match issue {
+                                Some(issue) => serde_json::json!({
+                                    "ok": true,
+                                    "compatible": false,
+                                    "reason": issue.reason,
+                                }),
+                                None => serde_json::json!({
+                                    "ok": true,
+                                    "compatible": true,
+                                }),
+                            },
+                        ));
+                    }
+                    ("POST", "/config-replace") => {
+                        let payload = match read_limited_json::<serde_json::Value>(&mut req, 4096) {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                let _ = req.respond(json_response(
+                                    400,
+                                    serde_json::json!({ "ok": false, "error": error }),
+                                ));
+                                return;
+                            }
+                        };
+                        if payload.get("confirm").and_then(|value| value.as_bool()) != Some(true) {
+                            let _ = req.respond(json_response(
+                                400,
+                                serde_json::json!({ "ok": false, "error": "必须明确确认覆盖旧配置" }),
+                            ));
+                            return;
+                        }
+                        let state2 = app2.state::<AppState>();
+                        if state2.config_compatibility_issue.lock().unwrap().is_none() {
+                            let _ = req.respond(json_response(
+                                200,
+                                serde_json::json!({ "ok": true, "compatible": true, "alreadyCurrent": true }),
+                            ));
+                            return;
+                        }
+                        let config = state2.config.lock().unwrap().clone();
+                        let paths2 = resolve_paths(&app2, &config);
+                        match replace_incompatible_config(&paths2.config_file, &config) {
+                            Ok(backup) => {
+                                *state2.config_compatibility_issue.lock().unwrap() = None;
+                                let backup_file = backup
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("config.incompatible.json")
+                                    .to_string();
+                                log_line(
+                                    &paths2.log_file,
+                                    &format!("incompatible config replaced; backup={}", backup.display()),
+                                );
+                                let _ = req.respond(json_response(
+                                    200,
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "compatible": true,
+                                        "backupFile": backup_file,
+                                    }),
+                                ));
+                            }
+                            Err(error) => {
+                                log_line(
+                                    &paths2.log_file,
+                                    &format!("incompatible config replacement failed: {error}"),
+                                );
+                                let _ = req.respond(json_response(
+                                    500,
+                                    serde_json::json!({ "ok": false, "error": error }),
+                                ));
+                            }
+                        }
+                    }
                     ("POST", "/motion-save") => {
                         // Persist the motion intensity chosen in the in-app
                         // 外观与动效 section and broadcast `motion-updated` so
@@ -5628,34 +5813,43 @@ fn start_bridge_listener(app: AppHandle, port: u16) {
                         let _ = req.as_reader().read_to_string(&mut body);
                         let payload: serde_json::Value =
                             serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
-                        let Some(enabled) =
-                            payload.get("enabled").and_then(|value| value.as_array())
-                        else {
-                            let _ = req.respond(json_response(
-                                400,
-                                serde_json::json!({ "ok": false, "error": "enabled 必须是插件 ID 数组" }),
-                            ));
-                            return;
-                        };
-                        let mut enabled_ids = HashSet::new();
-                        for value in enabled {
-                            let Some(id) = value.as_str() else {
+                        let enabled_ids = match parse_builtin_plugin_ids(&payload, "enabled") {
+                            Ok(ids) => ids,
+                            Err(error) => {
                                 let _ = req.respond(json_response(
                                     400,
-                                    serde_json::json!({ "ok": false, "error": "插件 ID 必须是字符串" }),
-                                ));
-                                return;
-                            };
-                            if !BUILTIN_PLUGINS.contains(&id) {
-                                let _ = req.respond(json_response(
-                                    400,
-                                    serde_json::json!({ "ok": false, "error": format!("未知的内置插件: {id}") }),
+                                    serde_json::json!({ "ok": false, "error": error }),
                                 ));
                                 return;
                             }
-                            enabled_ids.insert(id.to_string());
-                        }
+                        };
+                        let expected_enabled_ids =
+                            match parse_builtin_plugin_ids(&payload, "expectedEnabled") {
+                                Ok(ids) => ids,
+                                Err(error) => {
+                                    let _ = req.respond(json_response(
+                                        400,
+                                        serde_json::json!({ "ok": false, "error": error }),
+                                    ));
+                                    return;
+                                }
+                            };
                         let mut config = state2.config.lock().unwrap().clone();
+                        let current_enabled_ids = BUILTIN_PLUGINS
+                            .iter()
+                            .filter(|name| !config.disabled_builtin_plugins.contains(**name))
+                            .map(|name| (*name).to_string())
+                            .collect::<HashSet<_>>();
+                        if expected_enabled_ids != current_enabled_ids {
+                            let _ = req.respond(json_response(
+                                409,
+                                serde_json::json!({
+                                    "ok": false,
+                                    "error": "内置插件状态已变化，请重新读取后再应用",
+                                }),
+                            ));
+                            return;
+                        }
                         config.disabled_builtin_plugins = BUILTIN_PLUGINS
                             .iter()
                             .filter(|name| !enabled_ids.contains(**name))
@@ -7938,6 +8132,7 @@ pub fn run() {
             providers: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
             config: Mutex::new(AppConfig::default()),
+            config_compatibility_issue: Mutex::new(None),
             recent_task_notifications: Mutex::new(HashMap::new()),
             last_refresh: Mutex::new(None),
             last_update_check: Mutex::new(None),
@@ -7989,14 +8184,36 @@ pub fn run() {
                     let c = state.config.lock().unwrap().clone();
                     resolve_paths(&handle, &c)
                 };
-                let c = load_config(&paths.config_file);
+                let (c, compatibility_issue) = match load_config_checked(&paths.config_file) {
+                    Ok(config) => (config, None),
+                    Err(reason) => (
+                        AppConfig::default(),
+                        Some(ConfigCompatibilityIssue { reason }),
+                    ),
+                };
                 *state.config.lock().unwrap() = c.clone();
+                *state.config_compatibility_issue.lock().unwrap() = compatibility_issue;
                 ensure_runtime_files(&paths);
                 c
             };
 
             let paths = resolve_paths(&handle, &config);
             log_line(&paths.log_file, "DSH Desktop starting");
+            if let Some(issue) = app
+                .state::<AppState>()
+                .config_compatibility_issue
+                .lock()
+                .unwrap()
+                .clone()
+            {
+                log_line(
+                    &paths.log_file,
+                    &format!(
+                        "incompatible config isolated in memory; safe defaults active: {}",
+                        issue.reason
+                    ),
+                );
+            }
 
             // Inspect every desktop-owned listener before binding anything.
             // A fully working earlier desktop instance needs an explicit user
@@ -8037,6 +8254,26 @@ pub fn run() {
                 .initialization_script(TITLEBAR_SCRIPT)
                 .initialization_script(THEME_TRANSITION_SCRIPT)
                 .initialization_script(OCEAN_THEME_SCRIPT)
+                .on_page_load(|window, payload| {
+                    if payload.event() != PageLoadEvent::Finished
+                        || !matches!(payload.url().scheme(), "http" | "https")
+                    {
+                        return;
+                    }
+                    let url = payload.url().to_string();
+                    inject_desktop_page_scripts(&window, &format!("page load finished: {url}"));
+                    for delay in [1u64, 3] {
+                        let window2 = window.clone();
+                        let url2 = url.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(delay)).await;
+                            inject_desktop_page_scripts(
+                                &window2,
+                                &format!("page load retry after {delay}s: {url2}"),
+                            );
+                        });
+                    }
+                })
                 .build()
                 .map_err(|e| format!("创建主窗口失败: {e}"))?;
             if !start_hidden {
@@ -9820,6 +10057,58 @@ agent-default-model:
     }
 
     #[test]
+    fn incompatible_config_is_backed_up_and_replaced_with_verified_defaults() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-config-compat-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let config_file = root.join("config.json");
+        let incompatible = r#"{"motion":"not-a-supported-preset"}"#;
+        fs::write(&config_file, incompatible).unwrap();
+
+        let error = match load_config_checked(&config_file) {
+            Ok(_) => panic!("incompatible config was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("不兼容"));
+        let backup = replace_incompatible_config(&config_file, &AppConfig::default()).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), incompatible);
+
+        let replacement = load_config_checked(&config_file).unwrap();
+        assert_eq!(replacement.motion, MotionIntensity::Rich);
+        assert!(replacement.disabled_builtin_plugins.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn builtin_plugin_apply_requires_explicit_valid_snapshots() {
+        let missing = serde_json::json!({});
+        assert!(parse_builtin_plugin_ids(&missing, "enabled").is_err());
+
+        let invalid = serde_json::json!({ "enabled": ["dsh-desktop-bridge", 7] });
+        assert!(parse_builtin_plugin_ids(&invalid, "enabled").is_err());
+
+        let unknown = serde_json::json!({ "enabled": ["not-a-builtin"] });
+        assert!(parse_builtin_plugin_ids(&unknown, "enabled").is_err());
+
+        let explicit_empty = serde_json::json!({ "enabled": [] });
+        assert!(parse_builtin_plugin_ids(&explicit_empty, "enabled")
+            .unwrap()
+            .is_empty());
+
+        let valid = serde_json::json!({
+            "enabled": ["dsh-desktop-bridge", "dshmarket", "dshmarket"]
+        });
+        let ids = parse_builtin_plugin_ids(&valid, "enabled").unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("dsh-desktop-bridge"));
+        assert!(ids.contains("dshmarket"));
+    }
+
+    #[test]
     fn task_notification_modes_serialize_and_default_to_unfocused() {
         assert_eq!(
             default_task_notification_mode(),
@@ -9950,6 +10239,9 @@ agent-default-model:
         assert!(THEME_TRANSITION_SCRIPT.contains("getAttribute(MOTION_ATTR) !== 'rich'"));
         assert!(OCEAN_THEME_SCRIPT.contains("if (next === 'default') teardown()"));
         assert!(OCEAN_THEME_SCRIPT.contains("DSH default appearance active"));
+        assert!(OCEAN_THEME_SCRIPT.contains("__DSH_OCEAN_RECONCILE__"));
+        assert!(desktop_page_script(MotionIntensity::Rich)
+            .contains(r#"window.__DSH_MOTION__ = "rich";"#));
     }
 
     #[test]

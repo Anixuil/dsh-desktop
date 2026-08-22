@@ -299,6 +299,34 @@ try {
     console.log(`/desktop/motion-save proxy ok (status ${res2.status})`)
   }
   {
+    // Config compatibility is shell-owned. The browser can inspect health,
+    // but replacement is accepted only with an explicit confirmation bit.
+    const healthRes = fakeRes()
+    await routeRegistration.handler({ method: 'GET', url: '/desktop/config-health' }, healthRes)
+    if ((healthRes.status !== 200 && healthRes.status !== 502) || !healthRes.body.includes('"ok"')) {
+      throw new Error(`config-health route failed: ${healthRes.status} ${healthRes.body}`)
+    }
+    const missingConfirmReq = {
+      method: 'POST', url: '/desktop/config-replace',
+      async *[Symbol.asyncIterator]() { yield Buffer.from('{}') },
+    }
+    const missingConfirmRes = fakeRes()
+    await routeRegistration.handler(missingConfirmReq, missingConfirmRes)
+    if (missingConfirmRes.status !== 400 || !missingConfirmRes.body.includes('"ok":false')) {
+      throw new Error(`config-replace accepted missing confirmation: ${missingConfirmRes.status} ${missingConfirmRes.body}`)
+    }
+    const replaceReq = {
+      method: 'POST', url: '/desktop/config-replace',
+      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ confirm: true })) },
+    }
+    const replaceRes = fakeRes()
+    await routeRegistration.handler(replaceReq, replaceRes)
+    if ((replaceRes.status !== 200 && replaceRes.status !== 502) || !replaceRes.body.includes('"ok"')) {
+      throw new Error(`config-replace route failed: ${replaceRes.status} ${replaceRes.body}`)
+    }
+    console.log(`/desktop/config compatibility proxies ok (health ${healthRes.status}, replace ${replaceRes.status})`)
+  }
+  {
     // Task-notification settings and the test action are shell-owned and must
     // remain reachable through the same-origin desktop bridge.
     const getRes = fakeRes()
@@ -343,11 +371,25 @@ try {
     if ((res.status !== 200 && res.status !== 502) || !res.body.includes('"ok"')) throw new Error(`builtin-plugins route failed: ${res.status} ${res.body}`)
     const applyReq = {
       method: 'POST', url: '/desktop/builtin-plugins-apply',
-      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ enabled: ['dsh-desktop-bridge'] })) },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({
+          enabled: ['dsh-desktop-bridge'],
+          expectedEnabled: ['dsh-desktop-bridge'],
+        }))
+      },
     }
     const applyRes = fakeRes()
     await routeRegistration.handler(applyReq, applyRes)
     if ((applyRes.status !== 200 && applyRes.status !== 502) || !applyRes.body.includes('"ok"')) throw new Error(`builtin-plugins-apply route failed: ${applyRes.status} ${applyRes.body}`)
+    const missingEnabledReq = {
+      method: 'POST', url: '/desktop/builtin-plugins-apply',
+      async *[Symbol.asyncIterator]() { yield Buffer.from('{}') },
+    }
+    const missingEnabledRes = fakeRes()
+    await routeRegistration.handler(missingEnabledReq, missingEnabledRes)
+    if (missingEnabledRes.status !== 400 || !missingEnabledRes.body.includes('"ok":false')) {
+      throw new Error(`builtin-plugins-apply must reject a missing state instead of disabling every plugin: ${missingEnabledRes.status} ${missingEnabledRes.body}`)
+    }
     console.log(`/desktop/builtin-plugins read/apply proxies ok (read ${res.status}, apply ${applyRes.status})`)
   }
   {

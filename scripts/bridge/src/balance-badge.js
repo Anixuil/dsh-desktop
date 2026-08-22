@@ -62,6 +62,12 @@ function providerAmount(provider) {
   return null;
 }
 
+/** Platform identity shown beside the compact amount summary. */
+function providerLabel(provider, t) {
+  const displayName = provider?.display_name?.trim?.();
+  return displayName || t("badge");
+}
+
 function BalanceBadge(props) {
   const { wide, t, sessions, modelDirectories } = props;
   const [balance, setBalance] = react.useState(null);
@@ -192,9 +198,7 @@ function BalanceBadge(props) {
   const off = providers === null
     ? (!balance || balance.configured === false)
     : !providers.some((p) => p.configured);
-  const amountLabel = (Array.isArray(active?.plans) && active.plans.length > 0) || active?.plans_error
-    ? t("badge.plan")
-    : active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
+  const amountLabel = providerLabel(active, t);
 
   return jsxs("div", {
     ref: bindFooterItem,
@@ -237,4 +241,4 @@ function BalanceBadge(props) {
   });
 }
 
-module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, BalanceBadge };
+module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, providerLabel, BalanceBadge };

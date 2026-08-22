@@ -143,6 +143,16 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus, getRunning, mod
           return json(res, 502, { ok: false, error: shellError(error) })
         }
       }
+      if (pathname === '/desktop/config-replace') {
+        if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
+        try {
+          const body = await readJsonBody(req)
+          if (body?.confirm !== true) return json(res, 400, { ok: false, error: 'explicit confirmation required' })
+          return json(res, 200, await shellPost('/config-replace', { confirm: true }, 8000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
       if (pathname === '/desktop/notifications-save') {
         if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
         try {
@@ -186,10 +196,16 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus, getRunning, mod
         if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' })
         try {
           const body = await readJsonBody(req)
-          const enabled = Array.isArray(body?.enabled)
-            ? body.enabled.filter((id) => typeof id === 'string')
-            : []
-          return json(res, 200, await shellPost('/builtin-plugins-apply', { enabled }, 15000))
+          if (!Array.isArray(body?.enabled) || body.enabled.some((id) => typeof id !== 'string')) {
+            return json(res, 400, { ok: false, error: 'enabled must be a string array' })
+          }
+          if (!Array.isArray(body?.expectedEnabled) || body.expectedEnabled.some((id) => typeof id !== 'string')) {
+            return json(res, 400, { ok: false, error: 'expectedEnabled must be a string array' })
+          }
+          return json(res, 200, await shellPost('/builtin-plugins-apply', {
+            enabled: body.enabled,
+            expectedEnabled: body.expectedEnabled,
+          }, 15000))
         } catch (error) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }
@@ -236,6 +252,13 @@ export function registerDesktopRoutes(ctx, { shellPort, onFocus, getRunning, mod
       if (pathname === '/desktop/motion') {
         try {
           return json(res, 200, await shellGet('/motion', 3000))
+        } catch (error) {
+          return json(res, 502, { ok: false, error: shellError(error) })
+        }
+      }
+      if (pathname === '/desktop/config-health') {
+        try {
+          return json(res, 200, await shellGet('/config-health', 3000))
         } catch (error) {
           return json(res, 502, { ok: false, error: shellError(error) })
         }

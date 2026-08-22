@@ -511,10 +511,12 @@ console.log('empty usage render ok');
   const renderAppearance = (props) => renderToString(react.createElement(result.views.AppearanceSectionView, {
     t,
     motion: null,
+    loading: false,
     loadError: null,
     busy: false,
     notice: null,
     onChange: noop,
+    onRetry: noop,
     notificationMode: 'unfocused',
     notificationBusy: false,
     testBusy: false,
@@ -536,7 +538,19 @@ console.log('empty usage render ok');
     throw new Error(`appearance default should mark the DSH default option checked\n${dshDefault}`);
   }
   const offline = renderAppearance({ motion: null, loadError: 'boom' });
-  if (offline.includes('appearance.offline') || offline.includes('boom')) throw new Error(`appearance error leaked into page content\n${offline}`);
+  if (!offline.includes('appearance.offline') || !offline.includes('appearance.retry') || offline.includes('boom')
+      || !offline.match(/aria-checked="false"[^>]*>appearance\.motionDefault</)
+      || !offline.match(/aria-checked="false"[^>]*>appearance\.motionQuiet</)
+      || !offline.match(/aria-checked="false"[^>]*>appearance\.motionRich</)) {
+    throw new Error(`appearance error state should be visible without claiming a selected preset or leaking details\n${offline}`);
+  }
+  const loading = renderAppearance({ motion: null, loading: true });
+  if (!loading.includes('appearance.loading')
+      || !loading.match(/aria-checked="false"[^>]*>appearance\.motionDefault</)
+      || !loading.match(/aria-checked="false"[^>]*>appearance\.motionQuiet</)
+      || !loading.match(/aria-checked="false"[^>]*>appearance\.motionRich</)) {
+    throw new Error(`appearance loading state must not claim rich is selected\n${loading}`);
+  }
   const notifyAlways = renderAppearance({ motion: 'default', notificationMode: 'always' });
   if (!notifyAlways.match(/aria-checked="true"[^>]*>appearance\.notificationAlways</)) {
     throw new Error(`appearance notifications should mark always checked\n${notifyAlways}`);
@@ -608,12 +622,14 @@ console.log('empty usage render ok');
     plugins,
     enabled: new Set(active),
     initialEnabled: new Set(initial),
+    loading: false,
     busy: false,
     loadError: null,
     onToggle: noop,
     onEnableAll: noop,
     onCancel: noop,
     onApply: noop,
+    onRetry: noop,
   }));
   const clean = renderBuiltin(plugins.slice(0, 6).map((plugin) => plugin.id));
   for (const marker of ['builtinPlugins.title', 'builtinPlugins.group.desktop', 'builtinPlugins.group.services', 'dshmarket', 'v1.15.0']) {
@@ -622,6 +638,14 @@ console.log('empty usage render ok');
   if (clean.includes('builtinPlugins.apply')) throw new Error(`clean built-in plugin state should not show apply action\n${clean}`);
   const dirty = renderBuiltin(plugins.slice(0, 5).map((plugin) => plugin.id), plugins.slice(0, 6).map((plugin) => plugin.id));
   if (!dirty.includes('builtinPlugins.apply') || !dirty.includes('builtinPlugins.pending')) throw new Error(`dirty built-in plugin state missing actions\n${dirty}`);
+  const failed = renderToString(react.createElement(result.views.BuiltinPluginsSectionView, {
+    t, plugins: [], enabled: new Set(), initialEnabled: new Set(), loading: false,
+    busy: false, loadError: 'secret-detail', onToggle: noop, onEnableAll: noop,
+    onCancel: noop, onApply: noop, onRetry: noop,
+  }));
+  if (!failed.includes('role="alert"') || !failed.includes('builtinPlugins.retry') || failed.includes('secret-detail')) {
+    throw new Error(`built-in plugin load failure must be visible, retryable, and redact details\n${failed}`);
+  }
   console.log('built-in plugin settings render ok');
 }
 

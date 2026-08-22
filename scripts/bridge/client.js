@@ -189,6 +189,9 @@ const css = `
 .dbb_builtinTextButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .dbb_builtinTextButton:disabled{opacity:.45;cursor:default}
 .dbb_builtinError{padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px}
+.dbb_inlineError{align-items:center;justify-content:space-between;gap:12px;display:flex}
+.dbb_inlineError .dbb_aboutSecondary{flex:none;white-space:nowrap}
+@media(max-width:480px){.dbb_inlineError{align-items:stretch;flex-direction:column}.dbb_inlineError .dbb_aboutSecondary{align-self:flex-end}}
 .dbb_builtinSkeleton{display:flex;flex-direction:column;gap:1px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:12px}
 .dbb_builtinSkeleton span{height:82px;background:var(--dsw-alias-interactive-bg-hover);opacity:.65}
 @media(max-width:640px){.dbb_builtinHeader{flex-direction:column;gap:10px}.dbb_builtinRow{align-items:flex-start;gap:12px;padding:13px 14px}.dbb_builtinSwitch{grid-template-columns:38px;justify-items:end}.dbb_builtinState{display:none}.dbb_builtinFooter{align-items:stretch;flex-direction:column}.dbb_builtinActions{justify-content:flex-end;flex-wrap:wrap}.dbb_builtinActions .dbb_aboutPrimary{white-space:nowrap}}
@@ -305,6 +308,72 @@ function showMessage(text, options = {}) {
 }
 
 module.exports = { showMessage };
+
+},
+"./config-compatibility.js": function (require, module, exports) {
+const { showMessage } = require('./message.js');
+
+const PROMPT_KEY = 'dsh-desktop.config-compatibility.prompted';
+
+function storageCall(action, fallback) {
+  try {
+    return action(window.sessionStorage);
+  } catch {
+    return fallback;
+  }
+}
+
+async function getJson(path, init) {
+  const response = await fetch(path, init);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(payload?.error ?? `HTTP ${String(response.status)}`);
+  }
+  return payload;
+}
+
+function registerConfigCompatibilityPrompt(ctx, t) {
+  return ctx.effect(() => {
+    if (typeof window === 'undefined' || typeof window.confirm !== 'function') return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const health = await getJson('/desktop/config-health');
+        if (cancelled || health?.compatible !== false) return;
+        if (storageCall((storage) => storage?.getItem(PROMPT_KEY), null) === '1') return;
+        storageCall((storage) => storage?.setItem(PROMPT_KEY, '1'));
+        const accepted = window.confirm(t('configCompatibility.prompt', {
+          reason: health?.reason ?? t('configCompatibility.unknownReason'),
+        }));
+        if (!accepted) {
+          showMessage(t('configCompatibility.deferred'));
+          return;
+        }
+        const result = await getJson('/desktop/config-replace', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirm: true }),
+        });
+        if (!cancelled) {
+          showMessage(t('configCompatibility.replaced', {
+            backup: result?.backupFile ?? 'config.incompatible.json',
+          }));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          storageCall((storage) => storage?.removeItem(PROMPT_KEY));
+          showMessage(t('configCompatibility.failed', {
+            error: String(error?.message ?? error),
+          }));
+        }
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, 'dsh-desktop-bridge: config compatibility prompt');
+}
+
+module.exports = { PROMPT_KEY, registerConfigCompatibilityPrompt, storageCall };
 
 },
 "./helpers.js": function (require, module, exports) {
@@ -429,6 +498,11 @@ const zh = {
   "plan.more": "另有 {count} 个生效套餐",
   "plan.partial": "套餐信息受限",
   "plan.limited": "受限",
+  "configCompatibility.prompt": "检测到旧版配置与当前版本不兼容。DSH Desktop 已使用安全默认配置启动，当前功能不会被阻塞。\n\n原因：{reason}\n\n是否备份旧配置并立即覆盖为新版默认配置？",
+  "configCompatibility.unknownReason": "配置格式无法识别",
+  "configCompatibility.deferred": "已保留旧配置。当前继续使用安全默认配置，下次启动时会再次提示。",
+  "configCompatibility.replaced": "不兼容配置已覆盖，旧文件已备份为 {backup}。",
+  "configCompatibility.failed": "配置覆盖失败：{error}",
   "usage.totalUsage": "累计消费",
   "usage.status": "账户状态",
   "usage.active": "可用",
@@ -472,6 +546,10 @@ const zh = {
   "appearance.motionRich": "丰富",
   "appearance.hint": "DSH 默认：使用原生配色与交互；安静：使用海洋外观，隐藏波浪与气泡，只保留必要反馈；丰富：启用完整的海洋外观与氛围动效。",
   "appearance.offline": "无法连接桌面壳服务",
+  "appearance.loading": "正在读取已保存的外观设置…",
+  "appearance.retry": "重试",
+  "appearance.invalidState": "桌面壳返回了无效的外观状态",
+  "appearance.verifyFailed": "外观设置保存后未能通过校验，请重试",
   "appearance.notificationLabel": "任务完成通知",
   "appearance.notificationOff": "关闭",
   "appearance.notificationUnfocused": "窗口未聚焦时",
@@ -547,6 +625,8 @@ const zh = {
   "builtinPlugins.restartHint": "修改会批量保存，并只重启一次 DSH Desktop。",
   "builtinPlugins.loading": "正在读取内置插件",
   "builtinPlugins.offline": "无法读取内置插件状态",
+  "builtinPlugins.retry": "重试",
+  "builtinPlugins.verifyFailed": "内置插件状态校验失败，请重新读取后再应用",
   "builtinPlugins.dsh-desktop-bridge.name": "桌面集成",
   "builtinPlugins.dsh-desktop-bridge.description": "账户用量、状态动效、远程访问和桌面设置集成。",
   "builtinPlugins.dsh-desktop-session-manager.name": "会话管理",
@@ -654,6 +734,11 @@ const en = {
   "plan.more": "{count} more active plans",
   "plan.partial": "Plan information is limited",
   "plan.limited": "Limited",
+  "configCompatibility.prompt": "The existing configuration is not compatible with this version. DSH Desktop has started with safe defaults, so current features remain available.\n\nReason: {reason}\n\nBack up the existing file and replace it with the new default configuration now?",
+  "configCompatibility.unknownReason": "The configuration format could not be recognized",
+  "configCompatibility.deferred": "The existing file was kept. Safe defaults remain active and this prompt will appear again on the next launch.",
+  "configCompatibility.replaced": "The incompatible configuration was replaced. The previous file was backed up as {backup}.",
+  "configCompatibility.failed": "Configuration replacement failed: {error}",
   "usage.totalUsage": "Total usage",
   "usage.status": "Account status",
   "usage.active": "Active",
@@ -697,6 +782,10 @@ const en = {
   "appearance.motionRich": "Rich",
   "appearance.hint": "DSH Default: native colors and interactions; Quiet: ocean appearance without waves and bubbles, keeping essential feedback; Rich: the full ocean appearance and ambient motion.",
   "appearance.offline": "Desktop shell service unavailable",
+  "appearance.loading": "Loading the saved appearance setting...",
+  "appearance.retry": "Retry",
+  "appearance.invalidState": "The desktop shell returned an invalid appearance state",
+  "appearance.verifyFailed": "The saved appearance setting could not be verified. Please retry.",
   "appearance.notificationLabel": "Task completion notifications",
   "appearance.notificationOff": "Off",
   "appearance.notificationUnfocused": "When not focused",
@@ -772,6 +861,8 @@ const en = {
   "builtinPlugins.restartHint": "Changes are saved together and restart DSH Desktop only once.",
   "builtinPlugins.loading": "Loading built-in plugins",
   "builtinPlugins.offline": "Built-in plugin status is unavailable",
+  "builtinPlugins.retry": "Retry",
+  "builtinPlugins.verifyFailed": "Built-in plugin state verification failed. Reload before applying changes.",
   "builtinPlugins.dsh-desktop-bridge.name": "Desktop integration",
   "builtinPlugins.dsh-desktop-bridge.description": "Account usage, status motion, remote access, and desktop settings integration.",
   "builtinPlugins.dsh-desktop-session-manager.name": "Session manager",
@@ -917,6 +1008,12 @@ function providerAmount(provider) {
   return null;
 }
 
+/** Platform identity shown beside the compact amount summary. */
+function providerLabel(provider, t) {
+  const displayName = provider?.display_name?.trim?.();
+  return displayName || t("badge");
+}
+
 function BalanceBadge(props) {
   const { wide, t, sessions, modelDirectories } = props;
   const [balance, setBalance] = react.useState(null);
@@ -1047,9 +1144,7 @@ function BalanceBadge(props) {
   const off = providers === null
     ? (!balance || balance.configured === false)
     : !providers.some((p) => p.configured);
-  const amountLabel = (Array.isArray(active?.plans) && active.plans.length > 0) || active?.plans_error
-    ? t("badge.plan")
-    : active !== null && active.kind === "usage" ? t("badge.usage") : t("badge");
+  const amountLabel = providerLabel(active, t);
 
   return jsxs("div", {
     ref: bindFooterItem,
@@ -1092,7 +1187,7 @@ function BalanceBadge(props) {
   });
 }
 
-module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, BalanceBadge };
+module.exports = { noopSub, setFooterStack, activeProvider, providerAmount, providerLabel, BalanceBadge };
 
 },
 "./balance-panel.js": function (require, module, exports) {
@@ -1773,11 +1868,11 @@ async function getJson(path, init) {
 /** Pure render layer: props in, section markup out (no fetch, no effects). */
 function AppearanceSectionView(props) {
   const {
-    t, motion, loadError, busy, notice, onChange,
+    t, motion, loading, loadError, busy, notice, onChange, onRetry,
     notificationMode, notificationBusy, testBusy, notificationNotice,
     onNotificationChange, onNotificationTest,
   } = props;
-  const value = ['default', 'quiet', 'rich'].includes(motion) ? motion : 'rich';
+  const value = ['default', 'quiet', 'rich'].includes(motion) ? motion : null;
   const notifyValue = ['off', 'unfocused', 'always'].includes(notificationMode)
     ? notificationMode
     : 'unfocused';
@@ -1801,7 +1896,7 @@ function AppearanceSectionView(props) {
               role: 'radio',
               'aria-checked': value === 'default',
               className: segCls(value === 'default'),
-              disabled: busy,
+              disabled: busy || loading || loadError !== null,
               onClick: () => onChange('default'),
               children: t('appearance.motionDefault'),
             }),
@@ -1810,7 +1905,7 @@ function AppearanceSectionView(props) {
               role: 'radio',
               'aria-checked': value === 'quiet',
               className: segCls(value === 'quiet'),
-              disabled: busy,
+              disabled: busy || loading || loadError !== null,
               onClick: () => onChange('quiet'),
               children: t('appearance.motionQuiet'),
             }),
@@ -1819,13 +1914,21 @@ function AppearanceSectionView(props) {
               role: 'radio',
               'aria-checked': value === 'rich',
               className: segCls(value === 'rich'),
-              disabled: busy,
+              disabled: busy || loading || loadError !== null,
               onClick: () => onChange('rich'),
               children: t('appearance.motionRich'),
             }),
           ],
         }),
         jsx('p', { className: 'dbb_note', children: t('appearance.hint') }),
+        loading
+          ? jsx('p', { className: 'dbb_note', role: 'status', children: t('appearance.loading') })
+          : loadError !== null
+            ? jsxs('div', { className: 'dbb_builtinError dbb_inlineError', role: 'alert', children: [
+                jsx('span', { children: t('appearance.offline') }),
+                jsx('button', { type: 'button', className: 'dbb_aboutSecondary', onClick: onRetry, children: t('appearance.retry') }),
+              ] })
+            : null,
         notice !== null && notice?.kind !== 'err'
           ? jsx('p', {
               className: notice?.kind === 'err' ? 'dbb_error' : 'dbb_aboutStatus',
@@ -1888,6 +1991,7 @@ function AppearanceSectionView(props) {
 function AppearanceSection(props) {
   const { t } = props;
   const [motion, setMotion] = react.useState(null);
+  const [loading, setLoading] = react.useState(true);
   const [loadError, setLoadError] = react.useState(null);
   const [busy, setBusy] = react.useState(false);
   const [notice, setNotice] = react.useState(null);
@@ -1896,21 +2000,31 @@ function AppearanceSection(props) {
   const [testBusy, setTestBusy] = react.useState(false);
   const [notificationNotice, setNotificationNotice] = react.useState(null);
   const [notificationError, setNotificationError] = react.useState(null);
+  const motionRequest = react.useRef(0);
+
+  const loadMotion = react.useCallback(async () => {
+    const request = ++motionRequest.current;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const payload = await getJson('/desktop/motion');
+      if (request !== motionRequest.current) return;
+      if (!['default', 'quiet', 'rich'].includes(payload?.motion)) throw new Error(t('appearance.invalidState'));
+      setMotion(payload.motion);
+    } catch (e) {
+      if (request !== motionRequest.current) return;
+      setMotion(null);
+      setLoadError(String(e?.message ?? e));
+    } finally {
+      if (request === motionRequest.current) setLoading(false);
+    }
+  }, [t]);
 
   react.useEffect(() => {
     ensureStyles();
-    let cancelled = false;
-    getJson('/desktop/motion')
-      .then((payload) => {
-        if (cancelled) return;
-        setMotion(['default', 'quiet', 'rich'].includes(payload?.motion) ? payload.motion : 'rich');
-        setLoadError(null);
-      })
-      .catch((e) => {
-        if (!cancelled) setLoadError(String(e?.message ?? e));
-      });
-    return () => { cancelled = true; };
-  }, []);
+    loadMotion();
+    return () => { motionRequest.current += 1; };
+  }, [loadMotion]);
 
   react.useEffect(() => {
     let cancelled = false;
@@ -1936,17 +2050,18 @@ function AppearanceSection(props) {
   }, [notificationNotice]);
 
   const onChange = async (next) => {
-    if (busy) return;
+    if (busy || loading || loadError !== null || !['default', 'quiet', 'rich'].includes(motion)) return;
     const previous = motion;
     setMotion(next); // optimistic — the ambient layer follows the save's event
     setNotice(null);
     setBusy(true);
     try {
-      await getJson('/desktop/motion-save', {
+      const payload = await getJson('/desktop/motion-save', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ motion: next }),
       });
+      if (payload?.motion !== next) throw new Error(t('appearance.verifyFailed'));
     } catch (e) {
       setMotion(previous);
       setNotice({ kind: 'err', text: String(e?.message ?? e) });
@@ -1992,10 +2107,12 @@ function AppearanceSection(props) {
   return jsx(AppearanceSectionView, {
     t,
     motion,
+    loading,
     loadError,
     busy,
     notice,
     onChange,
+    onRetry: loadMotion,
     notificationMode,
     notificationBusy,
     testBusy,
@@ -2357,7 +2474,7 @@ function PluginRow({ t, plugin, enabled, busy, onToggle }) {
   ] });
 }
 
-function BuiltinPluginsSectionView({ t, plugins, enabled, initialEnabled, busy, loadError, onToggle, onEnableAll, onCancel, onApply }) {
+function BuiltinPluginsSectionView({ t, plugins, enabled, initialEnabled, loading, busy, loadError, onToggle, onEnableAll, onCancel, onApply, onRetry }) {
   const dirty = !sameEnabled(enabled, initialEnabled);
   const count = enabled.size;
   return jsxs('section', { className: 'dbb_builtin', 'aria-label': t('builtinPlugins.title'), children: [
@@ -2371,8 +2488,11 @@ function BuiltinPluginsSectionView({ t, plugins, enabled, initialEnabled, busy, 
         : null,
     ] }),
     loadError !== null
-      ? jsx('div', { className: 'dbb_builtinError', role: 'alert', children: t('builtinPlugins.offline') })
-      : plugins.length === 0
+      ? jsxs('div', { className: 'dbb_builtinError dbb_inlineError', role: 'alert', children: [
+          jsx('span', { children: t('builtinPlugins.offline') }),
+          jsx('button', { type: 'button', className: 'dbb_aboutSecondary', onClick: onRetry, children: t('builtinPlugins.retry') }),
+        ] })
+      : loading
         ? jsx('div', { className: 'dbb_builtinSkeleton', 'aria-label': t('builtinPlugins.loading'), children: [0, 1, 2].map((id) => jsx('span', {}, id)) })
         : PLUGIN_GROUPS.map((group) => jsxs('div', { className: 'dbb_builtinGroup', children: [
           jsx('h3', { className: 'dbb_builtinGroupTitle', children: t(`builtinPlugins.group.${group.id}`) }),
@@ -2396,25 +2516,42 @@ function BuiltinPluginsSection({ t }) {
   const [plugins, setPlugins] = react.useState([]);
   const [enabled, setEnabled] = react.useState(new Set());
   const [initialEnabled, setInitialEnabled] = react.useState(new Set());
+  const [loading, setLoading] = react.useState(true);
   const [busy, setBusy] = react.useState(false);
   const [loadError, setLoadError] = react.useState(null);
+  const loadRequest = react.useRef(0);
 
-  react.useEffect(() => {
-    ensureStyles();
-    let cancelled = false;
-    getJson('/desktop/builtin-plugins').then((payload) => {
-      if (cancelled) return;
-      const rows = Array.isArray(payload.plugins) ? payload.plugins : [];
+  const loadSnapshot = react.useCallback(async () => {
+    const request = ++loadRequest.current;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const payload = await getJson('/desktop/builtin-plugins');
+      if (request !== loadRequest.current) return;
+      const rows = Array.isArray(payload.plugins) ? payload.plugins : null;
+      if (rows === null || rows.length === 0 || rows.some((plugin) => typeof plugin?.id !== 'string')) {
+        throw new Error(t('builtinPlugins.verifyFailed'));
+      }
       const active = new Set(rows.filter((plugin) => plugin.enabled !== false).map((plugin) => plugin.id));
       setPlugins(rows);
       setEnabled(active);
       setInitialEnabled(new Set(active));
-      setLoadError(null);
-    }).catch((error) => {
-      if (!cancelled) setLoadError(String(error?.message ?? error));
-    });
-    return () => { cancelled = true; };
-  }, []);
+    } catch (error) {
+      if (request !== loadRequest.current) return;
+      setPlugins([]);
+      setEnabled(new Set());
+      setInitialEnabled(new Set());
+      setLoadError(String(error?.message ?? error));
+    } finally {
+      if (request === loadRequest.current) setLoading(false);
+    }
+  }, [t]);
+
+  react.useEffect(() => {
+    ensureStyles();
+    loadSnapshot();
+    return () => { loadRequest.current += 1; };
+  }, [loadSnapshot]);
 
   react.useEffect(() => {
     if (loadError !== null) showMessage(`${t('builtinPlugins.offline')}（${loadError}）`);
@@ -2428,15 +2565,24 @@ function BuiltinPluginsSection({ t }) {
   const onEnableAll = () => setEnabled(new Set(plugins.map((plugin) => plugin.id)));
   const onCancel = () => setEnabled(new Set(initialEnabled));
   const onApply = async () => {
+    if (loading || loadError !== null || plugins.length === 0 || busy) return;
     setBusy(true);
     try {
       const payload = await getJson('/desktop/builtin-plugins-apply', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: [...enabled] }),
+        body: JSON.stringify({
+          enabled: [...enabled],
+          expectedEnabled: [...initialEnabled],
+        }),
       });
-      const rows = Array.isArray(payload.plugins) ? payload.plugins : plugins;
+      const rows = Array.isArray(payload.plugins) ? payload.plugins : null;
+      const expectedIds = new Set(plugins.map((plugin) => plugin.id));
+      if (rows === null || rows.length !== plugins.length || rows.some((plugin) => !expectedIds.has(plugin?.id))) {
+        throw new Error(t('builtinPlugins.verifyFailed'));
+      }
       const active = new Set(rows.filter((plugin) => plugin.enabled !== false).map((plugin) => plugin.id));
+      if (!sameEnabled(active, enabled)) throw new Error(t('builtinPlugins.verifyFailed'));
       setPlugins(rows);
       setEnabled(active);
       setInitialEnabled(new Set(active));
@@ -2447,7 +2593,10 @@ function BuiltinPluginsSection({ t }) {
     }
   };
 
-  return jsx(BuiltinPluginsSectionView, { t, plugins, enabled, initialEnabled, busy, loadError, onToggle, onEnableAll, onCancel, onApply });
+  return jsx(BuiltinPluginsSectionView, {
+    t, plugins, enabled, initialEnabled, loading, busy, loadError,
+    onToggle, onEnableAll, onCancel, onApply, onRetry: loadSnapshot,
+  });
 }
 
 module.exports = { BuiltinPluginsSection, BuiltinPluginsSectionView, sameEnabled };
@@ -3132,7 +3281,7 @@ module.exports = { qrSvgDataUri, matrixFor, _internals: { encodeData, interleave
 // intensity picker), about-section (shell identity + check-update page), and
 // remote-section (relay-client configuration).
 require('./styles.js');
-const { BalanceBadge, setFooterStack, activeProvider, providerAmount } = require('./balance-badge.js');
+const { BalanceBadge, setFooterStack, activeProvider, providerAmount, providerLabel } = require('./balance-badge.js');
 const { BalancePanelView } = require('./balance-panel.js');
 const { AboutSection, AboutSectionView } = require('./about-section.js');
 const { AppearanceSection, AppearanceSectionView } = require('./appearance-section.js');
@@ -3141,6 +3290,7 @@ const { PluginNetworkSection, NetworkSectionView } = require('./plugin-network-s
 const { BuiltinPluginsSection, BuiltinPluginsSectionView } = require('./builtin-plugins-section.js');
 const { RemoteSection, RemoteSectionView, preserveRemoteDraft } = require('./remote-section.js');
 const { zh, en, NS } = require('./locales.js');
+const { registerConfigCompatibilityPrompt } = require('./config-compatibility.js');
 
 // The balance card is the footer's stable anchor. Third-party footer actions
 // must stay above it even when plugins are loaded after this bundle.
@@ -3152,6 +3302,7 @@ const inject = ["slots", "locale", "sessions"];
 function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-desktop-bridge: dictionaries");
   const t = ctx.locale.bind(NS);
+  registerConfigCompatibilityPrompt(ctx, t);
 
   // The control plane stays mounted even when the desktop-integration feature
   // switch is off, otherwise there would be no in-app path to turn it on.
@@ -3270,7 +3421,7 @@ exports.inject = inject;
 // in-browser consumers (the pre-split bundle exposed nothing but apply).
 exports.views = { BalancePanelView, AboutSectionView, AppearanceSectionView, ModelBehaviorSectionView, PluginNetworkSectionView: NetworkSectionView, BuiltinPluginsSectionView, RemoteSectionView };
 exports.remote = { preserveRemoteDraft };
-exports.footer = { setFooterStack, activeProvider, providerAmount };
+exports.footer = { setFooterStack, activeProvider, providerAmount, providerLabel };
 exports.qr = require('./qr.js');
 
 }

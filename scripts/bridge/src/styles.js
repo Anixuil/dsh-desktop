@@ -182,6 +182,9 @@ const css = `
 .dbb_builtinTextButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .dbb_builtinTextButton:disabled{opacity:.45;cursor:default}
 .dbb_builtinError{padding:14px 16px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px}
+.dbb_inlineError{align-items:center;justify-content:space-between;gap:12px;display:flex}
+.dbb_inlineError .dbb_aboutSecondary{flex:none;white-space:nowrap}
+@media(max-width:480px){.dbb_inlineError{align-items:stretch;flex-direction:column}.dbb_inlineError .dbb_aboutSecondary{align-self:flex-end}}
 .dbb_builtinSkeleton{display:flex;flex-direction:column;gap:1px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:12px}
 .dbb_builtinSkeleton span{height:82px;background:var(--dsw-alias-interactive-bg-hover);opacity:.65}
 @media(max-width:640px){.dbb_builtinHeader{flex-direction:column;gap:10px}.dbb_builtinRow{align-items:flex-start;gap:12px;padding:13px 14px}.dbb_builtinSwitch{grid-template-columns:38px;justify-items:end}.dbb_builtinState{display:none}.dbb_builtinFooter{align-items:stretch;flex-direction:column}.dbb_builtinActions{justify-content:flex-end;flex-wrap:wrap}.dbb_builtinActions .dbb_aboutPrimary{white-space:nowrap}}
